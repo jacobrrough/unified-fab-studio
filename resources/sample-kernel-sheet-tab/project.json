@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Kernel sample — sheet tab union",
+  "updatedAt": "2026-03-19T00:00:00.000Z",
+  "activeMachineId": "generic-3axis",
+  "meshes": [],
+  "notes": "See README.md — sheet_tab_union in part/features.json"
+}

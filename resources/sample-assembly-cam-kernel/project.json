@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Sample — assembly + manufacture + kernel",
+  "updatedAt": "2026-03-19T00:00:00.000Z",
+  "activeMachineId": "generic-3axis",
+  "meshes": [],
+  "notes": "See README.md — assembly.json, manufacture.json, design + part for kernel."
+}

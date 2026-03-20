@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1" }
+  ],
+  "kernelOps": [
+    {
+      "kind": "pattern_rectangular",
+      "countX": 2,
+      "countY": 1,
+      "spacingXMm": 40,
+      "spacingYMm": 0
+    },
+    {
+      "kind": "boolean_subtract_cylinder",
+      "centerXMm": 0,
+      "centerYMm": 0,
+      "radiusMm": 4,
+      "zMinMm": 2,
+      "zMaxMm": 8
+    }
+  ]
+}

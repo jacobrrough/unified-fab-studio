@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } },
+    { "id": "int1", "kind": "boolean", "label": "KernelIntersectBox1" }
+  ],
+  "kernelOps": [
+    {
+      "kind": "boolean_intersect_box",
+      "xMinMm": -4,
+      "xMaxMm": 4,
+      "yMinMm": -4,
+      "yMaxMm": 4,
+      "zMinMm": 2,
+      "zMaxMm": 8
+    }
+  ]
+}

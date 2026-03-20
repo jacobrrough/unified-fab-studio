@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } }
+  ],
+  "kernelOps": [
+    {
+      "kind": "pattern_path",
+      "count": 3,
+      "pathPoints": [
+        [0, 0],
+        [22, 0],
+        [22, 14]
+      ]
+    }
+  ]
+}

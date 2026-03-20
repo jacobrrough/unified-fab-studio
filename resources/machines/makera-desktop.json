@@ -1,0 +1,13 @@
+{
+  "id": "makera-desktop",
+  "name": "Makera Desktop CNC",
+  "kind": "cnc",
+  "workAreaMm": { "x": 350, "y": 180, "z": 70 },
+  "maxFeedMmMin": 3000,
+  "postTemplate": "cnc_generic_mm.hbs",
+  "dialect": "grbl",
+  "meta": {
+    "manufacturer": "Makera",
+    "model": "Desktop — align feeds/limits with Makera CAM or OEM specs; Grbl-like dialect may differ on spindle/coolant codes; see docs/MACHINES.md"
+  }
+}

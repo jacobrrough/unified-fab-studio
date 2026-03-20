@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } }
+  ],
+  "kernelOps": [
+    {
+      "kind": "pipe_path",
+      "pathPoints": [
+        [0, 0],
+        [16, 0]
+      ],
+      "outerRadiusMm": 2,
+      "wallThicknessMm": 0.45,
+      "zStartMm": 4
+    }
+  ]
+}

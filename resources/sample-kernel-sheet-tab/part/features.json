@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } },
+    { "id": "tab1", "kind": "boolean", "label": "Tab (kernel)", "params": { "kernelOp": "sheet_tab_union" } }
+  ],
+  "kernelOps": [
+    {
+      "kind": "sheet_tab_union",
+      "centerXMm": 12,
+      "centerYMm": 0,
+      "zBaseMm": 1,
+      "lengthMm": 10,
+      "widthMm": 6,
+      "heightMm": 5
+    }
+  ]
+}

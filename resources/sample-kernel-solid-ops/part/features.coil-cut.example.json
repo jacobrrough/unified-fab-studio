@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } }
+  ],
+  "kernelOps": [
+    {
+      "kind": "coil_cut",
+      "centerXMm": 0,
+      "centerYMm": 0,
+      "majorRadiusMm": 5,
+      "pitchMm": 2,
+      "turns": 2,
+      "depthMm": 6,
+      "zStartMm": 1
+    }
+  ]
+}

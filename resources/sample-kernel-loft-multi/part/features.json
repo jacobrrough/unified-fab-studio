@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "lf1", "kind": "loft", "label": "Loft1", "params": { "separationMm": 9, "profileCount": 3 } }
+  ]
+}

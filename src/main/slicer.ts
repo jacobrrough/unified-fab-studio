@@ -1,0 +1,103 @@
+import { spawn } from 'node:child_process'
+import { copyFile, mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { CURA_SLICE_CLI_DEFAULTS, resolveCuraSliceParams, type CuraSliceCliParams } from '../shared/cura-slice-defaults'
+import { getResourcesRoot } from './paths'
+
+export type SliceRequest = {
+  curaEnginePath: string
+  inputStlPath: string
+  outputGcodePath: string
+  /** Optional override for machine definition JSON */
+  definitionPath?: string
+  /** Folder containing fdmprinter.def.json (sets CURA_ENGINE_SEARCH_PATH) */
+  curaDefinitionsPath?: string
+  /** Named Cura `-s` bundle; see `cura-slice-defaults.ts` */
+  slicePreset?: string | null
+}
+
+function runProcess(
+  cmd: string,
+  args: string[],
+  cwd?: string,
+  extraEnv?: NodeJS.ProcessEnv
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd,
+      shell: false,
+      env: { ...process.env, ...extraEnv }
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (d) => {
+      stdout += d.toString()
+    })
+    child.stderr?.on('data', (d) => {
+      stderr += d.toString()
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      resolve({ code: code ?? 1, stdout, stderr })
+    })
+  })
+}
+
+/** Pure helper for tests and CLI construction. */
+export function buildCuraSliceArgs(
+  resourcesRoot: string,
+  req: Pick<SliceRequest, 'definitionPath' | 'inputStlPath' | 'outputGcodePath'>,
+  sliceParams?: CuraSliceCliParams
+): string[] {
+  const defPath = req.definitionPath ?? join(resourcesRoot, 'slicer', 'creality_k2_plus.def.json')
+  const d = sliceParams ?? CURA_SLICE_CLI_DEFAULTS
+  return [
+    'slice',
+    '-v',
+    '-j',
+    defPath,
+    '-s',
+    `layer_height=${d.layerHeightMm}`,
+    '-s',
+    `line_width=${d.lineWidthMm}`,
+    '-s',
+    `wall_line_count=${d.wallLineCount}`,
+    '-s',
+    `infill_sparse_density=${d.infillSparseDensity}`,
+    '-l',
+    req.inputStlPath,
+    '-o',
+    req.outputGcodePath
+  ]
+}
+
+/**
+ * Slice STL using CuraEngine CLI. Requires a valid Ultimaker-style definition chain on your machine
+ * or the bundled minimal definition (may need tuning for your CuraEngine version).
+ */
+export async function sliceWithCuraEngine(req: SliceRequest): Promise<{ ok: boolean; stderr?: string; stdout?: string }> {
+  const resources = getResourcesRoot()
+  await mkdir(dirname(req.outputGcodePath), { recursive: true })
+
+  const args = buildCuraSliceArgs(resources, req, resolveCuraSliceParams(req.slicePreset))
+
+  const extraEnv: NodeJS.ProcessEnv = {}
+  if (req.curaDefinitionsPath) {
+    extraEnv.CURA_ENGINE_SEARCH_PATH = req.curaDefinitionsPath
+  }
+  const { code, stderr, stdout } = await runProcess(req.curaEnginePath, args, undefined, extraEnv)
+  if (code !== 0) {
+    return { ok: false, stderr: stderr || stdout }
+  }
+  return { ok: true, stdout }
+}
+
+/** Copy STL into project assets and return path — helper for UI. */
+export async function stageStlForProject(projectDir: string, sourceStlPath: string): Promise<string> {
+  const assets = join(projectDir, 'assets')
+  await mkdir(assets, { recursive: true })
+  const base = sourceStlPath.split(/[/\\]/).pop() ?? 'model.stl'
+  const dest = join(assets, base)
+  await copyFile(sourceStlPath, dest)
+  return dest
+}

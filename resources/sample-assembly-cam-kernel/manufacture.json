@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "setups": [
+    {
+      "id": "setup-1",
+      "label": "Op 1 — soft jaw / spoilboard",
+      "machineId": "generic-3axis",
+      "wcsNote": "Touch off G54 on front-left top of stock; Z on finished top.",
+      "fixtureNote": "Clamp clear of 40 mm pattern pitch; confirm spindle clearance before rapids.",
+      "workCoordinateIndex": 1,
+      "stock": {
+        "kind": "box",
+        "x": 80,
+        "y": 60,
+        "z": 15,
+        "allowanceMm": 1
+      }
+    }
+  ],
+  "operations": [
+    {
+      "id": "op-export",
+      "kind": "export_stl",
+      "label": "Export STL (placeholder op)",
+      "suppressed": true
+    },
+    {
+      "id": "op-parallel",
+      "kind": "cnc_parallel",
+      "label": "Parallel finish (set sourceMesh after STL exists)",
+      "sourceMesh": "assets/part.stl",
+      "params": {
+        "toolDiameterMm": 3,
+        "zPassMm": 1,
+        "stepoverMm": 1.5,
+        "feedMmMin": 800,
+        "plungeMmMin": 200,
+        "safeZMm": 5
+      }
+    }
+  ]
+}

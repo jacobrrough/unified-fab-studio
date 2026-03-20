@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Kernel sample — rectangular pattern",
+  "updatedAt": "2026-03-19T00:00:00.000Z",
+  "activeMachineId": "generic-3axis",
+  "meshes": [],
+  "notes": "See README.md — pattern_rectangular in part/features.json"
+}

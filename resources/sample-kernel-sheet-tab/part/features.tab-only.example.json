@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "items": [],
+  "kernelOps": [
+    {
+      "kind": "sheet_tab_union",
+      "centerXMm": 0,
+      "centerYMm": 0,
+      "zBaseMm": 1,
+      "lengthMm": 8,
+      "widthMm": 4,
+      "heightMm": 3
+    }
+  ]
+}

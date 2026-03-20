@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } }
+  ],
+  "kernelOps": [{ "kind": "transform_translate", "dxMm": 18, "dyMm": 0, "dzMm": 0, "keepOriginal": true }]
+}

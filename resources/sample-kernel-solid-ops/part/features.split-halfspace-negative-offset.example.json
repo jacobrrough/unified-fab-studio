@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } }
+  ],
+  "kernelOps": [
+    {
+      "kind": "split_keep_halfspace",
+      "axis": "Y",
+      "offsetMm": 5,
+      "keep": "negative"
+    }
+  ]
+}

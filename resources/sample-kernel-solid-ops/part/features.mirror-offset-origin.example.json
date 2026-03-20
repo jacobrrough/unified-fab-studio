@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } },
+    { "id": "mir1", "kind": "mirror", "label": "KernelMirrorOffset1" }
+  ],
+  "kernelOps": [
+    {
+      "kind": "mirror_union_plane",
+      "plane": "YZ",
+      "originXMm": 15,
+      "originYMm": 0,
+      "originZMm": 0
+    }
+  ]
+}

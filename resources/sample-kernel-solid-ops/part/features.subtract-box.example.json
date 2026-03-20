@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1" }
+  ],
+  "kernelOps": [
+    {
+      "kind": "boolean_subtract_box",
+      "xMinMm": -3,
+      "xMaxMm": 3,
+      "yMinMm": -3,
+      "yMaxMm": 3,
+      "zMinMm": 2,
+      "zMaxMm": 8
+    }
+  ]
+}

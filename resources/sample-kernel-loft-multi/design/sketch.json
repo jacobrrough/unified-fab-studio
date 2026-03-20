@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "extrudeDepthMm": 10,
+  "solidKind": "loft",
+  "loftSeparationMm": 9,
+  "revolve": { "angleDeg": 360, "axisX": 0 },
+  "parameters": {},
+  "points": {},
+  "entities": [
+    { "id": "b", "kind": "rect", "cx": 0, "cy": 0, "w": 30, "h": 20, "rotation": 0 },
+    { "id": "m", "kind": "rect", "cx": 0, "cy": 0, "w": 18, "h": 12, "rotation": 0 },
+    { "id": "t", "kind": "rect", "cx": 0, "cy": 0, "w": 8, "h": 6, "rotation": 0 }
+  ],
+  "constraints": [],
+  "dimensions": []
+}

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Kernel sample — multi-section loft",
+  "updatedAt": "2026-03-19T00:00:00.000Z",
+  "activeMachineId": "generic-3axis",
+  "meshes": [],
+  "notes": "See README.md — three rects, uniform loft step, no postSolidOps"
+}

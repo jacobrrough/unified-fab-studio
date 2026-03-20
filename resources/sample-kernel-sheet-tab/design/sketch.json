@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "extrudeDepthMm": 1,
+  "solidKind": "extrude",
+  "loftSeparationMm": 20,
+  "revolve": { "angleDeg": 360, "axisX": 0 },
+  "parameters": {},
+  "points": {},
+  "entities": [
+    { "id": "sheet", "kind": "rect", "cx": 0, "cy": 0, "w": 40, "h": 24, "rotation": 0 }
+  ],
+  "constraints": []
+}
