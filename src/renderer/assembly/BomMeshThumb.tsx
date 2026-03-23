@@ -156,14 +156,14 @@ export function BomMeshThumb({ projectDir, meshPath }: Props) {
 
   if (!meshPath?.trim()) {
     return (
-      <div ref={containerRef} style={{ minHeight: 48, minWidth: 48 }}>
+      <div ref={containerRef} className="bom-thumb-cell">
         <span className="msg msg--muted">—</span>
       </div>
     )
   }
 
   return (
-    <div ref={containerRef} style={{ minHeight: 48, minWidth: 48 }}>
+    <div ref={containerRef} className="bom-thumb-cell">
       {!visible ? (
         <span className="msg msg--muted" title="Scroll to load thumbnail">
           ○
@@ -182,7 +182,7 @@ export function BomMeshThumb({ projectDir, meshPath }: Props) {
           width={48}
           height={48}
           alt=""
-          style={{ display: 'block', borderRadius: 4, verticalAlign: 'middle' }}
+          className="bom-thumb-img"
         />
       ) : (
         <span className="msg msg--muted">…</span>

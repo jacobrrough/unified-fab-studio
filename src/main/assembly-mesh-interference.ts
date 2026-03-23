@@ -451,7 +451,8 @@ function transformKey(c: AssemblyComponent): string {
 
 export async function buildAssemblyInterferenceReport(
   projectDir: string,
-  asm: AssemblyFile
+  asm: AssemblyFile,
+  overrideTransforms?: Map<string, AssemblyComponent['transform']>
 ): Promise<AssemblyInterferenceReport> {
   const active = asm.components.filter((c) => !c.suppressed)
   const sameTransformPairs: { aId: string; bId: string; aName: string; bName: string }[] = []
@@ -459,8 +460,8 @@ export async function buildAssemblyInterferenceReport(
     for (let j = i + 1; j < active.length; j++) {
       const a = active[i]!
       const b = active[j]!
-      const ta = a.transform
-      const tb = b.transform
+      const ta = overrideTransforms?.get(a.id) ?? a.transform
+      const tb = overrideTransforms?.get(b.id) ?? b.transform
       if (
         ta.x === tb.x &&
         ta.y === tb.y &&
@@ -484,7 +485,11 @@ export async function buildAssemblyInterferenceReport(
     }
     resolved.push({
       component: c,
-      mesh: meshInstanceFromLoad(c, lr.bounds, lr.buffer),
+      mesh: meshInstanceFromLoad(
+        { ...c, transform: overrideTransforms?.get(c.id) ?? c.transform },
+        lr.bounds,
+        lr.buffer
+      ),
       buffer: lr.buffer,
       absPath: lr.absPath
     })

@@ -4,6 +4,8 @@ import {
   circularPatternSketchInstances,
   linearPatternSketchInstances,
   offsetClosedPolygon,
+  pathPatternSketchInstances,
+  sanitizeProjectedPolylineDraft,
   translateSketch,
   translateSketchPoints
 } from './design-ops'
@@ -62,6 +64,55 @@ describe('circularPatternSketchInstances', () => {
     d.entities = [{ id: 'c1', kind: 'circle', cx: 0, cy: 0, r: 5 }]
     const out = circularPatternSketchInstances(d, 0, 0, 3, 0, 0)
     expect(out.entities.length).toBe(1)
+  })
+})
+
+describe('pathPatternSketchInstances', () => {
+  it('duplicates the original sketch at evenly spaced path samples', () => {
+    const d = emptyDesign()
+    d.points = {
+      p0: { x: 0, y: 0 },
+      p1: { x: 100, y: 0 }
+    }
+    d.entities = [
+      { id: 'path', kind: 'polyline', pointIds: ['p0', 'p1'], closed: false },
+      { id: 'c1', kind: 'circle', cx: 0, cy: 0, r: 2 }
+    ]
+    const out = pathPatternSketchInstances(d, 'path', 4, false)
+    const circles = out.entities.filter((e) => e.kind === 'circle')
+    expect(circles.length).toBe(4)
+    expect(circles.map((e) => (e.kind === 'circle' ? e.cx : -1))).toEqual([0, 25, 50, 75])
+  })
+})
+
+describe('sanitizeProjectedPolylineDraft', () => {
+  it('removes duplicate consecutive points and closes near-end loops', () => {
+    const cleaned = sanitizeProjectedPolylineDraft(
+      [
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+        { x: 0.00001, y: 0.00001 }
+      ],
+      1e-2
+    )
+    expect(cleaned.closed).toBe(true)
+    expect(cleaned.points.length).toBe(3)
+  })
+
+  it('collapses nearly-collinear interior points in projected chains', () => {
+    const cleaned = sanitizeProjectedPolylineDraft(
+      [
+        { x: 0, y: 0 },
+        { x: 5, y: 0.00001 },
+        { x: 10, y: 0.00002 },
+        { x: 10, y: 5 }
+      ],
+      1e-3
+    )
+    expect(cleaned.closed).toBe(false)
+    expect(cleaned.points.length).toBe(3)
   })
 })
 

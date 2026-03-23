@@ -3,8 +3,48 @@ import type { KernelPostSolidOp } from './part-features-schema'
 
 export type { KernelPostSolidOp }
 
+type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never
+
 /** CadQuery `postSolidOps` entries — no `suppressed` field. */
-export type KernelPostSolidOpPayload = Omit<KernelPostSolidOp, 'suppressed'>
+export type KernelPostSolidOpPayload = DistributiveOmit<KernelPostSolidOp, 'suppressed'>
+
+function normalizeKernelOpForPython(op: KernelPostSolidOpPayload): KernelPostSolidOpPayload {
+  if (op.kind === 'thread_cosmetic') {
+    return {
+      kind: 'thread_wizard',
+      centerXMm: op.centerXMm,
+      centerYMm: op.centerYMm,
+      majorRadiusMm: op.majorRadiusMm,
+      pitchMm: op.pitchMm,
+      lengthMm: op.lengthMm,
+      depthMm: op.depthMm,
+      zStartMm: op.zStartMm,
+      hand: 'right',
+      mode: 'cosmetic',
+      standard: 'legacy',
+      designation: 'legacy',
+      class: 'legacy',
+      starts: 1
+    }
+  }
+  if (op.kind === 'sweep_profile_path') {
+    return {
+      kind: 'sweep_profile_path_true',
+      profileIndex: op.profileIndex,
+      pathPoints: op.pathPoints,
+      zStartMm: op.zStartMm,
+      orientationMode: 'frenet'
+    }
+  }
+  if (op.kind === 'thicken_scale') {
+    return {
+      kind: 'thicken_offset',
+      distanceMm: op.deltaMm,
+      side: op.deltaMm > 0 ? 'outward' : 'inward'
+    }
+  }
+  return op
+}
 
 /** Queue rows with `suppressed: true` are skipped for the kernel JSON (order preserved on disk). */
 export function activeKernelOpsForPython(ops: KernelPostSolidOp[] | undefined): KernelPostSolidOpPayload[] {
@@ -13,7 +53,7 @@ export function activeKernelOpsForPython(ops: KernelPostSolidOp[] | undefined): 
   for (const o of ops) {
     if (o.suppressed) continue
     const { suppressed: _s, ...rest } = o
-    out.push(rest)
+    out.push(normalizeKernelOpForPython(rest))
   }
   return out
 }
@@ -471,7 +511,7 @@ export type KernelProfileV1 =
  * **`sketchPlane`:** matches renderer `sketchPreviewPlacementMatrix`; `build_part.py` applies it after post-ops so STEP/STL align with preview.
  */
 export type KernelBuildPayload = {
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   solidKind: 'extrude' | 'revolve' | 'loft'
   extrudeDepthMm: number
   revolve: { angleDeg: number; axisX: number }
@@ -1100,14 +1140,31 @@ function trimSplineEntityWithLineCutter(
 ): { ok: true; design: DesignFileV2 } | { ok: false; error: string } {
   const ent = design.entities.find((e) => e.id === target.entityId)
   if (!ent || (ent.kind !== 'spline_fit' && ent.kind !== 'spline_cp')) return { ok: false, error: 'target_not_spline' }
+  const ctrl = ent.pointIds.map((id) => design.points[id]).filter((p): p is { x: number; y: number } => !!p)
   const loop =
-    ent.kind === 'spline_fit' ? splineFitPolylineFromEntity(ent, design.points) : splineCpPolylineFromEntity(ent, design.points)
+    ent.kind === 'spline_fit'
+      ? splineFitPolyline(
+          ctrl.map((p) => [p.x, p.y]),
+          !!ent.closed,
+          24
+        )
+      : splineCpPolyline(
+          ctrl.map((p) => [p.x, p.y]),
+          !!ent.closed,
+          24
+        )
   if (!loop || loop.length < 2) return { ok: false, error: 'degenerate_spline' }
+  const cleanLoop: [number, number][] = []
+  for (const p of loop) {
+    const prev = cleanLoop[cleanLoop.length - 1]
+    if (!prev || Math.hypot(prev[0] - p[0], prev[1] - p[1]) > 1e-4) cleanLoop.push(p)
+  }
+  if (cleanLoop.length < 2) return { ok: false, error: 'degenerate_spline' }
 
-  const newIds = loop.map(() => crypto.randomUUID())
+  const newIds = cleanLoop.map(() => crypto.randomUUID())
   const nextPoints = { ...design.points }
-  for (let i = 0; i < loop.length; i++) {
-    nextPoints[newIds[i]!] = { x: loop[i]![0], y: loop[i]![1] }
+  for (let i = 0; i < cleanLoop.length; i++) {
+    nextPoints[newIds[i]!] = { x: cleanLoop[i]![0], y: cleanLoop[i]![1] }
   }
   const closed = !!ent.closed
   const polyEnt: SketchEntity = {
@@ -2015,6 +2072,127 @@ function neighborPointIdsAtCorner(pointIds: string[], closed: boolean, k: number
   return [prev, next]
 }
 
+function tangentDirAtArcEndpoint(g: ArcEntityGeometry, atStart: boolean): { tx: number; ty: number } {
+  const t = atStart ? g.ta : g.tc
+  const rx = Math.cos(t)
+  const ry = Math.sin(t)
+  if (g.ccw) return { tx: -ry, ty: rx }
+  return { tx: ry, ty: -rx }
+}
+
+function applyArcArcFilletAtSharedEndpoint(
+  design: DesignFileV2,
+  a: Extract<SketchEntity, { kind: 'arc' }>,
+  b: Extract<SketchEntity, { kind: 'arc' }>,
+  radiusMm: number
+): { ok: true; design: DesignFileV2 } | { ok: false; error: string } {
+  const nearSame = (idA: string, idB: string): boolean => {
+    if (idA === idB) return true
+    const pa = design.points[idA]
+    const pb = design.points[idB]
+    if (!pa || !pb) return false
+    return Math.hypot(pa.x - pb.x, pa.y - pb.y) <= 1e-3
+  }
+  const sharedCandidates = [
+    nearSame(a.startId, b.startId) ? a.startId : null,
+    nearSame(a.startId, b.endId) ? a.startId : null,
+    nearSame(a.endId, b.startId) ? a.endId : null,
+    nearSame(a.endId, b.endId) ? a.endId : null
+  ].filter((x): x is string => !!x)
+  const sharedId = sharedCandidates[0]
+  if (!sharedId) return { ok: false, error: 'arc_arc_no_shared_endpoint' }
+  if (design.constraints.some((c) => constraintReferencesPointId(c, sharedId))) {
+    return { ok: false, error: 'vertex_has_constraints' }
+  }
+  const s = design.points[sharedId]
+  if (!s) return { ok: false, error: 'missing_points' }
+  const ga = arcEntityGeometry(a, design.points)
+  const gb = arcEntityGeometry(b, design.points)
+  if (!ga || !gb) return { ok: false, error: 'arc_geometry_failed' }
+  const aAtStart = a.startId === sharedId
+  const bAtStart = b.startId === sharedId
+  const ta = tangentDirAtArcEndpoint(ga, aAtStart)
+  const tb = tangentDirAtArcEndpoint(gb, bAtStart)
+  const dA = Math.hypot(ta.tx, ta.ty)
+  const dB = Math.hypot(tb.tx, tb.ty)
+  if (dA < 1e-9 || dB < 1e-9) return { ok: false, error: 'degenerate_edge' }
+  const uaX = ta.tx / dA
+  const uaY = ta.ty / dA
+  const ubX = tb.tx / dB
+  const ubY = tb.ty / dB
+  const dot = Math.max(-1, Math.min(1, uaX * ubX + uaY * ubY))
+  let theta = Math.acos(dot)
+  if (theta <= 1e-3 || theta >= Math.PI - 1e-3) theta = Math.PI * 0.5
+  const half = theta * 0.5
+  const tanHalf = Math.tan(half)
+  const t = tanHalf < 1e-8 ? radiusMm : radiusMm / tanHalf
+  const candA = { x: s.x + uaX * t, y: s.y + uaY * t }
+  const candB = { x: s.x + ubX * t, y: s.y + ubY * t }
+  const angA = Math.atan2(candA.y - ga.oy, candA.x - ga.ox)
+  const angB = Math.atan2(candB.y - gb.oy, candB.x - gb.ox)
+  const epsA = arcInteriorAngleEps(ga.r)
+  const epsB = arcInteriorAngleEps(gb.r)
+  const sharedAngA = aAtStart ? ga.ta : ga.tc
+  const sharedAngB = bAtStart ? gb.ta : gb.tc
+  const spanA = ga.ccw ? sweepCCW(ga.ta, ga.tc) : sweepCCW(ga.tc, ga.ta)
+  const spanB = gb.ccw ? sweepCCW(gb.ta, gb.tc) : sweepCCW(gb.tc, gb.ta)
+  const dirA = aAtStart ? (ga.ccw ? 1 : -1) : ga.ccw ? -1 : 1
+  const dirB = bAtStart ? (gb.ccw ? 1 : -1) : gb.ccw ? -1 : 1
+  const fallbackAngA = sharedAngA + dirA * Math.min(0.35, spanA * 0.3)
+  const fallbackAngB = sharedAngB + dirB * Math.min(0.35, spanB * 0.3)
+  const useAngA = angleInOpenArc(angA, ga.ta, ga.tc, ga.ccw, epsA) ? angA : fallbackAngA
+  const useAngB = angleInOpenArc(angB, gb.ta, gb.tc, gb.ccw, epsB) ? angB : fallbackAngB
+  if (!angleInOpenArc(useAngA, ga.ta, ga.tc, ga.ccw, epsA)) return { ok: false, error: 'fillet_tangent_off_arc_a' }
+  if (!angleInOpenArc(useAngB, gb.ta, gb.tc, gb.ccw, epsB)) return { ok: false, error: 'fillet_tangent_off_arc_b' }
+  const tA = { x: ga.ox + ga.r * Math.cos(useAngA), y: ga.oy + ga.r * Math.sin(useAngA) }
+  const tB = { x: gb.ox + gb.r * Math.cos(useAngB), y: gb.oy + gb.r * Math.sin(useAngB) }
+  const bx = uaX + ubX
+  const by = uaY + ubY
+  const bl = Math.hypot(bx, by)
+  const wx = bl < 1e-8 ? -uaY : bx / bl
+  const wy = bl < 1e-8 ? uaX : by / bl
+  const sinHalf = Math.sin(half)
+  const dCenter = sinHalf < 1e-8 ? radiusMm * 1.4 : radiusMm / sinHalf
+  const cx = s.x + dCenter * wx
+  const cy = s.y + dCenter * wy
+  const taFillet = Math.atan2(tA.y - cy, tA.x - cx)
+  const tbFillet = Math.atan2(tB.y - cy, tB.x - cx)
+  const spanCcw = sweepCCW(taFillet, tbFillet)
+  const spanCw = sweepCW(taFillet, tbFillet)
+  const targetCentral = Math.PI - theta
+  const useCcw = Math.abs(spanCcw - targetCentral) <= Math.abs(spanCw - targetCentral)
+  const span = useCcw ? spanCcw : spanCw
+  const fallbackVia = {
+    x: (tA.x + tB.x) * 0.5 + (s.x - (tA.x + tB.x) * 0.5) * 0.5,
+    y: (tA.y + tB.y) * 0.5 + (s.y - (tA.y + tB.y) * 0.5) * 0.5
+  }
+  const viaAng = useCcw ? taFillet + span * 0.5 : taFillet - span * 0.5
+  const via =
+    span < 1e-5
+      ? fallbackVia
+      : { x: cx + radiusMm * Math.cos(viaAng), y: cy + radiusMm * Math.sin(viaAng) }
+  const idA = crypto.randomUUID()
+  const idB = crypto.randomUUID()
+  const idVia = crypto.randomUUID()
+  const idFillet = crypto.randomUUID()
+  const nextPoints = { ...design.points }
+  delete nextPoints[sharedId]
+  nextPoints[idA] = { x: tA.x, y: tA.y }
+  nextPoints[idB] = { x: tB.x, y: tB.y }
+  nextPoints[idVia] = { x: via.x, y: via.y }
+  const newEntities = design.entities.map((e) => {
+    if (e.id === a.id && e.kind === 'arc') {
+      return aAtStart ? { ...e, startId: idA } : { ...e, endId: idA }
+    }
+    if (e.id === b.id && e.kind === 'arc') {
+      return bAtStart ? { ...e, startId: idB } : { ...e, endId: idB }
+    }
+    return e
+  })
+  newEntities.push({ id: idFillet, kind: 'arc', startId: idA, viaId: idVia, endId: idB })
+  return { ok: true, design: { ...design, points: nextPoints, entities: newEntities } }
+}
+
 /**
  * Round a **convex** corner of a point-ID polyline with a tangent circular arc, replacing the vertex
  * by a short chain of straight segments (keeps a single closed/open loop for `extractKernelProfiles`).
@@ -2031,7 +2209,14 @@ export function applySketchCornerFillet(
   if (!(radiusMm > 0)) return { ok: false, error: 'radius_invalid' }
   const arcSegments = Math.max(1, Math.min(64, Math.floor(opts?.arcSegments ?? 8)))
 
-  if (edge1.entityId !== edge2.entityId) return { ok: false, error: 'different_entities' }
+  if (edge1.entityId !== edge2.entityId) {
+    const e1 = design.entities.find((e) => e.id === edge1.entityId)
+    const e2 = design.entities.find((e) => e.id === edge2.entityId)
+    if (e1?.kind === 'arc' && e2?.kind === 'arc') {
+      return applyArcArcFilletAtSharedEndpoint(design, e1, e2, radiusMm)
+    }
+    return { ok: false, error: 'different_entities' }
+  }
   const ent = design.entities.find((e) => e.id === edge1.entityId)
   if (!ent || ent.kind !== 'polyline') return { ok: false, error: 'not_polyline' }
   if (!('pointIds' in ent)) return { ok: false, error: 'legacy_polyline_points' }
@@ -2249,8 +2434,18 @@ export function kernelPayloadVersionForOps(
       o.kind === 'coil_cut' ||
       o.kind === 'mirror_union_plane' ||
       o.kind === 'sheet_tab_union' ||
+      o.kind === 'sheet_fold' ||
+      o.kind === 'sheet_flat_pattern' ||
+      o.kind === 'loft_guide_rails' ||
+      o.kind === 'plastic_rule_fillet' ||
+      o.kind === 'plastic_boss' ||
+      o.kind === 'plastic_lip_groove' ||
       (o.kind === 'shell_inward' && o.openDirection != null)
   )
+  const needsV4 = ops.some(
+    (o) => o.kind === 'sweep_profile_path_true' || o.kind === 'thicken_offset' || o.kind === 'thread_wizard'
+  )
+  if (needsV4) return 4
   return needsV3 ? 3 : 2
 }
 

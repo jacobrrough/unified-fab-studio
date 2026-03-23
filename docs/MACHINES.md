@@ -67,6 +67,32 @@ Kernel samples ship with **`activeMachineId`: `generic-3axis`**, defined in **`r
 
 ---
 
+## Drilling (2D `cnc_drill` in Manufacture)
+
+The app can emit **expanded** moves (`G0`/`G1`) or **canned cycles** (`G81` / `G82` / `G83`) depending on the machine **dialect** and operation **params** (`drillCycle`, `peckMm`, `dwellMs`, `retractMm`). Depth is **`zPassMm`** (hole bottom); **R** is the retract plane (`retractMm` or `safeZMm` when unset).
+
+| Dialect / behavior | Default cycle | Notes |
+|--------------------|---------------|--------|
+| **`grbl`** | Expanded `G0`/`G1` | Many Grbl builds do not implement `G81`–`G83`; the app defaults here unless you explicitly override **Drill cycle** on the operation. |
+| **`mach3`** (Mach-class) | `G81` / auto `G82`/`G83` | With **Peck Q** set, the post tends toward **G83**; with **Dwell P** toward **G82**. Confirm **P** units (seconds vs ms) and **Q** peck depth in your Mach post manual. |
+| **`generic_mm`** / other CNC | `G81` + overrides | Same param keys; verify **R**, **Q**, **P** on your control before production. |
+
+**Peck / dwell:** **G83** requires a positive **`peckMm`** (incremental peck). **G82** requires positive **`dwellMs`** in the app; the value is emitted as **P** on the block — **your controller may expect seconds**, not milliseconds. Adjust in the operation or edit G-code after posting.
+
+Always cancel canned cycles on the machine if your program is interrupted mid-cycle (`G80` is emitted at the end of drill sections when cycles are used).
+
+---
+
+## Manufacture tab — CAM simulation (preview only)
+
+The **Simulation** panel on **Manufacture** parses posted **G-code** (`G0`/`G1`) for a **Tier 1** toolpath overlay. Optional **Tier 2** uses a coarse **2.5D height-field** (tool radius stamped along shallow feeds). Optional **Tier 3** shows an experimental **voxel** carve sample (sphere stamps; capped grid size).
+
+**None of these tiers** model your real machine kinematics, spindle/holder geometry, or controller lookahead. They are **not** a substitute for **air cuts**, **dry runs**, or verifying **post output** on the control. Treat them like a quick sanity check only. See [`VERIFICATION.md`](VERIFICATION.md) (Manufacture sim) and `src/shared/cam-voxel-removal-proxy.ts` for implementation limits.
+
+**`cnc_pencil`** (tight raster / cleanup intent) still emits **unverified** G-code like every other CAM op — the in-app preview does not certify clearance or stock remaining.
+
+---
+
 ## Creality K2 Plus (FDM)
 
 - Use **machine profile** `creality-k2-plus` for bed size and naming; slicing is delegated to **CuraEngine**. The repo bundles a **definition stub** under [`resources/slicer/`](../resources/slicer/) (`creality_k2_plus.def.json`); CuraEngine still needs your install’s **`fdmprinter`** chain on disk.
@@ -90,4 +116,4 @@ Before trusting output:
 2. **First cut**: soft material, shallow depth.
 3. Compare a short program against a **known-good** file from your current CAM for the same controller.
 
-For **app-level** CAM checks (OpenCAMLib vs fallback, op kinds, `manufacture.json` params → post), see the **CAM / manufacture** section in [`VERIFICATION.md`](VERIFICATION.md).
+For **app-level** CAM checks (OpenCAMLib vs fallback, op kinds, `manufacture.json` params → post, Manufacture simulation tiers), see the **CAM / manufacture** and **Manufacture sim** rows in [`VERIFICATION.md`](VERIFICATION.md).

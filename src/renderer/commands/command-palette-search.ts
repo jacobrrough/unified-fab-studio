@@ -16,7 +16,14 @@ export const PALETTE_QUERY_ALIASES: Record<string, string[]> = {
   parameters: ['ut_parameters'],
   param: ['ut_parameters'],
   drawing: ['dr_new_sheet', 'dr_export'],
-  manifest: ['dr_new_sheet', 'drawing']
+  manifest: ['dr_new_sheet', 'drawing'],
+  open: ['ut_open', 'ut_command_palette'],
+  new: ['ut_new', 'dr_new_sheet'],
+  save: ['ut_save'],
+  tool: ['ut_tools'],
+  tools: ['ut_tools'],
+  cam: ['ut_cam', 'mf_'],
+  slice: ['ut_slice', 'mf_additive']
 }
 
 export function rowMatchesPaletteQuery(row: FusionStyleCommand, q: string): boolean {
@@ -24,8 +31,18 @@ export function rowMatchesPaletteQuery(row: FusionStyleCommand, q: string): bool
   if (!ql) return true
   const hay = `${row.label} ${row.id} ${row.ribbon} ${row.fusionRibbon ?? ''} ${row.notes ?? ''}`.toLowerCase()
   if (hay.includes(ql)) return true
+  const tokens = ql.split(/\s+/).filter(Boolean)
+  if (tokens.length > 1 && tokens.every((token) => hay.includes(token))) return true
   const extra = PALETTE_QUERY_ALIASES[ql]
   if (extra?.some((term) => hay.includes(term.toLowerCase()))) return true
+  if (tokens.length > 1) {
+    const tokenAliasMatch = tokens.every((token) => {
+      const terms = PALETTE_QUERY_ALIASES[token]
+      if (!terms || terms.length === 0) return hay.includes(token)
+      return terms.some((term) => hay.includes(term.toLowerCase()))
+    })
+    if (tokenAliasMatch) return true
+  }
   return false
 }
 

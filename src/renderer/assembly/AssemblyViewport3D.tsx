@@ -5,9 +5,9 @@ import * as THREE from 'three'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { AssemblyComponent, AssemblyExplodeViewMetadata, AssemblyFile } from '../../shared/assembly-schema'
 import {
-  computeAssemblyKinematicPreviewTransforms,
   explodeOffsetMm
 } from '../../shared/assembly-viewport-math'
+import { solveAssemblyKinematics } from '../../shared/assembly-kinematics-core'
 
 type LoadedMesh = {
   id: string
@@ -89,17 +89,14 @@ export function AssemblyViewport3D({ projectDir, asm, explodeFactor, motionRzDeg
 
   const activeRows = useMemo(() => asm.components.filter((c) => !c.suppressed), [asm.components])
 
-  const kinematicPreviewTransforms = useMemo(
-    () => computeAssemblyKinematicPreviewTransforms(activeRows),
-    [activeRows]
-  )
+  const solved = useMemo(() => solveAssemblyKinematics(activeRows), [activeRows])
 
   const sceneItems = useMemo((): SceneMesh[] => {
     return items.map((it) => ({
       ...it,
-      effectiveTransform: kinematicPreviewTransforms.get(it.id) ?? it.transform
+      effectiveTransform: solved.transforms.get(it.id) ?? it.transform
     }))
-  }, [items, kinematicPreviewTransforms])
+  }, [items, solved.transforms])
 
   const loadKey = useMemo(
     () =>
@@ -178,7 +175,7 @@ export function AssemblyViewport3D({ projectDir, asm, explodeFactor, motionRzDeg
 
   return (
     <div className="assembly-viewport-3d">
-      <div className="viewport-3d" style={{ height: 360 }}>
+      <div className="viewport-3d">
         <Canvas
           camera={{ position: [180, 120, 180], fov: 45, near: 0.5, far: 20000 }}
           dpr={[1, 2]}
@@ -224,11 +221,11 @@ export function AssemblyViewport3D({ projectDir, asm, explodeFactor, motionRzDeg
           />
         </Canvas>
       </div>
-      <p className="msg msg--muted" style={{ margin: '0.35rem 0 0', fontSize: '0.82rem' }}>
+      <p className="msg msg--muted msg--fine mt-xs">
         {activeRows.every((c) => !c.meshPath?.trim())
           ? 'Set mesh path (binary STL) on active rows to preview. Interference check still uses saved assembly.json on disk.'
           : loadNote ??
-            `${sceneItems.length} mesh(es) — explode uses active row order; keyframes add world +Y rotation; revolute/slider previews move subtree in world axes (preview-only).`}
+            `${sceneItems.length} mesh(es) — explode uses active row order; keyframes add world +Y rotation; solved joints drive subtree transforms. Violations: ${solved.diagnostics.violations.length}.`}
       </p>
     </div>
   )

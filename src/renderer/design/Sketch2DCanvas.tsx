@@ -41,6 +41,7 @@ import {
   worldCornersFromRectParams,
   type SketchTrimEdgeRef
 } from '../../shared/sketch-profile'
+import { clientToCanvasLocal, distSqPointSegment, niceStepMm, screenToWorld, snap } from './sketch2d-canvas-coords'
 
 const CANVAS_SLOT_SEGMENTS = 24
 
@@ -100,68 +101,8 @@ type Props = {
   sketchRotateDeg?: number
   /** Factor for scale_sk (ribbon). */
   sketchScaleFactor?: number
-}
-
-function screenToWorld(
-  sx: number,
-  sy: number,
-  w: number,
-  h: number,
-  scale: number,
-  ox: number,
-  oy: number
-): [number, number] {
-  const cx = w / 2
-  const cy = h / 2
-  const wx = (sx - cx) / scale + ox
-  const wy = -(sy - cy) / scale + oy
-  return [wx, wy]
-}
-
-/**
- * Map viewport coordinates to canvas bitmap space. Required when CSS layout size ≠ canvas.width/height
- * (flex stretch, high-DPR, or toolbars shrinking the drawable area vs parent-measured dimensions).
- */
-function clientToCanvasLocal(
-  clientX: number,
-  clientY: number,
-  canvas: HTMLCanvasElement
-): [number, number] {
-  const rect = canvas.getBoundingClientRect()
-  // Keep pointer coordinates in CSS pixels; world transforms are based on CSS-sized viewport.
-  const x = clientX - rect.left
-  const y = clientY - rect.top
-  return [x, y]
-}
-
-function snap(v: number, step: number): number {
-  if (step <= 0) return v
-  return Math.round(v / step) * step
-}
-
-function niceStepMm(stepMm: number): number {
-  if (!(stepMm > 0) || !Number.isFinite(stepMm)) return 1
-  const p = Math.pow(10, Math.floor(Math.log10(stepMm)))
-  const n = stepMm / p
-  const base = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10
-  return base * p
-}
-
-/** Squared distance from P to segment AB (clamped). */
-function distSqPointSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const abx = bx - ax
-  const aby = by - ay
-  const apx = px - ax
-  const apy = py - ay
-  const ab2 = abx * abx + aby * aby
-  if (ab2 < 1e-18) return apx * apx + apy * apy
-  let t = (apx * abx + apy * aby) / ab2
-  t = Math.max(0, Math.min(1, t))
-  const qx = ax + t * abx
-  const qy = ay + t * aby
-  const dx = px - qx
-  const dy = py - qy
-  return dx * dx + dy * dy
+  /** Shown at top-left (e.g. sketch plane name). */
+  planeLabel?: string
 }
 
 type ConstraintPickHit = { kind: 'vertex'; id: string } | { kind: 'segment'; a: string; b: string }
@@ -185,7 +126,8 @@ export function Sketch2DCanvas({
   onConstraintEntityPick,
   onSketchHint,
   sketchRotateDeg = 0,
-  sketchScaleFactor = 1
+  sketchScaleFactor = 1,
+  planeLabel
 }: Props) {
   const ref = useRef<HTMLCanvasElement>(null)
   const { entities, points } = design
@@ -235,6 +177,15 @@ export function Sketch2DCanvas({
     | { kind: 'circle'; c: [number, number]; r: number }
     | null
   >(null)
+  /** While true, mouse move does not overwrite typed dimension fields / drag preview. */
+  const lineDimFocused = useRef(false)
+  const rectDimFocused = useRef(false)
+  const circleDimFocused = useRef(false)
+  const [lineDeltaX, setLineDeltaX] = useState('')
+  const [lineDeltaY, setLineDeltaY] = useState('')
+  const [rectWIn, setRectWIn] = useState('')
+  const [rectHIn, setRectHIn] = useState('')
+  const [circleRIn, setCircleRIn] = useState('')
   const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
   const [constraintHover, setConstraintHover] = useState<ConstraintPickHit | null>(null)
   const [entityHoverId, setEntityHoverId] = useState<string | null>(null)
@@ -254,6 +205,44 @@ export function Sketch2DCanvas({
   useEffect(() => {
     if (!constraintEntityPickActive) setEntityHoverId(null)
   }, [constraintEntityPickActive])
+
+  useEffect(() => {
+    if (!lineStart) {
+      setLineDeltaX('')
+      setLineDeltaY('')
+    }
+  }, [lineStart])
+
+  useEffect(() => {
+    if (!lineStart || !lineHover) return
+    if (lineDimFocused.current) return
+    const dx = lineHover[0] - lineStart[0]
+    const dy = lineHover[1] - lineStart[1]
+    setLineDeltaX(String(Math.round(dx * 1000) / 1000))
+    setLineDeltaY(String(Math.round(dy * 1000) / 1000))
+  }, [lineStart, lineHover])
+
+  useEffect(() => {
+    if (drag?.kind !== 'rect') {
+      setRectWIn('')
+      setRectHIn('')
+      return
+    }
+    if (rectDimFocused.current) return
+    const w = Math.abs(drag.b[0] - drag.a[0])
+    const h = Math.abs(drag.b[1] - drag.a[1])
+    setRectWIn(String(Math.max(0, Math.round(w * 1000) / 1000)))
+    setRectHIn(String(Math.max(0, Math.round(h * 1000) / 1000)))
+  }, [drag])
+
+  useEffect(() => {
+    if (drag?.kind !== 'circle') {
+      setCircleRIn('')
+      return
+    }
+    if (circleDimFocused.current) return
+    setCircleRIn(String(Math.max(0, Math.round(drag.r * 1000) / 1000)))
+  }, [drag])
 
   useEffect(() => {
     setXformDraft([])
@@ -419,7 +408,6 @@ export function Sketch2DCanvas({
     const grid = Math.max(0.0001, gridMm)
     const majorStep = grid * 5
     const axisLabelStep = Math.max(grid, niceStepMm(90 / Math.max(scale, 0.05)))
-    const axisColor = '#c084fc'
     const minorGridColor = '#241732'
     const majorGridColor = '#3b2753'
     const minorPx = grid * scale
@@ -478,14 +466,25 @@ export function Sketch2DCanvas({
     // World axes and origin marker so users can quickly orient and place geometry.
     const axisX = crisp(cx + (0 - ox) * scale)
     const axisY = crisp(cy - (0 - oy) * scale)
-    ctx.strokeStyle = axisColor
-    ctx.lineWidth = 1.5
+    ctx.lineWidth = 2.25
+    ctx.strokeStyle = '#7dd3fc'
     ctx.beginPath()
     ctx.moveTo(axisX, 0)
     ctx.lineTo(axisX, vh)
+    ctx.stroke()
+    ctx.strokeStyle = '#86efac'
+    ctx.beginPath()
     ctx.moveTo(0, axisY)
     ctx.lineTo(vw, axisY)
     ctx.stroke()
+
+    if (planeLabel) {
+      ctx.save()
+      ctx.fillStyle = 'rgba(233, 213, 255, 0.92)'
+      ctx.font = 'bold 11px system-ui, sans-serif'
+      ctx.fillText(`Sketch · ${planeLabel}`, 10, 18)
+      ctx.restore()
+    }
 
     const drawAxisMarks = () => {
       if (axisLabelStep <= 0 || !Number.isFinite(axisLabelStep)) return
@@ -1217,6 +1216,7 @@ export function Sketch2DCanvas({
     xformSelectionIds,
     sketchRotateDeg,
     sketchScaleFactor,
+    planeLabel,
     activeTool,
     drag,
     scale,
@@ -1236,6 +1236,110 @@ export function Sketch2DCanvas({
   useEffect(() => {
     draw()
   }, [draw])
+
+  const commitOpenPolylineSegment = useCallback(
+    (a: [number, number], b: [number, number]) => {
+      const idA = crypto.randomUUID()
+      const idB = crypto.randomUUID()
+      const eid = crypto.randomUUID()
+      onDesignChange({
+        ...design,
+        points: {
+          ...design.points,
+          [idA]: { x: a[0], y: a[1] },
+          [idB]: { x: b[0], y: b[1] }
+        },
+        entities: [...design.entities, { id: eid, kind: 'polyline', pointIds: [idA, idB], closed: false }]
+      })
+    },
+    [design, onDesignChange]
+  )
+
+  const applyLineNumeric = useCallback(() => {
+    if (!lineStart) return
+    const dx = Number.parseFloat(lineDeltaX)
+    const dy = Number.parseFloat(lineDeltaY)
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+      onSketchHint?.('Enter numeric ΔX and ΔY (mm).')
+      return
+    }
+    const end: [number, number] = [snap(lineStart[0] + dx, gridMm), snap(lineStart[1] + dy, gridMm)]
+    if (Math.hypot(end[0] - lineStart[0], end[1] - lineStart[1]) < 0.25) {
+      onSketchHint?.('Segment length must be greater than ~0.25 mm.')
+      return
+    }
+    commitOpenPolylineSegment(lineStart, end)
+    setLineStart(null)
+    setLineHover(null)
+    onSketchHint?.('Line segment placed.')
+  }, [lineStart, lineDeltaX, lineDeltaY, gridMm, commitOpenPolylineSegment, onSketchHint])
+
+  const syncRectDragFromInputs = useCallback(() => {
+    if (drag?.kind !== 'rect') return
+    const w = Number.parseFloat(rectWIn)
+    const h = Number.parseFloat(rectHIn)
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return
+    const [x1, y1] = drag.a
+    const [x2, y2] = drag.b
+    const sx = x2 >= x1 ? 1 : -1
+    const sy = y2 >= y1 ? 1 : -1
+    setDrag({
+      kind: 'rect',
+      a: drag.a,
+      b: [snap(x1 + sx * w, gridMm), snap(y1 + sy * h, gridMm)]
+    })
+  }, [drag, rectWIn, rectHIn, gridMm])
+
+  const finalizeRectDrag = useCallback(() => {
+    if (drag?.kind !== 'rect') return
+    const [x1, y1] = drag.a
+    const [x2, y2] = drag.b
+    let w = Math.abs(x2 - x1)
+    let h = Math.abs(y2 - y1)
+    if (rectDimFocused.current) {
+      const pw = Number.parseFloat(rectWIn)
+      const ph = Number.parseFloat(rectHIn)
+      if (Number.isFinite(pw) && Number.isFinite(ph) && pw > 0.5 && ph > 0.5) {
+        w = pw
+        h = ph
+      }
+    }
+    if (w > 0.5 && h > 0.5) {
+      const sx = x2 >= x1 ? 1 : -1
+      const sy = y2 >= y1 ? 1 : -1
+      const nx2 = x1 + sx * w
+      const ny2 = y1 + sy * h
+      const rcx = (x1 + nx2) / 2
+      const rcy = (y1 + ny2) / 2
+      const id = crypto.randomUUID()
+      onDesignChange({
+        ...design,
+        entities: [...design.entities, { id, kind: 'rect', cx: rcx, cy: rcy, w, h, rotation: 0 }]
+      })
+      onSketchHint?.('Rectangle placed.')
+    }
+    setDrag(null)
+  }, [drag, rectWIn, rectHIn, design, onDesignChange, onSketchHint])
+
+  const finalizeCircleDrag = useCallback(() => {
+    if (drag?.kind !== 'circle') return
+    let r = drag.r
+    if (circleDimFocused.current) {
+      const pr = Number.parseFloat(circleRIn)
+      if (Number.isFinite(pr) && pr > 0.5) {
+        r = Math.max(0.5, snap(pr, gridMm))
+      }
+    }
+    if (r > 0.5) {
+      const id = crypto.randomUUID()
+      onDesignChange({
+        ...design,
+        entities: [...design.entities, { id, kind: 'circle', cx: drag.c[0], cy: drag.c[1], r }]
+      })
+      onSketchHint?.('Circle placed.')
+      setDrag(null)
+    }
+  }, [drag, circleRIn, design, onDesignChange, onSketchHint, gridMm])
 
   function onWheel(ev: React.WheelEvent) {
     ev.preventDefault()
@@ -1303,12 +1407,12 @@ export function Sketch2DCanvas({
       const tol = Math.max(2, 10 / Math.max(scale, 0.05))
       const hit = pickNearestSketchEdge(design, raw[0], raw[1], tol)
       if (!hit) {
-        onSketchHint?.('Fillet: pick two consecutive polyline edges at a corner (not arc / rect).')
+        onSketchHint?.('Fillet: pick two edges (polyline corner or two arcs sharing an endpoint).')
         return
       }
       const targetEnt = entities.find((e) => e.id === hit.entityId)
-      if (!targetEnt || targetEnt.kind !== 'polyline' || !('pointIds' in targetEnt)) {
-        onSketchHint?.('Fillet: only point-ID polyline edges (not legacy inline polyline).')
+      if (!targetEnt || (targetEnt.kind !== 'polyline' && targetEnt.kind !== 'arc')) {
+        onSketchHint?.('Fillet: currently supports point-ID polyline corners or arc-arc shared endpoints.')
         return
       }
       if (!filletFirst) {
@@ -1586,25 +1690,13 @@ export function Sketch2DCanvas({
     if (activeTool === 'line') {
       if (!lineStart) {
         setLineStart(w)
+        lineDimFocused.current = false
         return
       }
-      const idA = crypto.randomUUID()
-      const idB = crypto.randomUUID()
-      const eid = crypto.randomUUID()
-      onDesignChange({
-        ...design,
-        points: {
-          ...design.points,
-          [idA]: { x: lineStart[0], y: lineStart[1] },
-          [idB]: { x: w[0], y: w[1] }
-        },
-        entities: [
-          ...design.entities,
-          { id: eid, kind: 'polyline', pointIds: [idA, idB], closed: false }
-        ]
-      })
+      commitOpenPolylineSegment(lineStart, w)
       setLineStart(null)
       setLineHover(null)
+      onSketchHint?.('Line segment placed.')
       return
     }
 
@@ -1957,12 +2049,16 @@ export function Sketch2DCanvas({
     }
 
     if (drag?.kind === 'rect') {
-      setDrag({ ...drag, b: p })
+      if (!rectDimFocused.current) {
+        setDrag({ ...drag, b: p })
+      }
     } else if (drag?.kind === 'circle') {
-      const dx = p[0] - drag.c[0]
-      const dy = p[1] - drag.c[1]
-      const r = Math.max(0.5, Math.hypot(dx, dy))
-      setDrag({ ...drag, r })
+      if (!circleDimFocused.current) {
+        const dx = p[0] - drag.c[0]
+        const dy = p[1] - drag.c[1]
+        const r = Math.max(0.5, Math.hypot(dx, dy))
+        setDrag({ ...drag, r })
+      }
     } else if ((activeTool === 'arc' || activeTool === 'arc_center') && arcDraft.length === 2) {
       setArcHover(p)
     } else if (activeTool === 'line' && lineStart) {
@@ -1990,28 +2086,10 @@ export function Sketch2DCanvas({
     }
     if (ev.button !== 0) return
     if (drag?.kind === 'rect') {
-      const [x1, y1] = drag.a
-      const [x2, y2] = drag.b
-      const w = Math.abs(x2 - x1)
-      const h = Math.abs(y2 - y1)
-      if (w > 0.5 && h > 0.5) {
-        const rcx = (x1 + x2) / 2
-        const rcy = (y1 + y2) / 2
-        const id = crypto.randomUUID()
-        onDesignChange({
-          ...design,
-          entities: [...design.entities, { id, kind: 'rect', cx: rcx, cy: rcy, w, h, rotation: 0 }]
-        })
-      }
-      setDrag(null)
+      finalizeRectDrag()
     }
-    if (drag?.kind === 'circle' && drag.r > 0.5) {
-      const id = crypto.randomUUID()
-      onDesignChange({
-        ...design,
-        entities: [...design.entities, { id, kind: 'circle', cx: drag.c[0], cy: drag.c[1], r: drag.r }]
-      })
-      setDrag(null)
+    if (drag?.kind === 'circle') {
+      finalizeCircleDrag()
     }
   }
 
@@ -2182,6 +2260,151 @@ export function Sketch2DCanvas({
           setEntityHoverId(null)
         }}
       />
+      {activeTool === 'line' && lineStart && (
+        <div
+          className="sketch-numeric-popover"
+          role="group"
+          aria-label="Line segment dimensions"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              applyLineNumeric()
+            }
+          }}
+        >
+          <span className="sketch-numeric-popover__title">ΔX / ΔY (mm)</span>
+          <label className="sketch-numeric-popover__field">
+            <span>ΔX</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="sketch-numeric-popover__input"
+              value={lineDeltaX}
+              onChange={(e) => setLineDeltaX(e.target.value)}
+              onFocus={() => {
+                lineDimFocused.current = true
+              }}
+              onBlur={() => {
+                lineDimFocused.current = false
+              }}
+            />
+          </label>
+          <label className="sketch-numeric-popover__field">
+            <span>ΔY</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="sketch-numeric-popover__input"
+              value={lineDeltaY}
+              onChange={(e) => setLineDeltaY(e.target.value)}
+              onFocus={() => {
+                lineDimFocused.current = true
+              }}
+              onBlur={() => {
+                lineDimFocused.current = false
+              }}
+            />
+          </label>
+          <button type="button" className="primary sketch-numeric-popover__apply" onClick={applyLineNumeric}>
+            Apply
+          </button>
+        </div>
+      )}
+      {activeTool === 'rect' && drag?.kind === 'rect' && (
+        <div
+          className="sketch-numeric-popover"
+          role="group"
+          aria-label="Rectangle dimensions"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              finalizeRectDrag()
+            }
+          }}
+        >
+          <span className="sketch-numeric-popover__title">Width × height (mm)</span>
+          <label className="sketch-numeric-popover__field">
+            <span>W</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="sketch-numeric-popover__input"
+              value={rectWIn}
+              onChange={(e) => setRectWIn(e.target.value)}
+              onFocus={() => {
+                rectDimFocused.current = true
+              }}
+              onBlur={() => {
+                rectDimFocused.current = false
+                syncRectDragFromInputs()
+              }}
+            />
+          </label>
+          <label className="sketch-numeric-popover__field">
+            <span>H</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="sketch-numeric-popover__input"
+              value={rectHIn}
+              onChange={(e) => setRectHIn(e.target.value)}
+              onFocus={() => {
+                rectDimFocused.current = true
+              }}
+              onBlur={() => {
+                rectDimFocused.current = false
+                syncRectDragFromInputs()
+              }}
+            />
+          </label>
+          <button type="button" className="primary sketch-numeric-popover__apply" onClick={finalizeRectDrag}>
+            Place
+          </button>
+        </div>
+      )}
+      {activeTool === 'circle' && drag?.kind === 'circle' && (
+        <div
+          className="sketch-numeric-popover"
+          role="group"
+          aria-label="Circle radius"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              finalizeCircleDrag()
+            }
+          }}
+        >
+          <span className="sketch-numeric-popover__title">Radius (mm)</span>
+          <label className="sketch-numeric-popover__field">
+            <span>R</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="sketch-numeric-popover__input"
+              value={circleRIn}
+              onChange={(e) => {
+                const v = e.target.value
+                setCircleRIn(v)
+                const pr = Number.parseFloat(v)
+                if (Number.isFinite(pr) && pr > 0) {
+                  setDrag((d) =>
+                    d?.kind === 'circle' ? { ...d, r: Math.max(0.5, snap(pr, gridMm)) } : d
+                  )
+                }
+              }}
+              onFocus={() => {
+                circleDimFocused.current = true
+              }}
+              onBlur={() => {
+                circleDimFocused.current = false
+              }}
+            />
+          </label>
+          <button type="button" className="primary sketch-numeric-popover__apply" onClick={finalizeCircleDrag}>
+            Place
+          </button>
+        </div>
+      )}
       {activeTool === 'point' && (
         <div className="sketch-toolbar">
           <span className="msg">Click to add a construction point (stored in the sketch point map).</span>
@@ -2217,7 +2440,7 @@ export function Sketch2DCanvas({
       )}
       {activeTool === 'polygon' && (
         <div className="sketch-toolbar">
-          <label className="msg" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <label className="msg label--inline-flex-6">
             Sides
             <input
               type="number"
@@ -2229,7 +2452,7 @@ export function Sketch2DCanvas({
                 if (!Number.isFinite(v)) return
                 setPolygonSides(Math.max(3, Math.min(128, Math.floor(v))))
               }}
-              style={{ width: 56 }}
+              className="input-w-56"
             />
           </label>
           <span className="msg">Center, then corner — closed polyline.</span>
@@ -2247,6 +2470,7 @@ export function Sketch2DCanvas({
             onClick={() => {
               setLineStart(null)
               setLineHover(null)
+              lineDimFocused.current = false
             }}
             disabled={!lineStart}
           >
@@ -2376,10 +2600,8 @@ export function Sketch2DCanvas({
       )}
       {activeTool === 'arc' && (
         <div className="sketch-toolbar">
-          <span className="msg" style={{ marginRight: 8 }}>
-            Start → point on arc → end (non-collinear)
-          </span>
-          <label className="msg" style={{ marginRight: 8 }}>
+          <span className="msg mr-2">Start → point on arc → end (non-collinear)</span>
+          <label className="msg mr-2">
             <input
               type="checkbox"
               checked={arcCloseProfile}
@@ -2394,10 +2616,8 @@ export function Sketch2DCanvas({
       )}
       {activeTool === 'arc_center' && (
         <div className="sketch-toolbar">
-          <span className="msg" style={{ marginRight: 8 }}>
-            Center → start (radius) → end (minor arc on that circle)
-          </span>
-          <label className="msg" style={{ marginRight: 8 }}>
+          <span className="msg mr-2">Center → start (radius) → end (minor arc on that circle)</span>
+          <label className="msg mr-2">
             <input
               type="checkbox"
               checked={arcCloseProfile}

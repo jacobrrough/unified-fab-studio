@@ -1,30 +1,31 @@
 import type { Workspace } from './WorkspaceBar'
+import type {
+  CommandParityStatus,
+  CommandRibbonGroup,
+  CommandShellWorkspace
+} from '../../shared/fusion-style-command-catalog'
 
 /** Mirrors `AppShell` `UtilityTab` — kept here to avoid importing UI components into memory helpers. */
-export type PersistedUtilityTab =
-  | 'project'
-  | 'settings'
-  | 'slice'
-  | 'cam'
-  | 'tools'
-  | 'commands'
-  | 'shortcuts'
+export type PersistedUtilityTab = 'project' | 'settings'
 
-const VALID_UTIL: ReadonlySet<PersistedUtilityTab> = new Set([
-  'project',
-  'settings',
-  'slice',
-  'cam',
-  'tools',
-  'commands',
-  'shortcuts'
-])
+const VALID_UTIL: ReadonlySet<PersistedUtilityTab> = new Set(['project', 'settings'])
 
 const UTILITY_TAB_KEY = 'ufs_utility_tab'
+
+/** Manufacture workspace sub-tabs (Slice / CAM / Tools live here; Plan = manufacture.json editor). */
+export type ManufacturePanelTab = 'plan' | 'slice' | 'cam' | 'tools'
+
+const VALID_MFG_PANEL: ReadonlySet<ManufacturePanelTab> = new Set(['plan', 'slice', 'cam', 'tools'])
+
+const MFG_PANEL_TAB_KEY = 'ufs_manufacture_panel_tab'
 
 const LAST_WORKSPACE_KEY = 'ufs_last_workspace'
 const MFG_OP_FILTER_KEY = 'ufs_mfg_op_filter'
 const MFG_ACTIONABLE_ONLY_KEY = 'ufs_mfg_actionable_only'
+const COMMAND_CATALOG_QUERY_KEY = 'ufs_command_catalog_query'
+const COMMAND_CATALOG_WORKSPACE_KEY = 'ufs_command_catalog_workspace'
+const COMMAND_CATALOG_STATUS_KEY = 'ufs_command_catalog_status'
+const COMMAND_CATALOG_RIBBON_KEY = 'ufs_command_catalog_ribbon'
 
 const VALID: ReadonlySet<Workspace> = new Set(['design', 'assemble', 'manufacture', 'utilities'])
 
@@ -65,6 +66,24 @@ export function writePersistedUtilityTab(t: PersistedUtilityTab): void {
   }
 }
 
+export function readPersistedManufacturePanelTab(fallback: ManufacturePanelTab): ManufacturePanelTab {
+  try {
+    const raw = localStorage.getItem(MFG_PANEL_TAB_KEY)
+    if (raw && VALID_MFG_PANEL.has(raw as ManufacturePanelTab)) return raw as ManufacturePanelTab
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+export function writePersistedManufacturePanelTab(t: ManufacturePanelTab): void {
+  try {
+    localStorage.setItem(MFG_PANEL_TAB_KEY, t)
+  } catch {
+    /* ignore */
+  }
+}
+
 export type ManufactureOpFilter =
   | 'all'
   | 'missing geometry'
@@ -78,6 +97,41 @@ const VALID_MFG_FILTERS: ReadonlySet<ManufactureOpFilter> = new Set([
   'stale geometry',
   'suppressed',
   'non-cam'
+])
+
+const VALID_COMMAND_WORKSPACE_FILTERS: ReadonlySet<CommandShellWorkspace | 'all'> = new Set([
+  'all',
+  'design',
+  'assemble',
+  'manufacture',
+  'utilities'
+])
+const VALID_COMMAND_STATUS_FILTERS: ReadonlySet<CommandParityStatus | 'all'> = new Set([
+  'all',
+  'implemented',
+  'partial',
+  'planned'
+])
+const VALID_COMMAND_RIBBON_FILTERS: ReadonlySet<CommandRibbonGroup | 'all'> = new Set([
+  'all',
+  'sketch_create',
+  'sketch_modify',
+  'sketch_constraint',
+  'sketch_dimension',
+  'solid_create',
+  'solid_modify',
+  'solid_pattern',
+  'surface',
+  'sheet_metal',
+  'plastic',
+  'assemble',
+  'assemble_joint',
+  'manufacture_setup',
+  'manufacture_2d',
+  'manufacture_3d',
+  'drawing',
+  'inspect',
+  'manage'
 ])
 
 export function readPersistedManufactureOpFilter(fallback: ManufactureOpFilter): ManufactureOpFilter {
@@ -112,6 +166,86 @@ export function readPersistedManufactureActionableOnly(fallback: boolean): boole
 export function writePersistedManufactureActionableOnly(v: boolean): void {
   try {
     localStorage.setItem(MFG_ACTIONABLE_ONLY_KEY, v ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPersistedCommandCatalogQuery(fallback = ''): string {
+  try {
+    const raw = localStorage.getItem(COMMAND_CATALOG_QUERY_KEY)
+    if (raw != null) return raw
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+export function writePersistedCommandCatalogQuery(v: string): void {
+  try {
+    localStorage.setItem(COMMAND_CATALOG_QUERY_KEY, v)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPersistedCommandCatalogWorkspace(
+  fallback: CommandShellWorkspace | 'all'
+): CommandShellWorkspace | 'all' {
+  try {
+    const raw = localStorage.getItem(COMMAND_CATALOG_WORKSPACE_KEY)
+    if (raw && VALID_COMMAND_WORKSPACE_FILTERS.has(raw as CommandShellWorkspace | 'all')) {
+      return raw as CommandShellWorkspace | 'all'
+    }
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+export function writePersistedCommandCatalogWorkspace(v: CommandShellWorkspace | 'all'): void {
+  try {
+    localStorage.setItem(COMMAND_CATALOG_WORKSPACE_KEY, v)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPersistedCommandCatalogStatus(fallback: CommandParityStatus | 'all'): CommandParityStatus | 'all' {
+  try {
+    const raw = localStorage.getItem(COMMAND_CATALOG_STATUS_KEY)
+    if (raw && VALID_COMMAND_STATUS_FILTERS.has(raw as CommandParityStatus | 'all')) {
+      return raw as CommandParityStatus | 'all'
+    }
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+export function writePersistedCommandCatalogStatus(v: CommandParityStatus | 'all'): void {
+  try {
+    localStorage.setItem(COMMAND_CATALOG_STATUS_KEY, v)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPersistedCommandCatalogRibbon(fallback: CommandRibbonGroup | 'all'): CommandRibbonGroup | 'all' {
+  try {
+    const raw = localStorage.getItem(COMMAND_CATALOG_RIBBON_KEY)
+    if (raw && VALID_COMMAND_RIBBON_FILTERS.has(raw as CommandRibbonGroup | 'all')) {
+      return raw as CommandRibbonGroup | 'all'
+    }
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+export function writePersistedCommandCatalogRibbon(v: CommandRibbonGroup | 'all'): void {
+  try {
+    localStorage.setItem(COMMAND_CATALOG_RIBBON_KEY, v)
   } catch {
     /* ignore */
   }

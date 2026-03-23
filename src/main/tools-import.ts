@@ -45,6 +45,16 @@ export function parseFusionToolsCsv(content: string): ToolRecord[] {
     (h) => /\bname\b/.test(h) || h.includes('description') || h.includes('tool name')
   )
   const idxFlutes = headerCells.findIndex((h) => h.includes('flute'))
+  const idxStickout = headerCells.findIndex(
+    (h) => /\bstick/.test(h) || h.includes('protrusion') || h.includes('gage') || h.includes('ga[u]ge')
+  )
+  const idxLength = headerCells.findIndex(
+    (h) =>
+      (h.includes('overall') && h.includes('length')) ||
+      /\boal\b/.test(h) ||
+      (h.includes('tool') && h.includes('length') && !h.includes('flute'))
+  )
+  const idxMaterial = headerCells.findIndex((h) => h.includes('material') || h.includes('coating'))
   const tools: ToolRecord[] = []
   for (let i = 1; i < lines.length; i++) {
     const cells = splitCsvLine(lines[i]!)
@@ -56,6 +66,12 @@ export function parseFusionToolsCsv(content: string): ToolRecord[] {
         ? cells[idxName]!.replace(/^"|"$/g, '')
         : `Tool Ø${dia}`
     const flutes = idxFlutes >= 0 ? Number(cells[idxFlutes]) : undefined
+    const stickoutRaw = idxStickout >= 0 ? cells[idxStickout]?.replace(/,/g, '.').replace(/[^\d.-]/g, '') : ''
+    const stickoutMm = Number(stickoutRaw)
+    const lenRaw = idxLength >= 0 ? cells[idxLength]?.replace(/,/g, '.').replace(/[^\d.-]/g, '') : ''
+    const lengthMm = Number(lenRaw)
+    const material =
+      idxMaterial >= 0 && cells[idxMaterial]?.trim().length ? cells[idxMaterial]!.replace(/^"|"$/g, '') : undefined
     tools.push(
       toolRecordSchema.parse({
         id: randomUUID(),
@@ -63,6 +79,9 @@ export function parseFusionToolsCsv(content: string): ToolRecord[] {
         type: 'endmill',
         diameterMm: dia,
         fluteCount: Number.isFinite(flutes) ? flutes : undefined,
+        stickoutMm: Number.isFinite(stickoutMm) && stickoutMm > 0 ? stickoutMm : undefined,
+        lengthMm: Number.isFinite(lengthMm) && lengthMm > 0 ? lengthMm : undefined,
+        material: material?.trim() ? material.trim() : undefined,
         source: 'fusion'
       })
     )
@@ -165,6 +184,25 @@ function parseToolName(block: string, fallbackDia: number): string {
   return `Tool Ø${fallbackDia}`
 }
 
+function parsePositiveMmFromTags(block: string, tagNames: string[]): number | undefined {
+  for (const t of tagNames) {
+    const v = xmlTextContent(t, block)
+    if (!v?.length) continue
+    const n = parseLocalizedNumber(v)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return undefined
+}
+
+function mapHsmToolType(block: string): ToolRecord['type'] {
+  const raw = (xmlTextContent('ToolType', block) ?? xmlTextContent('Type', block) ?? '').toLowerCase()
+  if (/\bball\b|ballnose|ball_nose/.test(raw)) return 'ball'
+  if (/\bdrill\b|\bspot\b|\bcenter\b/.test(raw)) return 'drill'
+  if (/\bface\b|\bshell\b|\bfacemill\b/.test(raw)) return 'face'
+  if (/\bv-?bit\b|\bchamfer\b|\bvbit\b/.test(raw)) return 'vbit'
+  return 'endmill'
+}
+
 /**
  * Best-effort **HSM / hsmlib-style** XML: repeated `Tool` elements with `Diameter` (+ optional `Description`).
  * Not a full schema; tolerates XML namespaces on tags.
@@ -180,6 +218,9 @@ export function parseHsmToolLibraryXml(xml: string): ToolRecord[] {
     if (dia == null) continue
     const name = parseToolName(block, dia)
     const fluteCount = parseFlutes(block)
+    const stickoutMm = parsePositiveMmFromTags(block, ['Stickout', 'StickOut', 'Protrusion', 'GaugeLength'])
+    const lengthMm = parsePositiveMmFromTags(block, ['OverallLength', 'OAL', 'ToolLength', 'Length'])
+    const material = xmlTextContent('Material', block)?.trim() || xmlTextContent('Grade', block)?.trim()
     const key = `${name}:${dia}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -187,9 +228,12 @@ export function parseHsmToolLibraryXml(xml: string): ToolRecord[] {
       toolRecordSchema.parse({
         id: randomUUID(),
         name,
-        type: 'endmill',
+        type: mapHsmToolType(block),
         diameterMm: dia,
         fluteCount,
+        stickoutMm,
+        lengthMm,
+        material: material?.length ? material : undefined,
         source: 'hsm'
       })
     )

@@ -276,6 +276,124 @@ export function circularPatternSketchInstances(
   return { ...d, points, entities }
 }
 
+function buildPolylinePathSamples(
+  d: DesignFileV2,
+  pathEntityId: string,
+  totalInstances: number,
+  closedPath: boolean
+): Array<{ x: number; y: number }> | null {
+  const ent = d.entities.find((e) => e.id === pathEntityId)
+  if (!ent || ent.kind !== 'polyline' || !('pointIds' in ent)) return null
+  const pts = polylinePositions(ent, d.points)
+  if (pts.length < 2) return null
+  const pathPts: [number, number][] = [...pts]
+  if (closedPath && pts.length >= 3) {
+    const a = pts[0]!
+    const b = pts[pts.length - 1]!
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 1e-9) pathPts.push([a[0], a[1]])
+  }
+  let total = 0
+  const segCum: number[] = [0]
+  for (let i = 0; i < pathPts.length - 1; i++) {
+    const a = pathPts[i]!
+    const b = pathPts[i + 1]!
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1])
+    if (len <= 1e-9) continue
+    total += len
+    segCum.push(total)
+  }
+  if (total <= 1e-9 || segCum.length < 2) return null
+  const n = Math.max(1, Math.floor(totalInstances))
+  const out: Array<{ x: number; y: number }> = []
+  for (let k = 0; k < n; k++) {
+    const s = (k / n) * total
+    let seg = 0
+    while (seg + 1 < segCum.length && segCum[seg + 1]! < s) seg++
+    const s0 = segCum[seg]!
+    const s1 = segCum[Math.min(seg + 1, segCum.length - 1)]!
+    const a = pathPts[seg]!
+    const b = pathPts[Math.min(seg + 1, pathPts.length - 1)]!
+    const span = Math.max(1e-9, s1 - s0)
+    const t = Math.min(1, Math.max(0, (s - s0) / span))
+    out.push({
+      x: a[0] + (b[0] - a[0]) * t,
+      y: a[1] + (b[1] - a[1]) * t
+    })
+  }
+  return out
+}
+
+/**
+ * Path pattern: place copies of the original sketch at evenly spaced path samples.
+ * First sample is identity; remaining samples are translation-only copies.
+ */
+export function pathPatternSketchInstances(
+  d: DesignFileV2,
+  pathEntityId: string,
+  totalInstances: number,
+  closedPath: boolean
+): DesignFileV2 {
+  const samples = buildPolylinePathSamples(d, pathEntityId, totalInstances, closedPath)
+  if (!samples || samples.length <= 1) return d
+  const origin = samples[0]!
+  const snapshotEntities = [...d.entities]
+  const snapshotPoints = d.points
+  let points = { ...d.points }
+  let entities = [...d.entities]
+  for (let i = 1; i < samples.length; i++) {
+    const s = samples[i]!
+    const layer = duplicateSketchEntitiesAtOffset(snapshotPoints, snapshotEntities, s.x - origin.x, s.y - origin.y)
+    points = { ...points, ...layer.points }
+    entities = [...entities, ...layer.entities]
+  }
+  return { ...d, points, entities }
+}
+
+/** Drop duplicate consecutive picks and close tiny tails for projected polyline drafting. */
+export function sanitizeProjectedPolylineDraft(
+  raw: Array<{ x: number; y: number }>,
+  epsilonMm = 1e-3
+): { points: Array<{ x: number; y: number }>; closed: boolean } {
+  if (raw.length === 0) return { points: [], closed: false }
+  const pts: Array<{ x: number; y: number }> = []
+  for (const p of raw) {
+    const prev = pts[pts.length - 1]
+    if (!prev || Math.hypot(prev.x - p.x, prev.y - p.y) > epsilonMm) {
+      pts.push({ x: p.x, y: p.y })
+    }
+  }
+  if (pts.length < 2) return { points: pts, closed: false }
+  const compact: Array<{ x: number; y: number }> = []
+  for (const p of pts) {
+    if (compact.length < 2) {
+      compact.push(p)
+      continue
+    }
+    const a = compact[compact.length - 2]!
+    const b = compact[compact.length - 1]!
+    const abx = b.x - a.x
+    const aby = b.y - a.y
+    const bcx = p.x - b.x
+    const bcy = p.y - b.y
+    const lab = Math.hypot(abx, aby)
+    const lbc = Math.hypot(bcx, bcy)
+    if (lab < epsilonMm || lbc < epsilonMm) continue
+    const cross = Math.abs(abx * bcy - aby * bcx)
+    const sin = cross / (lab * lbc)
+    if (sin < 2e-3) {
+      compact[compact.length - 1] = p
+      continue
+    }
+    compact.push(p)
+  }
+  const out = compact.length >= 2 ? compact : pts
+  const first = out[0]!
+  const last = out[out.length - 1]!
+  const closed = out.length >= 3 && Math.hypot(last.x - first.x, last.y - first.y) <= epsilonMm * 20
+  if (closed) out.pop()
+  return { points: out, closed }
+}
+
 /**
  * Miter offset of a closed CCW (or CW) polygon in order. Positive distance moves each edge outward
  * from the polygon interior (standard CCW positive area).

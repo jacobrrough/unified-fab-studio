@@ -45,8 +45,14 @@ export function kernelOpSummary(op: KernelPostSolidOp): string {
       return `press/pull profile#${op.profileIndex} Δ=${op.deltaMm} z0=${op.zStartMm}`
     case 'sweep_profile_path':
       return `sweep profile#${op.profileIndex} pathPts=${op.pathPoints.length} z0=${op.zStartMm}`
+    case 'sweep_profile_path_true':
+      return `sweep(true) profile#${op.profileIndex} pathPts=${op.pathPoints.length} mode=${op.orientationMode}`
     case 'pipe_path':
-      return `pipe pathPts=${op.pathPoints.length} R=${op.outerRadiusMm}${op.wallThicknessMm ? ` t=${op.wallThicknessMm}` : ''}`
+      return `pipe pathPts=${op.pathPoints.length} R=${op.outerRadiusMm}${op.wallThicknessMm ? ` t=${op.wallThicknessMm}` : ''} mode=${op.orientationMode}`
+    case 'thread_wizard':
+      return `thread ${op.standard} ${op.designation} ${op.class} ${op.mode} ${op.hand} start=${op.starts}`
+    case 'thicken_offset':
+      return `thicken(offset) d=${op.distanceMm} side=${op.side}`
     case 'thicken_scale':
       return `thicken(scale) Δ=${op.deltaMm}`
     case 'coil_cut':
@@ -55,6 +61,18 @@ export function kernelOpSummary(op: KernelPostSolidOp): string {
       return `mirror ∪ ${op.plane} @(${op.originXMm},${op.originYMm},${op.originZMm})`
     case 'sheet_tab_union':
       return `sheet tab ${op.lengthMm}×${op.widthMm}×${op.heightMm} mm`
+    case 'sheet_fold':
+      return `sheet fold y=${op.bendLineYMm} R=${op.bendRadiusMm} A=${op.bendAngleDeg}° k=${op.kFactor}`
+    case 'sheet_flat_pattern':
+      return `flat pattern${op.includeBendLines ? ' + bend lines' : ''}`
+    case 'loft_guide_rails':
+      return `loft guide rails n=${op.rails.length}`
+    case 'plastic_rule_fillet':
+      return `plastic rule fillet R=${op.radiusMm}`
+    case 'plastic_boss':
+      return `plastic boss R=${op.outerRadiusMm} h=${op.heightMm}${op.holeRadiusMm ? ` hole=${op.holeRadiusMm}` : ''}`
+    case 'plastic_lip_groove':
+      return `plastic ${op.mode} box depth=${op.depthMm}`
     default:
       return `kernel op ${(op as { kind: string }).kind}`
   }

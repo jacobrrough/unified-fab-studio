@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { ShellInfoBanner } from './ShellInfoBanner'
 import { ShellResizeHandle } from './ShellResizeHandle'
 import { ShellStatusFooter } from './ShellStatusFooter'
 import { useShellResizableColumns } from './useShellResizableColumns'
@@ -6,7 +7,7 @@ import { WorkspaceBar, type Workspace } from './WorkspaceBar'
 
 export type { Workspace }
 
-export type UtilityTab = 'project' | 'settings' | 'slice' | 'cam' | 'tools' | 'commands' | 'shortcuts'
+export type UtilityTab = 'project' | 'settings'
 
 type Props = {
   docTitle: string
@@ -26,13 +27,12 @@ type Props = {
 
 const UTIL_TABS: { id: UtilityTab; label: string }[] = [
   { id: 'project', label: 'Project' },
-  { id: 'settings', label: 'Settings' },
-  { id: 'slice', label: 'Slice' },
-  { id: 'cam', label: 'CAM' },
-  { id: 'tools', label: 'Tools' },
-  { id: 'commands', label: 'Commands' },
-  { id: 'shortcuts', label: 'Shortcuts' }
+  { id: 'settings', label: 'Settings' }
 ]
+
+function utilityTabA11yLabel(tab: { label: string }, index: number): string {
+  return `${tab.label} tab (${index + 1} of ${UTIL_TABS.length})`
+}
 
 export function AppShell({
   docTitle,
@@ -92,15 +92,15 @@ export function AppShell({
   )
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-workspace={workspace}>
       <header className="app-shell-header">
-        <div className="app-shell-header-left">
-          <h1 className="app-title">Unified Fab Studio</h1>
-          <span className="app-doc-name" title={docTitle}>
-            {docTitle}
-          </span>
-        </div>
-        <div className="app-shell-header-mid">
+        <div className="app-shell-header-brand">
+          <div className="app-shell-doc-block">
+            <span className="app-doc-name app-doc-name--primary" title={docTitle}>
+              {docTitle}
+            </span>
+            <span className="app-title-sub">Unified Fab Studio</span>
+          </div>
           <WorkspaceBar workspace={workspace} onChange={onWorkspaceChange} />
         </div>
         <div className="app-shell-header-right">
@@ -117,16 +117,18 @@ export function AppShell({
         </div>
       </header>
 
+      <ShellInfoBanner />
+
       {workspace === 'utilities' && (
         <div className="utility-strip-outer">
           <div
             className="utility-strip"
             role="tablist"
-            aria-label="Utilities workspace tabs"
+            aria-label="File workspace tabs"
             aria-orientation="horizontal"
-            aria-describedby="utility-tablist-kbd-hint"
+            aria-describedby="utility-tablist-kbd-hint utility-tablist-visible-hint"
           >
-            {UTIL_TABS.map((t) => (
+            {UTIL_TABS.map((t, index) => (
               <button
                 key={t.id}
                 id={`util-tab-${t.id}`}
@@ -134,6 +136,9 @@ export function AppShell({
                 role="tab"
                 aria-selected={utilityTab === t.id}
                 aria-controls="utility-workspace-panel"
+                aria-label={utilityTabA11yLabel(t, index)}
+                aria-posinset={index + 1}
+                aria-setsize={UTIL_TABS.length}
                 tabIndex={utilityTab === t.id ? 0 : -1}
                 className={utilityTab === t.id ? 'active' : ''}
                 onClick={() => onUtilityTabChange(t.id)}
@@ -143,6 +148,9 @@ export function AppShell({
               </button>
             ))}
           </div>
+          <p id="utility-tablist-visible-hint" className="utility-strip-hint msg" aria-live="polite">
+            File tabs: arrow keys move focus and selection, Home/End jump, and tabs scroll horizontally on small screens.
+          </p>
           <p id="utility-tablist-kbd-hint" className="sr-only">
             With a tab focused, use Left/Right or Up/Down arrows to move between tabs. Home and End jump to the first or last
             tab.
@@ -151,12 +159,12 @@ export function AppShell({
       )}
 
       <div className="app-shell-body">
-        <aside className="app-browser" aria-label="Browser" style={{ width: browserPx }}>
+        <aside className="app-browser" aria-label="Model browser" style={{ width: browserPx }}>
           {browser}
         </aside>
         <ShellResizeHandle ariaLabel="Resize browser column" onPointerDown={onBrowserResizePointerDown} />
         <div className="app-content-col">
-          <main className="app-content-main" id="app-main" aria-label="Workspace">
+          <main className="app-content-main" id="app-main" aria-label="Workspace canvas">
             {children}
           </main>
           {timeline != null && <div className="app-timeline">{timeline}</div>}

@@ -179,7 +179,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'implemented',
     'CREATE',
-    'Catmull–Rom through knot point IDs; constraints/solver2d apply to those points only (no spline-specific energy)'
+    'Catmull–Rom through knot point IDs; constraints/solver2d apply to those points only (no spline-specific energy). Trim uses dense tessellation for more stable cuts.'
   ),
   c(
     'sk_spline_cp',
@@ -188,7 +188,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'implemented',
     'CREATE',
-    'Uniform cubic B-spline from control point IDs; constraints target control vertices only; curve does not pass through all controls'
+    'Uniform cubic B-spline from control point IDs; constraints target control vertices only; curve does not pass through all controls. Trim uses dense tessellation for more stable cuts.'
   ),
   c(
     'sk_fillet_sk',
@@ -197,7 +197,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'implemented',
     'MODIFY',
-    'Point-ID polyline: two consecutive edges at a corner; radius in ribbon; tessellated arc (closed loop stays extrudable)'
+    'Polyline corner fillet plus arc-arc fillet when two arcs share an endpoint; radius in ribbon; resulting arc chain remains extrudable-friendly.'
   ),
   c(
     'sk_chamfer_sk',
@@ -234,7 +234,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'partial',
     'CREATE',
-    'Click mesh in 3D → orthogonal projection to sketch plane → Commit (≥2) adds open polyline; not true edge topology / curve trim'
+    'Click mesh in 3D → orthogonal projection to sketch plane; Commit sanitizes duplicate picks and auto-closes near-loop drafts. Still not true edge topology / curve trim.'
   ),
   c(
     'sk_mirror_sk',
@@ -252,7 +252,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'implemented',
     'CREATE',
-    'Linear: Pat # + ΔX/ΔY along k×Δ. Circular: pivot + total° + start°, step = total°÷Pat # (matches kernel pattern_circular). Whole sketch.'
+    'Linear: Pat # + ΔX/ΔY along k×Δ. Circular: pivot + total° + start°, step = total°÷Pat # (matches kernel pattern_circular). Path: translation-only samples along selected polyline (optional closed-path sampling).'
   ),
   c(
     'sk_move_sk',
@@ -370,7 +370,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'implemented',
     'CREATE',
-    'Canvas readout; optional parameterKey shows parameters[key]; driving length uses co_distance + same parameterKey in solver — not auto from dim row alone'
+    'Hybrid driving: linear/aligned auto-create distance driver + parameter; optional parameterKey readout remains visible in canvas and list controls.'
   ),
   c(
     'dim_aligned',
@@ -388,7 +388,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'implemented',
     'CREATE',
-    'Two-segment angle; optional parameterKey'
+    'Hybrid driving: angular dimensions now auto-create angle driver + parameter; parameterKey remains visible/editable in canvas/list.'
   ),
   c(
     'dim_radial',
@@ -417,9 +417,9 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'Sweep',
     'solid_create',
     'design',
-    'partial',
+    'implemented',
     'CREATE',
-    'Kernel `sweep_profile_path` partial: segment-wise translation sweep along polyline path (no profile orientation follow yet)'
+    'Kernel `sweep_profile_path_true`: orientation-follow sweep with `frenet`, `path_tangent_lock`, or `fixed_normal` modes'
   ),
   c(
     'so_loft',
@@ -446,18 +446,18 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'Pipe',
     'solid_create',
     'design',
-    'partial',
+    'implemented',
     'CREATE',
-    'Kernel `pipe_path` partial: circular section along polyline path with optional wall thickness; no tangent/orientation follow yet'
+    'Kernel `pipe_path`: circular section path sweep with optional wall thickness and orientation modes (`frenet`, `path_tangent_lock`, `fixed_normal`)'
   ),
   c(
     'so_thicken',
     'Thicken / Offset surface',
     'solid_create',
     'design',
-    'partial',
+    'implemented',
     'CREATE',
-    'Kernel `thicken_scale` surrogate (isotropic scale about body center); not true face-offset/thicken'
+    'Kernel `thicken_offset` true offset request (outward/inward/both) with topology-safe failure reporting'
   ),
 
   // —— Solid MODIFY ——
@@ -502,9 +502,9 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'Thread',
     'solid_modify',
     'design',
-    'partial',
+    'implemented',
     'MODIFY',
-    'Kernel `thread_cosmetic` ring-groove approximation (radius/pitch/length/depth), not a true helical thread; ring count capped at 256 in build'
+    'Kernel `thread_wizard` supports modeled helical cut and cosmetic mode with standard/designation/class/hand/starts metadata'
   ),
   c(
     'so_combine',
@@ -513,7 +513,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'partial',
     'MODIFY',
-    'Kernel: primitives + `boolean_combine_profile` (union/subtract/intersect from profileIndex + extrude depth) in `kernelOps` (CadQuery); profileIndex range-checked vs payload profiles pre-OCC'
+    'Kernel: primitives + `boolean_combine_profile` (union/subtract/intersect from profileIndex + extrude depth) in `kernelOps` (CadQuery); profileIndex range-checked vs payload profiles pre-OCC (clear error if index out of range or zero profiles)'
   ),
   c(
     'so_split',
@@ -611,19 +611,51 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'CREATE',
     'Kernel `sheet_tab_union` + Design ribbon + sheet tab; axis-aligned boss on +Z — no bend k-factor yet'
   ),
-  c('sm_fold', 'Fold', 'sheet_metal', 'design', 'planned', 'MODIFY', 'Kernel stub — not in CadQuery path'),
+  c(
+    'sm_fold',
+    'Fold',
+    'sheet_metal',
+    'design',
+    'implemented',
+    'MODIFY',
+    'Kernel `sheet_fold`: bend metadata (`kFactor`, radius, angle, allowance mode) + fold transform around bend line'
+  ),
   c(
     'sm_flat_pattern',
     'Flat pattern',
     'sheet_metal',
     'design',
-    'planned',
+    'implemented',
     'MODIFY',
-    'Kernel stub — not in CadQuery path'
+    'DXF flat export from Design/part data (outline + bend centerline markers for MVP), plus `sheet_flat_pattern` marker op'
   ),
-  c('pl_rule_fillet', 'Rule fillet (plastic)', 'plastic', 'design', 'planned', 'MODIFY'),
-  c('pl_boss', 'Boss', 'plastic', 'design', 'planned', 'CREATE'),
-  c('pl_lip_groove', 'Lip / groove', 'plastic', 'design', 'planned', 'CREATE'),
+  c(
+    'pl_rule_fillet',
+    'Rule fillet (plastic)',
+    'plastic',
+    'design',
+    'implemented',
+    'MODIFY',
+    'Kernel `plastic_rule_fillet` MVP: all-edge fillet with configurable radius'
+  ),
+  c(
+    'pl_boss',
+    'Boss',
+    'plastic',
+    'design',
+    'implemented',
+    'CREATE',
+    'Kernel `plastic_boss` MVP: cylindrical boss with optional center hole'
+  ),
+  c(
+    'pl_lip_groove',
+    'Lip / groove',
+    'plastic',
+    'design',
+    'implemented',
+    'CREATE',
+    'Kernel `plastic_lip_groove` MVP: rectangular lip union or groove cut'
+  ),
 
   // —— Assemble ——
   c('as_new_comp', 'New component', 'assemble', 'assemble', 'partial', 'ASSEMBLE', 'Add component row'),
@@ -653,7 +685,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'partial',
     'JOINTS',
-    'Optional slider preview mm + axis (world or **parent local** X/Y/Z; viewport stub)'
+    '`jointState.scalarMm` / `jointLimits` + **`assembly:solve`** forward pose; legacy **sliderPreviewMm** migrates into `jointState`; axis (world or parent-local) — **not** multibody IK'
   ),
   c(
     'as_joint_revolute',
@@ -662,9 +694,17 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'partial',
     'JOINTS',
-    'Optional revolute preview angle + axis (world or **parent local** X/Y/Z; viewport subtree stub)'
+    '`jointState.scalarDeg` / `jointLimits` + **`assembly:solve`** forward pose; legacy **revolutePreviewAngleDeg** migrates; axis (world or parent-local) — **not** multibody IK'
   ),
-  c('as_joint_planar', 'Planar joint', 'assemble_joint', 'assemble', 'partial', 'JOINTS', 'Joint enum planar'),
+  c(
+    'as_joint_planar',
+    'Planar joint',
+    'assemble_joint',
+    'assemble',
+    'partial',
+    'JOINTS',
+    '`jointState.uMm` / `vMm` + limits + **`assembly:solve`**; legacy **planarPreview*** migrates — **not** multibody IK'
+  ),
   c(
     'as_joint_cylindrical',
     'Cylindrical joint',
@@ -672,9 +712,17 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'partial',
     'JOINTS',
-    'Optional preview slide mm + spin ° on same axis (world or parent-local; viewport stub)'
+    '`jointState.slideMm` / `spinDeg` + limits + **`assembly:solve`**; legacy **cylindricalPreview*** migrates — **not** multibody IK'
   ),
-  c('as_joint_ball', 'Ball joint', 'assemble_joint', 'assemble', 'partial', 'JOINTS', 'Joint enum ball (spherical)'),
+  c(
+    'as_joint_ball',
+    'Ball joint',
+    'assemble_joint',
+    'assemble',
+    'partial',
+    'JOINTS',
+    '`jointState.rxDeg` / `ryDeg` / `rzDeg` + limits + **`assembly:solve`**; legacy **ballPreview*** migrates — **not** multibody IK'
+  ),
   c(
     'as_joint_universal',
     'Universal (Cardan) joint',
@@ -682,7 +730,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'partial',
     'JOINTS',
-    'Optional two-axis preview angles (axis1 then axis2; viewport stub — not a solver)'
+    '`jointState.angle1Deg` / `angle2Deg` + **`assembly:solve`** (kinematics **simplified** vs full Cardan coupling); legacy **universalPreview*** migrates'
   ),
   c(
     'as_motion_link',
@@ -691,7 +739,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'partial',
     'JOINTS',
-    'linkedInstanceId + motionLinkKind mate/contact/align (stub; UI validation)'
+    'linkedInstanceId + motionLinkKind mate/contact/align — **metadata + validation + summary**; **does not** drive **`assembly:solve`** pose'
   ),
   c(
     'as_bom',
@@ -709,7 +757,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'implemented',
     'ASSEMBLE',
-    'Live panel + copy + Export summary (.txt); IPC assembly:summary — meshPath, explode/motion flags, BOM by partPath, **part paths** / **part numbers** with 2+ active rows, **multiple grounded** warning, joints, **motion link stub** roll-ups (linkedInstanceId / motionLinkKind), ref + externalComponentRef tallies, BOM-notes count, parent **self-ref** + **cycle** flags, distinct PNs, same-transform pairs'
+    'Live panel + copy + Export summary (.txt); IPC assembly:summary — meshPath, explode/motion flags, BOM by partPath, **part paths** / **part numbers** with 2+ active rows, **multiple grounded** warning, joints, **motion link** metadata roll-ups (linkedInstanceId / motionLinkKind; **not** pose drivers), ref + externalComponentRef tallies, BOM-notes count, parent **self-ref** + **cycle** flags, distinct PNs, same-transform pairs'
   ),
   c(
     'as_explode_motion_meta',
@@ -718,7 +766,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'assemble',
     'partial',
     'ASSEMBLE',
-    'assembly.json explodeView + motionStudy; Assembly tab 3D STL preview with explode slider + keyframe scrub/play (+Y °); joint preview stubs (slider/planar/revolute/universal/cylindrical/ball); not a kinematic solver'
+    'Viewport uses **`assembly:solve`** base poses; **explode** + **motion keyframes** are extra preview offsets on STL instances; joint DOFs from `jointState` / legacy previews — **forward kinematics only**, not machine/tool sim'
   ),
   c(
     'as_interference',
@@ -745,27 +793,27 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     '2D contour / face',
     'manufacture_2d',
     'manufacture',
-    'partial',
+    'implemented',
     '2D',
-    'Shipped: cnc_contour + contourPoints + cam-runner validation. Stretch: richer sketch/projected-edge authoring — Manufacture UI hints; hard error when missing/invalid; no STL fallback — docs/MACHINES.md'
+    'cnc_contour + contourPoints + optional multi-depth zStepMm (negative zPassMm) + Manufacture UI (WCS context, sketch derive, lead-in/out). Hard error if geometry missing/invalid; no STL fallback — docs/MACHINES.md'
   ),
   c(
     'mf_op_2d_pocket',
     '2D pocket',
     'manufacture_2d',
     'manufacture',
-    'partial',
+    'implemented',
     '2D',
-    'Shipped: cnc_pocket + contourPoints + ramp/finish options. Stretch: deeper entry/path UX — Manufacture UI; hard error when missing/invalid; no STL fallback — docs/MACHINES.md'
+    'cnc_pocket + contourPoints + ramp/finish/step-down + Manufacture UI. Hard error if geometry missing/invalid; no STL fallback — docs/MACHINES.md'
   ),
   c(
     'mf_op_2d_drill',
     'Drilling',
     'manufacture_2d',
     'manufacture',
-    'partial',
+    'implemented',
     '2D',
-    'Shipped: cnc_drill + drillPoints + machine dialect (Grbl expanded default, G81/G82/G83). Stretch: per-controller peck/retract tuning — Manufacture UI + cam hints; hard error when geometry missing/invalid — docs/MACHINES.md'
+    'cnc_drill + drillPoints + dialect-aware cycles (Grbl expanded default; G81/G82/G83) + peck/dwell/retract UI; docs/MACHINES.md § Drilling'
   ),
   c(
     'mf_op_parallel',
@@ -774,7 +822,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     '3D',
-    'cnc_parallel + CAM tab; G-code unverified — docs/MACHINES.md'
+    'cnc_parallel — built-in parallel finish from STL bounds; cut params from `resolveCamCutParams` (zPassMm, stepover, feeds, safeZ). G-code unverified — docs/MACHINES.md'
   ),
   c(
     'mf_op_waterline',
@@ -783,7 +831,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     '3D',
-    'cnc_waterline — OpenCAMLib Waterline in engines/cam when pip install opencamlib; else built-in parallel finish; G-code unverified — docs/MACHINES.md'
+    'cnc_waterline — OpenCAMLib Waterline when opencamlib; else parallel-finish fallback with IPC hint; same `cam-cut-params` as other 3D kinds. G-code unverified — docs/MACHINES.md'
   ),
   c(
     'mf_op_raster',
@@ -792,7 +840,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     '3D',
-    'cnc_raster — OCL PathDropCutter raster in engines/cam/ocl_toolpath.py when opencamlib; else mesh height-field + ortho bounds fallback; G-code unverified — docs/MACHINES.md'
+    'cnc_raster — OCL PathDropCutter when opencamlib; else mesh height-field then ortho bounds; hints on fallback. Same cut param resolution as parallel/waterline. G-code unverified — docs/MACHINES.md'
   ),
   c(
     'mf_op_contour',
@@ -819,16 +867,16 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     '3D',
-    'cnc_adaptive — OpenCAMLib AdaptiveWaterline when available; else built-in parallel finish; G-code unverified — docs/MACHINES.md'
+    'cnc_adaptive — OpenCAMLib AdaptiveWaterline when opencamlib; else parallel-finish fallback + reason hint; `resolveCamCutParams` drives feeds/stepover/zPassMm. G-code unverified — docs/MACHINES.md'
   ),
   c(
     'mf_op_pencil',
     'Pencil / rest machining',
     'manufacture_3d',
     'manufacture',
-    'planned',
+    'partial',
     '3D',
-    'Deferred stretch: rest machining after adaptive/OCL stability — PARITY_REMAINING_ROADMAP Phase 6'
+    'cnc_pencil — OpenCAMLib PathDropCutter raster with tighter effective stepover (`resolvePencilStepoverMm`, optional `pencilStepoverMm` / `pencilStepoverFactor`); same built-in mesh/bounds raster fallbacks as `cnc_raster`. **Not** automatic rest-stock / leftover detection — output is **unverified** for any machine — docs/MACHINES.md'
   ),
   c(
     'mf_turning',
@@ -846,7 +894,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     'ADDITIVE',
-    'Utilities → Slice (CuraEngine) + `fdm_slice` op; named presets (`balanced` / `draft` / `fine`) in `cura-slice-defaults.ts` → `buildCuraSliceArgs` — Slice tab'
+    'Utilities → Slice + optional extra `-s` JSON + named profiles (`mergeCuraSliceInvocationSettings`); optional machine definition `-j` path in Settings; Slice tab layer summary from `;LAYER` / `;LAYER_COUNT` in G-code; Manufacture `fdm_slice` → Slice with CuraEngine uses `sourceMesh` + same merged settings'
   ),
   c(
     'mf_simulate',
@@ -855,54 +903,54 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     'INSPECT',
-    'No in-app stock-removal or kinematics sim; Manufacture **stub** panel + Utilities CAM **G-code text cues** only (non-physical). External verification required — docs/VERIFICATION.md'
+    'Manufacture **Tier 1** G0/G1 path preview + **Tier 2** 2.5D height-field removal proxy + optional **Tier 3** coarse voxel carve sample (experimental; not swept-volume / not collision-safe / not machine kinematics); Utilities CAM **text cues** remain. **Do not** treat preview as safe to run on hardware — docs/VERIFICATION.md + docs/MACHINES.md'
   ),
 
-  // —— Drawings / documentation (stubs — no 2D drawing sheet pipeline yet) ——
+  // —— Drawings / documentation (Tier A mesh edge projection + title block) ——
   c(
     'dr_new_sheet',
     'New drawing sheet',
     'drawing',
     'utilities',
-    'partial',
+    'implemented',
     'CREATE',
-    'Primary sheet + optional **view placeholders** → `drawing/drawing.json`; exports list labels — no true projection'
+    'Primary sheet + optional **view placeholders** → `drawing/drawing.json`; PDF/DXF run **Tier A** projection from `output/kernel-part.stl` when placeholders exist + Python OK (**no HLR**)'
   ),
   c(
     'dr_base_view',
     'Base view from model',
     'drawing',
     'utilities',
-    'partial',
+    'implemented',
     'CREATE',
-    'Project tab: **+ Base view slot** → **View from** axis + label; PDF/DXF list shows preview text — **no** projected model geometry'
+    'Project tab: **+ Base view slot** → **View from** + label; export projects mesh edges for that axis (`engines/occt/project_views.py`)'
   ),
   c(
     'dr_projected_view',
     'Projected view',
     'drawing',
     'utilities',
-    'partial',
+    'implemented',
     'CREATE',
-    'Project tab: **+ Projected view slot** → **parent** base view + **direction** + label; export lists preview text — **no** projected geometry'
+    'Project tab: **+ Projected view slot** → parent + **direction**; each slot gets its own orthographic projection from the same kernel STL (third-angle layout metadata; Tier A edges)'
   ),
   c(
     'dr_export_pdf',
     'Export drawing PDF',
     'drawing',
     'utilities',
-    'partial',
+    'implemented',
     'FILE',
-    'Title-block PDF (A4); **first sheet** name/scale + view rows (**base** / **projected** metadata) from manifest — **no** projected model geometry'
+    'Title-block PDF (A4); embedded **SVG** linework per view slot when kernel STL + Python succeed; else manifest list + `Build STEP` hint'
   ),
   c(
     'dr_export_dxf',
     'Export drawing DXF',
     'drawing',
     'utilities',
-    'partial',
+    'implemented',
     'FILE',
-    'Placeholder DXF; **first sheet** metadata + view rows in note — **no** projected geometry'
+    'DXF with **PROJECTION** layer lines when kernel STL + Python succeed; else frame + notes (sheet flat-pattern path unchanged when sketch+`sheet_fold` applies)'
   ),
 
   // —— Utilities / inspect / manage ——
@@ -911,18 +959,18 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'Measure',
     'inspect',
     'design',
-    'partial',
+    'implemented',
     'INSPECT',
-    'Design 3D preview: **Measure**, Shift+click two points on the solid (mm). **Esc** clears. Preview mesh only — docs/VERIFICATION.md'
+    'Design 3D: **Measure**, Shift+click two points (mm). Uses **kernel STL** when last build matches current design + features; otherwise **sketch preview mesh**. Status shows source. **Esc** clears — docs/VERIFICATION.md'
   ),
   c(
     'ut_section',
     'Section analysis',
     'inspect',
     'design',
-    'partial',
+    'implemented',
     'INSPECT',
-    'Design 3D preview: **Section**, Y clip slider (world +Y). **Esc** clears. Preview mesh only — docs/VERIFICATION.md'
+    'Design 3D: **Section**, Y clip (world +Y). Same mesh source as **Measure** (kernel when fresh, else preview). **Esc** clears — docs/VERIFICATION.md'
   ),
   c(
     'ut_interference',
@@ -933,8 +981,24 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'INSPECT',
     'Palette switches to **Assemble** — run **Interference check** in the assembly panel; download JSON or save under output/ (same workflow as **as_interference**)'
   ),
-  c('ut_material', 'Physical material', 'manage', 'utilities', 'planned', 'MANAGE'),
-  c('ut_appearance', 'Appearance', 'manage', 'utilities', 'planned', 'MANAGE'),
+  c(
+    'ut_material',
+    'Physical material',
+    'manage',
+    'utilities',
+    'partial',
+    'MANAGE',
+    '**File → Project** — optional material name + density (kg/m³) in `project.json` for local BOM/mass notes; not cloud-backed'
+  ),
+  c(
+    'ut_appearance',
+    'Appearance',
+    'manage',
+    'utilities',
+    'partial',
+    'MANAGE',
+    '**File → Project** — optional appearance notes (finish/color); saved with project'
+  ),
   c(
     'ut_parameters',
     'Parameters',
@@ -953,7 +1017,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'utilities',
     'implemented',
     'TOOLS',
-    '**Ctrl+K** / **⌘K** — modal: Tab wrap, Home/End, **PgUp/PgDn** page through list, scroll active row, empty-search hint; **Utilities → Commands**: labeled filters, search `aria-describedby` stats, empty-filter message + **Reset filters**; switching **into Utilities** from another workspace focuses the tab strip'
+    '**Ctrl+K** / **⌘K** — modal: Tab wrap, Home/End, **PgUp/PgDn** page through list, scroll active row; empty query shows **recent commands first** with discoverability hint; query matching supports token phrases and aliases (open/new/save/tools/cam/slice); non-default palette filters show an inline **Reset filters** action; empty-match state includes **Reset palette filters**; **Utilities → Commands** keeps labeled filters/search guidance with reset + open-palette CTA and persisted search/filter state across refresh'
   ),
   c(
     'ut_keyboard_shortcuts',
@@ -962,12 +1026,21 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'utilities',
     'implemented',
     'TOOLS',
-    'Utilities → Shortcuts tab; Ctrl+Shift+? / ⌘⇧? when not typing; tables use **sr-only captions** per group; **Utilities** tab strip: ←→ / ↑↓ + Home/End when a tab is focused (**roving tabindex**)'
+    'Shortcuts dialog (Ctrl+Shift+? / ⌘⇧? when not typing); **File** and **Manufacture** tab strips support ←→ / ↑↓ + Home/End with position-aware labels'
   ),
 
   // —— File / project (utilities workspace) ——
   c('ut_open', 'Open project', 'manage', 'utilities', 'implemented', 'FILE'),
   c('ut_new', 'New project', 'manage', 'utilities', 'implemented', 'FILE'),
+  c(
+    'ut_new_from_import',
+    'New project from 3D file',
+    'manage',
+    'utilities',
+    'implemented',
+    'FILE',
+    'Pick STL, STEP, or mesh file(s); creates a new project folder and imports into assets/. Uses default projects folder when set.'
+  ),
   c('ut_save', 'Save', 'manage', 'utilities', 'implemented', 'FILE'),
   c(
     'ut_import_3d',
@@ -976,7 +1049,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'utilities',
     'implemented',
     'FILE',
-    'Multi-select in dialog (Ctrl/Shift+click). STL, STEP/STP, OBJ, PLY, GLTF/GLB, 3MF, OFF, DAE → assets/; STEP → CadQuery; mesh → pip install trimesh'
+    '**Design** ribbon **Import 3D…** or **File → Project** — multi-select in dialog (Ctrl/Shift+click). STL, STEP/STP, OBJ, PLY, GLTF/GLB, 3MF, OFF, DAE → assets/; STEP → CadQuery; mesh → pip install trimesh'
   ),
   c(
     'ut_import_stl',
@@ -997,17 +1070,17 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'Same unified dialog; Python + CadQuery required'
   ),
   c('ut_export_stl', 'Export STL (design)', 'manage', 'design', 'implemented', 'FILE'),
-  c('ut_slice', 'Slice (FDM)', 'manufacture_3d', 'utilities', 'partial', 'MANUFACTURE'),
+  c('ut_slice', 'Slice (FDM)', 'manufacture_3d', 'manufacture', 'partial', 'MANUFACTURE'),
   c(
     'ut_cam',
     'Generate CAM',
     'manufacture_3d',
-    'utilities',
+    'manufacture',
     'partial',
     'MANUFACTURE',
     'First CNC op params → feeds/Z/stepover + OCL when installed; else parallel finish; G-code unverified — docs/MACHINES.md'
   ),
-  c('ut_tools', 'Tool library', 'manage', 'utilities', 'implemented', 'MANAGE')
+  c('ut_tools', 'Tool library', 'manage', 'manufacture', 'implemented', 'MANAGE')
 ]
 
 /** Command palette → Design workspace: updates sketch tool or constraint picker when dispatched. */

@@ -16,7 +16,8 @@ export function getManufactureCamRunBlock(kind: string | undefined): { error: st
   if (kind === 'fdm_slice') {
     return {
       error: 'FDM slicing is not available through Generate CAM.',
-      hint: 'Use Make → Slice (CuraEngine) for FDM G-code. The fdm_slice row in manufacture.json records intent only in this build.'
+      hint:
+        'Use Utilities → Slice (CuraEngine) or Manufacture → Slice with CuraEngine on an fdm_slice row (source mesh + merged Cura settings from Settings). fdm_slice is not sent through cam:run / Generate CAM.'
     }
   }
   if (kind === 'export_stl') {

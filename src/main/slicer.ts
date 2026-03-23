@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process'
 import { copyFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { CURA_SLICE_CLI_DEFAULTS, resolveCuraSliceParams, type CuraSliceCliParams } from '../shared/cura-slice-defaults'
+import {
+  CURA_SLICE_CLI_DEFAULTS,
+  curaCliParamsToEngineSettingsMap,
+  resolveCuraSliceParams,
+  type CuraSliceCliParams
+} from '../shared/cura-slice-defaults'
 import { getResourcesRoot } from './paths'
 
 export type SliceRequest = {
@@ -14,6 +19,11 @@ export type SliceRequest = {
   curaDefinitionsPath?: string
   /** Named Cura `-s` bundle; see `cura-slice-defaults.ts` */
   slicePreset?: string | null
+  /**
+   * Full merged Cura `-s` map (Cura setting id → value). When non-empty, used instead of
+   * rebuilding from `slicePreset` alone.
+   */
+  curaEngineSettings?: Record<string, string>
 }
 
 function runProcess(
@@ -43,32 +53,25 @@ function runProcess(
   })
 }
 
+/** Pure helper: `-s` list from a merged Cura settings map. */
+export function buildCuraSliceArgsFromSettingsMap(
+  resourcesRoot: string,
+  req: Pick<SliceRequest, 'definitionPath' | 'inputStlPath' | 'outputGcodePath'>,
+  settings: Map<string, string>
+): string[] {
+  const defPath = req.definitionPath ?? join(resourcesRoot, 'slicer', 'creality_k2_plus.def.json')
+  const flags = [...settings.entries()].flatMap(([k, v]) => ['-s', `${k}=${v}`])
+  return ['slice', '-v', '-j', defPath, ...flags, '-l', req.inputStlPath, '-o', req.outputGcodePath]
+}
+
 /** Pure helper for tests and CLI construction. */
 export function buildCuraSliceArgs(
   resourcesRoot: string,
   req: Pick<SliceRequest, 'definitionPath' | 'inputStlPath' | 'outputGcodePath'>,
   sliceParams?: CuraSliceCliParams
 ): string[] {
-  const defPath = req.definitionPath ?? join(resourcesRoot, 'slicer', 'creality_k2_plus.def.json')
   const d = sliceParams ?? CURA_SLICE_CLI_DEFAULTS
-  return [
-    'slice',
-    '-v',
-    '-j',
-    defPath,
-    '-s',
-    `layer_height=${d.layerHeightMm}`,
-    '-s',
-    `line_width=${d.lineWidthMm}`,
-    '-s',
-    `wall_line_count=${d.wallLineCount}`,
-    '-s',
-    `infill_sparse_density=${d.infillSparseDensity}`,
-    '-l',
-    req.inputStlPath,
-    '-o',
-    req.outputGcodePath
-  ]
+  return buildCuraSliceArgsFromSettingsMap(resourcesRoot, req, curaCliParamsToEngineSettingsMap(d))
 }
 
 /**
@@ -79,7 +82,11 @@ export async function sliceWithCuraEngine(req: SliceRequest): Promise<{ ok: bool
   const resources = getResourcesRoot()
   await mkdir(dirname(req.outputGcodePath), { recursive: true })
 
-  const args = buildCuraSliceArgs(resources, req, resolveCuraSliceParams(req.slicePreset))
+  const merged =
+    req.curaEngineSettings && Object.keys(req.curaEngineSettings).length > 0
+      ? new Map(Object.entries(req.curaEngineSettings))
+      : curaCliParamsToEngineSettingsMap(resolveCuraSliceParams(req.slicePreset))
+  const args = buildCuraSliceArgsFromSettingsMap(resources, req, merged)
 
   const extraEnv: NodeJS.ProcessEnv = {}
   if (req.curaDefinitionsPath) {

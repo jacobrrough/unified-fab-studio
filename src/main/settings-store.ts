@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { appSettingsSchema, type AppSettings } from '../shared/project-schema'
 
 const defaults: AppSettings = {
-  theme: 'dark'
+  theme: 'dark',
+  recentProjectPaths: []
 }
 
 export async function loadSettings(): Promise<AppSettings> {

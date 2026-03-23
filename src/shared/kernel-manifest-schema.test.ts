@@ -64,12 +64,20 @@ describe('kernel-manifest-schema', () => {
     expect(r.success).toBe(false)
   })
 
-  it('rejects invalid payloadVersion', () => {
+  it('accepts payloadVersion 4 and rejects invalid payloadVersion', () => {
+    expect(
+      kernelManifestSchema.safeParse({
+        version: 1,
+        builtAt: 'x',
+        ok: true,
+        payloadVersion: 4
+      }).success
+    ).toBe(true)
     const r = kernelManifestSchema.safeParse({
       version: 1,
       builtAt: 'x',
       ok: true,
-      payloadVersion: 4
+      payloadVersion: 5
     })
     expect(r.success).toBe(false)
   })

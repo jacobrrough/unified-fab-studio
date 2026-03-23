@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { emptyAssembly, type AssemblyFile } from '../../shared/assembly-schema'
-import {
-  DESIGN_RIBBON_COMMAND_IDS,
-  type FusionStyleCommand
-} from '../../shared/fusion-style-command-catalog'
 import type { MachineProfile } from '../../shared/machine-schema'
 import { emptyManufacture, type ManufactureFile } from '../../shared/manufacture-schema'
 import { MESH_IMPORT_FILE_EXTENSIONS, MESH_PYTHON_EXTENSIONS } from '../../shared/mesh-import-formats'
@@ -15,22 +11,26 @@ import {
   type DrawingViewPlaceholder
 } from '../../shared/drawing-sheet-schema'
 import type { ToolLibraryFile } from '../../shared/tool-schema'
-import { resolveCamCutParams } from '../../shared/cam-cut-params'
+import { resolveCamCutParams, resolveManufactureSetupForCam } from '../../shared/cam-cut-params'
+import { mergeCuraSliceInvocationSettings } from '../../shared/cura-slice-defaults'
 import { resolveCamToolDiameterMm } from '../../shared/cam-tool-resolve'
 import { getManufactureCamRunBlock } from '../../shared/manufacture-cam-gate'
 import { formatLoadRejection } from '../../shared/file-parse-errors'
 import { AssemblyWorkspace } from '../assembly/AssemblyWorkspace'
 import { CommandPalette } from '../commands/CommandPalette'
+import { ShortcutsReferenceDialog } from '../commands/ShortcutsReferenceDialog'
+import { createCommandPickHandler, openShortcutsReference } from '../commands/command-dispatch'
 import { useShellKeyboardShortcuts } from '../commands/useShellKeyboardShortcuts'
 import { dispatchDesignCommand } from '../design/design-command-bridge'
 import { DesignSessionProvider } from '../design/DesignSessionContext'
 import { DesignWorkspace } from '../design/DesignWorkspace'
 import { ManufactureWorkspace } from '../manufacture/ManufactureWorkspace'
-import { drawingPaletteStatusFor } from '../commands/drawing-command-status'
 import { AppShell, type UtilityTab } from '../shell/AppShell'
 import {
+  readPersistedManufacturePanelTab,
   readPersistedUtilityTab,
   readPersistedWorkspace,
+  writePersistedManufacturePanelTab,
   writePersistedUtilityTab,
   writePersistedWorkspace
 } from '../shell/workspaceMemory'
@@ -39,13 +39,47 @@ import { PropertiesPanel } from '../shell/PropertiesPanel'
 import { TimelineBar } from '../shell/TimelineBar'
 import type { ShellBrowserSelection } from '../shell/browser-selection'
 import type { Workspace } from '../shell/WorkspaceBar'
+import { joinPath } from '../lib/path-join'
 import { UtilitiesWorkspacePanels } from '../utilities/UtilitiesWorkspacePanels'
+import { SplashScreen } from '../shell/SplashScreen'
+import { SplashSettingsModal } from '../shell/SplashSettingsModal'
 
 const SHOW_PROPS_KEY = 'ufs_show_properties'
+
+function sanitizeProjectFolderName(stem: string): string {
+  const s = stem.trim() || 'import'
+  const cleaned = s.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim()
+  return cleaned.slice(0, 48) || 'import'
+}
+
+function camFallbackReasonLabel(reason: string | undefined): string {
+  switch (reason) {
+    case 'opencamlib_not_installed':
+      return 'OpenCAMLib is not installed for the selected Python'
+    case 'python_spawn_failed':
+      return 'Python could not be started for OpenCAMLib'
+    case 'stl_missing':
+      return 'the staged STL path was missing for OpenCAMLib'
+    case 'stl_read_error':
+      return 'OpenCAMLib could not read the STL'
+    case 'invalid_numeric_params':
+      return 'CAM numeric parameters were invalid for OpenCAMLib'
+    case 'config_error':
+      return 'OpenCAMLib config wiring failed'
+    case 'ocl_runtime_or_empty':
+      return 'OpenCAMLib returned no usable toolpath'
+    case 'unknown_ocl_failure':
+      return 'OpenCAMLib failed for an unknown reason'
+    default:
+      return 'fallback reason not specified'
+  }
+}
 
 export function App() {
   const [workspace, setWorkspace] = useState<Workspace>(() => readPersistedWorkspace('utilities'))
   const [utilityTab, setUtilityTab] = useState<UtilityTab>(() => readPersistedUtilityTab('project'))
+  const [manufacturePanelTab, setManufacturePanelTab] = useState(() => readPersistedManufacturePanelTab('plan'))
+  const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false)
   const [showProperties, setShowProperties] = useState(() => {
     try {
       return localStorage.getItem(SHOW_PROPS_KEY) !== '0'
@@ -74,6 +108,8 @@ export function App() {
   const [drawingExportBusy, setDrawingExportBusy] = useState(false)
   const [drawingFile, setDrawingFile] = useState<DrawingFile>(() => emptyDrawingFile())
   const [designDiskRevision, setDesignDiskRevision] = useState(0)
+  const [splashSettingsOpen, setSplashSettingsOpen] = useState(false)
+  const [splashAppVersion, setSplashAppVersion] = useState<string | null>(null)
 
   const fab = window.fab
 
@@ -166,6 +202,15 @@ export function App() {
   }, [refresh])
 
   useEffect(() => {
+    if (projectDir) return
+    void window.fab.appGetVersion().then(setSplashAppVersion).catch(() => setSplashAppVersion(null))
+  }, [projectDir])
+
+  useEffect(() => {
+    if (projectDir) setSplashSettingsOpen(false)
+  }, [projectDir])
+
+  useEffect(() => {
     try {
       localStorage.setItem(SHOW_PROPS_KEY, showProperties ? '1' : '0')
     } catch {
@@ -173,16 +218,14 @@ export function App() {
     }
   }, [showProperties])
 
-  const openShortcutsReference = useCallback(() => {
-    setWorkspace('utilities')
-    setUtilityTab('shortcuts')
-    setStatus('Keyboard shortcuts — reference tab.')
+  const openShortcutsReferenceHandler = useCallback(() => {
+    openShortcutsReference(setShortcutsDialogOpen, setStatus)
   }, [])
 
   useShellKeyboardShortcuts({
     commandPaletteOpen,
     onToggleCommandPalette: () => setCommandPaletteOpen((o) => !o),
-    onOpenShortcutsReference: openShortcutsReference
+    onOpenShortcutsReference: openShortcutsReferenceHandler
   })
 
   useEffect(() => {
@@ -192,6 +235,10 @@ export function App() {
   useEffect(() => {
     writePersistedUtilityTab(utilityTab)
   }, [utilityTab])
+
+  useEffect(() => {
+    writePersistedManufacturePanelTab(manufacturePanelTab)
+  }, [manufacturePanelTab])
 
   useEffect(() => {
     if (!projectDir) {
@@ -225,30 +272,186 @@ export function App() {
     }
   }, [workspace])
 
-  const activeMachine = useMemo(() => machines.find((x) => x.id === project?.activeMachineId), [machines, project])
+  const recordProjectOpened = useCallback(
+    async (dir: string) => {
+      const cur = await fab.settingsGet()
+      const norm = (s: string) => s.replace(/[/\\]+$/, '').toLowerCase()
+      const nd = norm(dir)
+      const list = [dir, ...(cur.recentProjectPaths ?? []).filter((p) => norm(p) !== nd)].slice(0, 24)
+      const next = await fab.settingsSet({ recentProjectPaths: list, lastProjectPath: dir })
+      setSettings(next)
+    },
+    [fab]
+  )
 
   async function openProjectFolder(): Promise<void> {
     const dir = await fab.projectOpenDir()
     if (!dir) return
-    setProjectDir(dir)
-    const p = await fab.projectRead(dir)
-    setProject(p)
-    setStatus(`Opened project: ${p.name}`)
+    try {
+      const p = await fab.projectRead(dir)
+      setProjectDir(dir)
+      setProject(p)
+      setStatus(`Opened project: ${p.name}`)
+      await recordProjectOpened(dir)
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function openRecentProject(path: string): Promise<void> {
+    try {
+      const p = await fab.projectRead(path)
+      setProjectDir(path)
+      setProject(p)
+      setStatus(`Opened project: ${p.name}`)
+      await recordProjectOpened(path)
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function removeRecentProject(path: string): Promise<void> {
+    const cur = await fab.settingsGet()
+    const norm = (s: string) => s.replace(/[/\\]+$/, '').toLowerCase()
+    const list = (cur.recentProjectPaths ?? []).filter((p) => norm(p) !== norm(path))
+    const next = await fab.settingsSet({ recentProjectPaths: list })
+    setSettings(next)
+    setStatus('Removed from recent projects.')
+  }
+
+  async function chooseProjectsRoot(): Promise<void> {
+    const dir = await fab.projectOpenDir()
+    if (!dir) return
+    const next = await fab.settingsSet({ projectsRoot: dir })
+    setSettings(next)
+    setStatus(`Projects will be created under: ${dir}`)
+  }
+
+  async function clearProjectsRoot(): Promise<void> {
+    const next = await fab.settingsSet({ projectsRoot: undefined })
+    setSettings(next)
+    setStatus('Default projects folder cleared — New project will ask for a folder again.')
   }
 
   async function createProject(): Promise<void> {
-    const dir = await fab.projectOpenDir()
+    const machineId = machines[0]?.id ?? 'creality-k2-plus'
+    const root = settings?.projectsRoot?.trim()
+    let dir: string | null = null
+    if (root) {
+      const folderName = `New-job-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`
+      dir = joinPath(root, folderName)
+    } else {
+      dir = await fab.projectOpenDir()
+    }
+    if (!dir) return
+    try {
+      const p = await fab.projectCreate({ dir, name: 'New job', machineId })
+      setProjectDir(dir)
+      setProject(p)
+      setWorkspace('design')
+      setStatus(
+        root
+          ? `Created project in ${dir}`
+          : 'Created new project. Pick a sketch plane to start drawing.'
+      )
+      await recordProjectOpened(dir)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => dispatchDesignCommand('sk_choose_plane'))
+      })
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /**
+   * Pick mesh file(s), create a new project folder, import into assets/, open Design workspace.
+   * Uses default projects folder when set; otherwise asks for a project folder (same as New project).
+   */
+  async function createProjectFromImport(): Promise<void> {
+    const defaultPath = settings?.projectsRoot?.trim() || undefined
+    const files = await fab.dialogOpenFiles(
+      [
+        {
+          name: '3D models (STL, STEP, OBJ, PLY, GLTF, GLB, 3MF, OFF, DAE)',
+          extensions: [...MESH_IMPORT_FILE_EXTENSIONS]
+        }
+      ],
+      defaultPath
+    )
+    if (!files.length) return
+    const py = settings?.pythonPath?.trim() ?? 'python'
+    const needsPy = files.some((f) => pathNeedsPythonForMeshImport(f))
+    if (needsPy && !settings?.pythonPath?.trim()) {
+      setStatus(
+        'Set Python path (File → Settings) for STEP (CadQuery) and mesh formats OBJ / PLY / GLTF / GLB / 3MF / OFF / DAE (pip install trimesh).'
+      )
+      return
+    }
+    const firstLabel = meshImportFileLabel(files[0]!)
+    const stem = firstLabel.replace(/\.[^.]+$/, '') || 'import'
+    const safe = sanitizeProjectFolderName(stem)
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const root = settings?.projectsRoot?.trim()
+    let dir: string | null = null
+    if (root) {
+      dir = joinPath(root, `${safe}-${stamp}`)
+    } else {
+      dir = await fab.projectOpenDir()
+    }
     if (!dir) return
     const machineId = machines[0]?.id ?? 'creality-k2-plus'
-    const p = await fab.projectCreate({ dir, name: 'New job', machineId })
-    setProjectDir(dir)
-    setProject(p)
-    setWorkspace('design')
-    setStatus('Created new project. Pick a sketch plane to start drawing.')
-    // Defer until Design workspace mounts and subscribes to command events.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => dispatchDesignCommand('sk_choose_plane'))
-    })
+    const projectName = `Imported: ${firstLabel}`
+    try {
+      const p = await fab.projectCreate({ dir, name: projectName, machineId })
+      const reports: ImportHistoryEntry[] = []
+      const meshRelPaths: string[] = []
+      const errors: string[] = []
+      for (const f of files) {
+        const r = await fab.assetsImportMesh(dir, f, py)
+        if (!r.ok) {
+          errors.push(`${meshImportFileLabel(f)}: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
+          continue
+        }
+        meshRelPaths.push(r.relativePath)
+        reports.push(r.report)
+      }
+      if (errors.length && reports.length === 0) {
+        setProjectDir(dir)
+        setProject(p)
+        setWorkspace('design')
+        await recordProjectOpened(dir)
+        setStatus(
+          `Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}. Empty project created at ${dir}.`
+        )
+        return
+      }
+      if (reports.length === 0) return
+      const next: ProjectFile = {
+        ...p,
+        meshes: [...new Set([...p.meshes, ...meshRelPaths])],
+        importHistory: [...(p.importHistory ?? []), ...reports],
+        updatedAt: new Date().toISOString()
+      }
+      await fab.projectSave(dir, next)
+      setProjectDir(dir)
+      setProject(next)
+      await recordProjectOpened(dir)
+      setWorkspace('design')
+      const okMsg =
+        reports.length === 1
+          ? (() => {
+              const rep = reports[0]!
+              const w = rep.warnings?.length ? ` ${rep.warnings.join(' ')}` : ''
+              return `Created project and imported ${rep.sourceFileName} → ${rep.assetRelativePath}.${w}`
+            })()
+          : `Created project and imported ${reports.length} file(s)${reports.length < files.length ? ` (${files.length - reports.length} failed)` : ''}.`
+      const errTail = errors.length
+        ? ` — failed: ${errors.slice(0, 2).join(' · ')}${errors.length > 2 ? '…' : ''}`
+        : ''
+      setStatus(`${okMsg}${errTail} Project saved.`)
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
   }
 
   async function saveProject(): Promise<void> {
@@ -264,19 +467,22 @@ export function App() {
 
   async function runSlice(): Promise<void> {
     if (!projectDir || !project || !settings?.curaEnginePath) {
-      setStatus('Set CuraEngine path in Settings and open a project.')
+      setStatus('Set CuraEngine path under File → Settings and open a project.')
       return
     }
     const stl = await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }])
     if (!stl) return
     const staged = await fab.stlStage(projectDir, stl)
     const out = `${projectDir}\\output\\k2_slice.gcode`
+    const curaEngineSettings = Object.fromEntries(mergeCuraSliceInvocationSettings(settings))
     const r = await fab.sliceCura({
       stlPath: staged,
       outPath: out,
       curaEnginePath: settings.curaEnginePath,
       definitionsPath: settings.curaDefinitionsPath,
-      slicePreset: settings.curaSlicePreset ?? 'balanced'
+      definitionPath: settings.curaMachineDefinitionPath?.trim() || undefined,
+      slicePreset: settings.curaSlicePreset ?? 'balanced',
+      curaEngineSettings
     })
     if (!r.ok) {
       setSliceOut(r.stderr ?? 'Unknown slicer error')
@@ -315,8 +521,7 @@ export function App() {
     const py = settings?.pythonPath ?? 'python'
     const out = `${projectDir}\\output\\cam.nc`
     const planCnc = sideMfg?.operations.find((o) => !o.suppressed && o.kind.startsWith('cnc_'))
-    const setupForCam =
-      sideMfg?.setups.find((s) => s.machineId === machineId) ?? sideMfg?.setups[0]
+    const setupForCam = sideMfg ? resolveManufactureSetupForCam(sideMfg, machineId) : undefined
     const toolDiameterMm = resolveCamToolDiameterMm({ operation: planCnc, tools })
     const cut = resolveCamCutParams(planCnc)
     const r = await fab.camRun({
@@ -341,10 +546,17 @@ export function App() {
       setStatus('CAM failed — see G-code output panel.')
       return
     }
-    setCamLastHint(r.hint ?? '')
+    const lastRunSummary = r.engine.fallbackApplied
+      ? `Engine: built-in fallback (after OpenCAMLib). Reason: ${camFallbackReasonLabel(r.engine.fallbackReason)}.`
+      : `Engine: ${r.engine.usedEngine === 'ocl' ? 'OpenCAMLib' : 'built-in'}.`
+    setCamLastHint([lastRunSummary, r.hint].filter(Boolean).join(' '))
     setCamOut(r.gcode ?? '')
-    const engineMsg = `CAM done (${r.usedEngine}).`
-    const primary = r.hint ? `${r.hint} ${engineMsg}` : engineMsg
+    const engineMsg = r.engine.fallbackApplied
+      ? `CAM used built-in fallback after OpenCAMLib attempt (${camFallbackReasonLabel(r.engine.fallbackReason)}).`
+      : r.engine.usedEngine === 'ocl'
+        ? 'CAM ran with OpenCAMLib.'
+        : 'CAM ran with built-in engine.'
+    const primary = r.hint ? `${engineMsg} ${r.hint}` : engineMsg
     setStatus(`${primary} Unverified for real machines — docs/MACHINES.md.`)
   }
 
@@ -360,24 +572,36 @@ export function App() {
   }
 
   async function importModel3D(): Promise<void> {
-    if (!projectDir) return
-    const files = await fab.dialogOpenFiles([
-      {
-        name: '3D models (STL, STEP, OBJ, PLY, GLTF, GLB, 3MF, OFF, DAE)',
-        extensions: [...MESH_IMPORT_FILE_EXTENSIONS]
-      }
-    ])
+    if (!projectDir) {
+      setStatus('Open a project first (File → Open project folder).')
+      return
+    }
+    if (!project) {
+      setStatus('Project data not loaded — try opening the project folder again.')
+      return
+    }
+    const defaultPath =
+      projectDir.trim().length > 0 ? projectDir : settings?.projectsRoot?.trim() || undefined
+    const files = await fab.dialogOpenFiles(
+      [
+        {
+          name: '3D models (STL, STEP, OBJ, PLY, GLTF, GLB, 3MF, OFF, DAE)',
+          extensions: [...MESH_IMPORT_FILE_EXTENSIONS]
+        }
+      ],
+      defaultPath
+    )
     if (!files.length) return
     const py = settings?.pythonPath?.trim() ?? 'python'
     const needsPy = files.some((f) => pathNeedsPythonForMeshImport(f))
     if (needsPy && !settings?.pythonPath?.trim()) {
       setStatus(
-        'Set Python path (Utilities → Settings) for STEP (CadQuery) and mesh formats OBJ / PLY / GLTF / GLB / 3MF / OFF / DAE (pip install trimesh).'
+        'Set Python path (File → Settings) for STEP (CadQuery) and mesh formats OBJ / PLY / GLTF / GLB / 3MF / OFF / DAE (pip install trimesh).'
       )
       return
     }
     const reports: ImportHistoryEntry[] = []
-    const meshPaths: string[] = []
+    const meshRelPaths: string[] = []
     const errors: string[] = []
     for (const f of files) {
       const r = await fab.assetsImportMesh(projectDir, f, py)
@@ -385,20 +609,26 @@ export function App() {
         errors.push(`${meshImportFileLabel(f)}: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
         continue
       }
-      meshPaths.push(r.stlPath)
+      meshRelPaths.push(r.relativePath)
       reports.push(r.report)
     }
-    if (reports.length) {
-      setProject((p) =>
-        p
-          ? {
-              ...p,
-              meshes: [...new Set([...p.meshes, ...meshPaths])],
-              importHistory: [...(p.importHistory ?? []), ...reports],
-              updatedAt: new Date().toISOString()
-            }
-          : p
-      )
+    if (errors.length && reports.length === 0) {
+      setStatus(`Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}`)
+      return
+    }
+    if (!reports.length) return
+    const next: ProjectFile = {
+      ...project,
+      meshes: [...new Set([...project.meshes, ...meshRelPaths])],
+      importHistory: [...(project.importHistory ?? []), ...reports],
+      updatedAt: new Date().toISOString()
+    }
+    setProject(next)
+    try {
+      await fab.projectSave(projectDir, next)
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+      return
     }
     const okMsg =
       reports.length === 1
@@ -408,14 +638,10 @@ export function App() {
             return `Imported ${rep.sourceFileName} → ${rep.assetRelativePath}.${w}`
           })()
         : `Imported ${reports.length} file(s)${reports.length < files.length ? ` (${files.length - reports.length} failed)` : ''}.`
-    if (errors.length && reports.length === 0) {
-      setStatus(`Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}`)
-      return
-    }
     const errTail = errors.length
       ? ` — failed: ${errors.slice(0, 2).join(' · ')}${errors.length > 2 ? '…' : ''}`
       : ''
-    setStatus(`${okMsg}${errTail}`)
+    setStatus(`${okMsg}${errTail} Project saved.`)
   }
 
   async function importTools(kind: 'csv' | 'json' | 'fusion' | 'fusion_csv'): Promise<void> {
@@ -474,138 +700,31 @@ export function App() {
 
   const docTitle = project?.name ?? 'No document'
 
-  function handleCommandPick(cmd: FusionStyleCommand): void {
-    switch (cmd.id) {
-      case 'ut_open':
-        void openProjectFolder()
-        return
-      case 'ut_new':
-        void createProject()
-        return
-      case 'ut_save':
-        void saveProject()
-        return
-      case 'ut_import_3d':
-      case 'ut_import_stl':
-      case 'ut_import_step':
-        void importModel3D()
-        return
-      case 'ut_slice':
-        setWorkspace('utilities')
-        setUtilityTab('slice')
-        setStatus('Slice — use the Slice tab.')
-        return
-      case 'ut_cam':
-        setWorkspace('utilities')
-        setUtilityTab('cam')
-        setStatus('CAM — use the CAM tab.')
-        return
-      case 'ut_tools':
-        setWorkspace('utilities')
-        setUtilityTab('tools')
-        setStatus('Tool library')
-        return
-      case 'ut_command_palette':
-        setCommandPaletteOpen(true)
-        setStatus('Command palette — search or pick a command.')
-        return
-      case 'ut_keyboard_shortcuts':
-        setWorkspace('utilities')
-        setUtilityTab('shortcuts')
-        setStatus('Keyboard shortcuts — reference tab.')
-        return
-      case 'ut_interference':
-        setWorkspace('assemble')
-        setStatus(
-          'Interference — switched to **Assemble**. Open **Interference check** in the assembly panel, then download JSON or save a report under output/.'
-        )
-        return
-      case 'as_interference':
-        setWorkspace('assemble')
-        setStatus(
-          `${cmd.label} — Assembly: **Interference check**, then download JSON or **Save report to output/** (project folder).`
-        )
-        return
-      case 'as_summary':
-        setWorkspace('assemble')
-        setStatus(`${cmd.label} — click Assembly summary in the assembly panel.`)
-        return
-      case 'dr_export_pdf':
-        setWorkspace('utilities')
-        setUtilityTab('project')
-        void exportDrawing('pdf')
-        return
-      case 'dr_export_dxf':
-        setWorkspace('utilities')
-        setUtilityTab('project')
-        void exportDrawing('dxf')
-        return
-      case 'dr_new_sheet':
-      case 'dr_base_view':
-      case 'dr_projected_view':
-        setWorkspace('utilities')
-        setUtilityTab('project')
-        setStatus(drawingPaletteStatusFor(cmd))
-        return
-      case 'ut_measure':
-      case 'ut_section':
-        setWorkspace('design')
-        dispatchDesignCommand(cmd.id)
-        setStatus(
-          cmd.id === 'ut_measure'
-            ? 'Measure — 3D preview: enable Measure, Shift+click two points on the solid. Esc clears.'
-            : 'Section — 3D preview: enable Section, drag Y clip. Esc clears.'
-        )
-        return
-      default:
-        break
-    }
-    if (cmd.ribbon === 'drawing') {
-      setWorkspace('utilities')
-      setUtilityTab('project')
-      setStatus(
-        `${cmd.label} — PDF/DXF export + view **placeholders** on the Project tab; true projected geometry is not implemented.`
-      )
-      return
-    }
-    if (cmd.workspace === 'design') {
-      setWorkspace('design')
-      if (DESIGN_RIBBON_COMMAND_IDS.has(cmd.id)) {
-        dispatchDesignCommand(cmd.id)
-      }
-      if (cmd.id === 'ut_parameters') {
-        setStatus(
-          'Parameters — Design ribbon **Parameters** group: add/rename/delete keys and values; Utilities → Project **Export/Import parameters JSON** for file merge.'
-        )
-      } else {
-        setStatus(
-          cmd.status === 'implemented'
-            ? `${cmd.label} — Design workspace (ribbon synced when applicable).`
-            : `${cmd.label} — not implemented yet; Design workspace for closest tools.`
-        )
-      }
-      return
-    }
-    if (cmd.workspace === 'assemble') {
-      setWorkspace('assemble')
-      setStatus(`${cmd.label} — Assemble workspace.`)
-      return
-    }
-    if (cmd.workspace === 'manufacture') {
-      setWorkspace('manufacture')
-      setStatus(`${cmd.label} — Manufacture workspace.`)
-      return
-    }
-    setWorkspace('utilities')
-    setStatus(`${cmd.label} — Utilities — pick a tab (Project, Settings, …).`)
-  }
+  const handleCommandPick = useMemo(
+    () =>
+      createCommandPickHandler({
+        setWorkspace,
+        setUtilityTab,
+        setManufacturePanelTab,
+        setShortcutsDialogOpen,
+        setStatus,
+        setCommandPaletteOpen,
+        openProjectFolder,
+        createProject,
+        createProjectFromImport,
+        saveProject,
+        importModel3D,
+        exportDrawing
+      }),
+    [openProjectFolder, createProject, createProjectFromImport, saveProject, importModel3D, exportDrawing]
+  )
 
   const headerActions = (
     <div className="app-file-actions">
       <button
         type="button"
         className="secondary"
-        title="Search commands (Ctrl+K / ⌘K) · Ctrl+Shift+? shortcuts"
+        title="Search commands (Ctrl+K / ⌘K), browse recents, and open shortcuts with Ctrl+Shift+?"
         onClick={() => setCommandPaletteOpen(true)}
       >
         Commands
@@ -616,6 +735,14 @@ export function App() {
       <button type="button" className="secondary" onClick={() => void createProject()}>
         New…
       </button>
+      <button
+        type="button"
+        className="secondary"
+        title="Create a project folder and import STL / STEP / mesh into assets/"
+        onClick={() => void createProjectFromImport()}
+      >
+        New from 3D…
+      </button>
       <button type="button" className="primary" onClick={() => void saveProject()} disabled={!project}>
         Save
       </button>
@@ -623,8 +750,10 @@ export function App() {
   )
 
   let workspaceBody: ReactNode
-  if (workspace === 'design') {
-    workspaceBody = <DesignWorkspace />
+  if (!projectDir) {
+    workspaceBody = null
+  } else if (workspace === 'design') {
+    workspaceBody = <DesignWorkspace onImport3D={() => void importModel3D()} />
   } else if (workspace === 'assemble') {
     workspaceBody = <AssemblyWorkspace projectDir={projectDir} onStatus={setStatus} onAfterSave={reloadSidecars} />
   } else if (workspace === 'manufacture') {
@@ -633,8 +762,23 @@ export function App() {
         projectDir={projectDir}
         machines={machines}
         tools={tools}
+        activeMachineId={project?.activeMachineId ?? null}
         onStatus={setStatus}
         onAfterSave={reloadSidecars}
+        panelTab={manufacturePanelTab}
+        onPanelTabChange={setManufacturePanelTab}
+        settings={settings}
+        project={project}
+        sliceOut={sliceOut}
+        camOut={camOut}
+        camLastHint={camLastHint}
+        importText={importText}
+        onImportTextChange={setImportText}
+        onSaveSettingsField={saveSettingsField}
+        onRunSlice={runSlice}
+        onRunCam={runCam}
+        onImportTools={importTools}
+        onImportToolLibraryFromFile={importToolLibraryFromFile}
       />
     )
   } else {
@@ -645,26 +789,21 @@ export function App() {
         settings={settings}
         project={project}
         projectDir={projectDir}
-        tools={tools}
-        activeMachine={activeMachine}
-        sliceOut={sliceOut}
-        camOut={camOut}
-        camLastHint={camLastHint}
-        importText={importText}
-        onImportTextChange={setImportText}
+        projectsRoot={settings?.projectsRoot}
+        recentProjectPaths={settings?.recentProjectPaths ?? []}
         drawingExportBusy={drawingExportBusy}
         onOpenProjectFolder={openProjectFolder}
         onCreateProject={createProject}
+        onCreateProjectFromImport={createProjectFromImport}
         onSaveProject={saveProject}
         onProjectChange={setProject}
         onSaveSettingsField={saveSettingsField}
-        onRunSlice={runSlice}
-        onRunCam={runCam}
+        onChooseProjectsRoot={chooseProjectsRoot}
+        onClearProjectsRoot={clearProjectsRoot}
+        onOpenRecentProject={openRecentProject}
+        onRemoveRecentProject={removeRecentProject}
         onImportMesh={importModel3D}
-        onImportTools={importTools}
-        onImportToolLibraryFromFile={importToolLibraryFromFile}
         onExportDrawing={exportDrawing}
-        onCatalogStatus={setStatus}
         drawingFile={drawingFile}
         onPatchDrawingFirstSheet={patchDrawingFirstSheet}
         onSaveDrawingManifest={saveDrawingManifest}
@@ -676,61 +815,106 @@ export function App() {
 
   return (
     <div className="app">
+      <ShortcutsReferenceDialog open={shortcutsDialogOpen} onClose={() => setShortcutsDialogOpen(false)} />
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onPick={handleCommandPick}
       />
-      <DesignSessionProvider
-        projectDir={projectDir}
-        designDiskRevision={designDiskRevision}
-        onStatus={setStatus}
-        onExportedStl={(path) => {
-          setProject((p) =>
-            p ? { ...p, meshes: [...new Set([...p.meshes, path])], updatedAt: new Date().toISOString() } : p
-          )
-        }}
-      >
-        <AppShell
-          docTitle={docTitle}
-          headerActions={headerActions}
-          workspace={workspace}
-          onWorkspaceChange={setWorkspace}
-          utilityTab={utilityTab}
-          onUtilityTabChange={setUtilityTab}
-          browser={
-            <BrowserPanel
-              workspace={workspace}
-              projectDir={projectDir}
-              asm={sideAsm}
-              mfg={sideMfg}
-              shellSelection={shellSelection}
-              onShellSelection={setShellSelection}
-            />
-          }
-          timeline={workspace === 'design' ? <TimelineBar /> : null}
-          properties={
-            <PropertiesPanel workspace={workspace} asm={sideAsm} mfg={sideMfg} shellSelection={shellSelection} />
-          }
-          showProperties={showProperties}
-          onToggleProperties={() => setShowProperties((v) => !v)}
-          statusText={status}
+      {!projectDir ? (
+        <>
+          <SplashScreen
+            recentProjectPaths={settings?.recentProjectPaths ?? []}
+            lastProjectPath={settings?.lastProjectPath}
+            statusMessage={status}
+            onOpenCommands={() => setCommandPaletteOpen(true)}
+            onOpenSettings={() => setSplashSettingsOpen(true)}
+            onOpenProject={openProjectFolder}
+            onOpenRecent={openRecentProject}
+            onRemoveRecent={removeRecentProject}
+            onNewProject={createProject}
+            onNewFromImport={createProjectFromImport}
+            onResumeLast={() => {
+              const p = settings?.lastProjectPath?.trim()
+              if (p) void openRecentProject(p)
+            }}
+          />
+          <SplashSettingsModal
+            open={splashSettingsOpen}
+            onClose={() => setSplashSettingsOpen(false)}
+            settings={settings}
+            projectsRoot={settings?.projectsRoot}
+            appVersion={splashAppVersion}
+            onSaveSettingsField={saveSettingsField}
+            onChooseProjectsRoot={chooseProjectsRoot}
+            onClearProjectsRoot={clearProjectsRoot}
+          />
+        </>
+      ) : (
+        <DesignSessionProvider
+          projectDir={projectDir}
+          designDiskRevision={designDiskRevision}
+          assetMeshRelPaths={project?.meshes}
+          onStatus={setStatus}
+          onExportedStl={(absolutePath) => {
+            setProject((p) => {
+              if (!p || !projectDir) return p
+              const root = projectDir.replace(/[/\\]+$/, '')
+              const nPath = absolutePath.replace(/\\/g, '/')
+              const nRoot = root.replace(/\\/g, '/')
+              const rel =
+                nPath.toLowerCase().startsWith(nRoot.toLowerCase() + '/')
+                  ? nPath.slice(nRoot.length + 1)
+                  : absolutePath
+              return {
+                ...p,
+                meshes: [...new Set([...p.meshes, rel])],
+                updatedAt: new Date().toISOString()
+              }
+            })
+          }}
         >
-          <div className="workspace-canvas-fill">
-            {workspace === 'utilities' ? (
-              <div
-                role="tabpanel"
-                id="utility-workspace-panel"
-                aria-labelledby={`util-tab-${utilityTab}`}
-              >
-                {workspaceBody}
-              </div>
-            ) : (
-              workspaceBody
-            )}
-          </div>
-        </AppShell>
-      </DesignSessionProvider>
+          <AppShell
+            docTitle={docTitle}
+            headerActions={headerActions}
+            workspace={workspace}
+            onWorkspaceChange={setWorkspace}
+            utilityTab={utilityTab}
+            onUtilityTabChange={setUtilityTab}
+            browser={
+              <BrowserPanel
+                workspace={workspace}
+                projectDir={projectDir}
+                asm={sideAsm}
+                mfg={sideMfg}
+                shellSelection={shellSelection}
+                onShellSelection={setShellSelection}
+              />
+            }
+            timeline={workspace === 'design' ? <TimelineBar /> : null}
+            properties={
+              <PropertiesPanel workspace={workspace} asm={sideAsm} mfg={sideMfg} shellSelection={shellSelection} />
+            }
+            showProperties={showProperties}
+            onToggleProperties={() => setShowProperties((v) => !v)}
+            statusText={status}
+          >
+            <div className="workspace-canvas-fill">
+              {workspace === 'utilities' ? (
+                <div
+                  role="tabpanel"
+                  id="utility-workspace-panel"
+                  aria-labelledby={`util-tab-${utilityTab}`}
+                >
+                  {workspaceBody}
+                </div>
+              ) : (
+                workspaceBody
+              )}
+            </div>
+          </AppShell>
+        </DesignSessionProvider>
+      )}
     </div>
   )
 }

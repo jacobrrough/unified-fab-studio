@@ -24,7 +24,7 @@ export const APP_KEYBOARD_SHORTCUT_GROUPS: AppShortcutGroup[] = [
         action: 'Keyboard shortcuts (this reference)',
         keysWin: 'Ctrl+Shift+?',
         keysMac: '⌘⇧?',
-        context: 'Opens Utilities → Shortcuts; ignored while focus is in a text field'
+        context: 'Opens shortcuts dialog; ignored while focus is in a text field'
       }
     ]
   },
@@ -34,6 +34,7 @@ export const APP_KEYBOARD_SHORTCUT_GROUPS: AppShortcutGroup[] = [
     rows: [
       { action: 'Close palette', keysWin: 'Esc', keysMac: 'Esc' },
       { action: 'Move selection', keysWin: '↑ / ↓', keysMac: '↑ / ↓' },
+      { action: 'Page through results', keysWin: 'PgUp / PgDn', keysMac: 'PgUp / PgDn' },
       { action: 'Jump to first / last result', keysWin: 'Home / End', keysMac: 'Home / End' },
       { action: 'Run highlighted command', keysWin: 'Enter', keysMac: 'Return' },
       {
@@ -41,6 +42,42 @@ export const APP_KEYBOARD_SHORTCUT_GROUPS: AppShortcutGroup[] = [
         keysWin: 'Tab',
         keysMac: 'Tab',
         context: 'Focus wraps inside the palette'
+      }
+    ]
+  },
+  {
+    id: 'file_tabs',
+    title: 'File workspace (tab strip)',
+    rows: [
+      {
+        action: 'Next / previous tab',
+        keysWin: '← / → or ↑ / ↓',
+        keysMac: '← / → or ↑ / ↓',
+        context: 'When a File tab is focused (Project, Settings)'
+      },
+      {
+        action: 'First / last tab',
+        keysWin: 'Home / End',
+        keysMac: 'Home / End',
+        context: 'File tab strip'
+      }
+    ]
+  },
+  {
+    id: 'manufacture_tabs',
+    title: 'Manufacture workspace (tab strip)',
+    rows: [
+      {
+        action: 'Next / previous tab',
+        keysWin: '← / → or ↑ / ↓',
+        keysMac: '← / → or ↑ / ↓',
+        context: 'When a Manufacture tab is focused (Plan, Slice, CAM, Tools)'
+      },
+      {
+        action: 'First / last tab',
+        keysWin: 'Home / End',
+        keysMac: 'Home / End',
+        context: 'Manufacture tab strip'
       }
     ]
   },
@@ -53,6 +90,12 @@ export const APP_KEYBOARD_SHORTCUT_GROUPS: AppShortcutGroup[] = [
         keysWin: 'Esc',
         keysMac: 'Esc',
         context: 'After clicking a point/segment slot in the ribbon'
+      },
+      {
+        action: 'Clear 3D Measure / Section picks',
+        keysWin: 'Esc',
+        keysMac: 'Esc',
+        context: 'When Measure or Section is active under 3D preview'
       }
     ]
   }

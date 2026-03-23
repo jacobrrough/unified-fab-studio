@@ -16,6 +16,8 @@ The Electron main process writes a JSON config (STL path, strategy, Z step, step
 - **Windows:** use a venv aligned with that range, e.g. `py -3.10 -m venv .venv` then `.venv\Scripts\pip install opencamlib`.
 - **STL checks:** Zero-byte files are rejected with **`stl_read_error`** before OpenCAMLib loads (same exit code as unreadable meshes).
 - **Fallback:** If `opencamlib` is missing, import fails, STL read fails, or no toolpath is produced, **`cam:run`** uses TypeScript fallbacks (parallel finish and/or mesh raster — see `src/main/cam-runner.ts`).
+- **`cnc_pencil`:** Uses the same **`raster`** strategy in this script; the main process passes a **tighter `stepoverMm`** (`resolvePencilStepoverMm` in `src/shared/cam-cut-params.ts`) than a standard `cnc_raster` job.
+- **Fallback diagnostics:** successful `cam:run` responses include engine outcome metadata (`requestedEngine`, `usedEngine`, `fallbackApplied`, normalized `fallbackReason`) so renderer copy can clearly explain OCL vs built-in behavior.
 - **Safety:** Lines are still run through the machine **Handlebars** post (`resources/posts/`). Output remains **unverified** until the operator checks post, units, and clearances (`docs/MACHINES.md`).
 - **Renderer:** After a successful **`cam:run`**, **Utilities → CAM** can show optional **Last run** copy plus **Preview G-code analysis** (text-only motion/bounds stats — not stock removal or machine kinematics). See `src/shared/cam-simulation-preview.ts`.
 

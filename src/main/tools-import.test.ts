@@ -49,6 +49,18 @@ describe('parseFusionToolsCsv', () => {
     expect(tools[0]!.name).toContain('Rough')
     expect(tools[1]!.diameterMm).toBeCloseTo(3.175)
   })
+
+  it('maps stickout, overall length, and material columns when present', () => {
+    const csv = [
+      'Name,Tool Diameter (mm),Stickout (mm),Overall tool length (mm),Material',
+      'T1,6,18,50,Carbide'
+    ].join('\n')
+    const tools = parseFusionToolsCsv(csv)
+    expect(tools).toHaveLength(1)
+    expect(tools[0]!.stickoutMm).toBe(18)
+    expect(tools[0]!.lengthMm).toBe(50)
+    expect(tools[0]!.material).toBe('Carbide')
+  })
 })
 
 describe('parseHsmToolLibraryXml', () => {
@@ -62,6 +74,42 @@ describe('parseHsmToolLibraryXml', () => {
     expect(tools[0]!.diameterMm).toBe(4)
     expect(tools[0]!.source).toBe('hsm')
     expect(tools[1]!.diameterMm).toBeCloseTo(6.35)
+  })
+
+  it('maps extended HSM fields and tool type', () => {
+    const xml = `<Tool>
+      <Description>Ball finisher</Description>
+      <ToolType>Ball nose end mill</ToolType>
+      <Diameter>3</Diameter>
+      <Stickout>12.5</Stickout>
+      <OverallLength>38</OverallLength>
+      <Material>Carbide</Material>
+    </Tool>`
+    const tools = parseHsmToolLibraryXml(xml)
+    expect(tools).toHaveLength(1)
+    expect(tools[0]!.type).toBe('ball')
+    expect(tools[0]!.stickoutMm).toBeCloseTo(12.5)
+    expect(tools[0]!.lengthMm).toBe(38)
+    expect(tools[0]!.material).toBe('Carbide')
+  })
+
+  it('skips Tool blocks without a positive diameter', () => {
+    const xml = `<Lib>
+      <Tool><Description>No dia</Description></Tool>
+      <Tool><Description>Ok</Description><Diameter>2</Diameter></Tool>
+      <Tool><Description>Bad</Description><Diameter>0</Diameter></Tool>
+    </Lib>`
+    const tools = parseHsmToolLibraryXml(xml)
+    expect(tools).toHaveLength(1)
+    expect(tools[0]!.name).toBe('Ok')
+    expect(tools[0]!.diameterMm).toBe(2)
+  })
+
+  it('dedupes identical name+diameter pairs', () => {
+    const xml = `<Tool><Description>Same</Description><Diameter>4</Diameter></Tool>
+      <Tool><Description>Same</Description><Diameter>4</Diameter></Tool>`
+    const tools = parseHsmToolLibraryXml(xml)
+    expect(tools).toHaveLength(1)
   })
 })
 
@@ -80,5 +128,13 @@ describe('inferToolRecordsFromFileBuffer', () => {
     const tools = inferToolRecordsFromFileBuffer('MyLib.hsmlib', buf)
     expect(tools).toHaveLength(1)
     expect(tools[0]!.name).toBe('Z')
+  })
+
+  it('reads gzipped tpgz by extension', () => {
+    const xml = '<Tool><Description>Tpgz</Description><Diameter>6</Diameter></Tool>'
+    const buf = gzipSync(Buffer.from(xml, 'utf-8'))
+    const tools = inferToolRecordsFromFileBuffer('vendor.tpgz', buf)
+    expect(tools).toHaveLength(1)
+    expect(tools[0]!.diameterMm).toBe(6)
   })
 })

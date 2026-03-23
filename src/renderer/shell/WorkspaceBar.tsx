@@ -7,22 +7,44 @@ type Props = {
   onChange: (w: Workspace) => void
 }
 
-const ITEMS: { id: Workspace; label: string }[] = [
-  { id: 'design', label: 'Design' },
-  { id: 'assemble', label: 'Assemble' },
-  { id: 'manufacture', label: 'Manufacture' },
-  { id: 'utilities', label: 'Utilities' }
+const ITEMS: { id: Workspace; label: string; title: string; ariaLabel: string }[] = [
+  {
+    id: 'design',
+    label: 'Design',
+    title: 'Design — parametric sketches, solids, and 3D preview',
+    ariaLabel: 'Design workspace: sketches, features, and 3D model'
+  },
+  {
+    id: 'assemble',
+    label: 'Assemble',
+    title: 'Assemble — components, joints, and interference',
+    ariaLabel: 'Assemble workspace: components and joints'
+  },
+  {
+    id: 'manufacture',
+    label: 'Manufacture',
+    title: 'Manufacture — setups, CAM, slicing, and tools',
+    ariaLabel: 'Manufacture workspace: CAM, slice, and tool library'
+  },
+  {
+    id: 'utilities',
+    label: 'File',
+    title: 'File — project folder, settings, drawings, and parameters',
+    ariaLabel: 'File workspace: project and application settings'
+  }
 ]
 
 export const WorkspaceBar = memo(function WorkspaceBar({ workspace, onChange }: Props) {
   return (
-    <nav className="workspace-bar" aria-label="Workspace">
+    <nav className="workspace-bar workspace-bar--fusion" aria-label="Workspace">
       {ITEMS.map((it) => (
         <button
           key={it.id}
           type="button"
           className={workspace === it.id ? 'active' : ''}
           aria-current={workspace === it.id ? 'page' : undefined}
+          aria-label={it.ariaLabel}
+          title={it.title}
           onClick={() => onChange(it.id)}
         >
           {it.label}

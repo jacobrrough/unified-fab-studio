@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  computeNegativeZDepthPasses,
   generateContour2dLines,
   generateDrill2dLines,
   generateMeshHeightRasterLines,
@@ -9,6 +10,18 @@ import {
   heightAtXyFromTriangles,
   minRampRunForMaxAngleMm
 } from './cam-local'
+
+describe('computeNegativeZDepthPasses', () => {
+  it('returns single level for non-negative Z', () => {
+    expect(computeNegativeZDepthPasses(3, 2)).toEqual([3])
+    expect(computeNegativeZDepthPasses(0, 2)).toEqual([0])
+  })
+
+  it('steps into negative Z ending at target', () => {
+    expect(computeNegativeZDepthPasses(-6, 2)).toEqual([-2, -4, -6])
+    expect(computeNegativeZDepthPasses(-5, 2)).toEqual([-2, -4, -5])
+  })
+})
 
 describe('generateParallelFinishLines', () => {
   it('emits zigzag G0/G1 moves within bounds', () => {

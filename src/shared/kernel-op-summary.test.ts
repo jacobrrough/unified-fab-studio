@@ -106,6 +106,18 @@ describe('kernelOpSummary', () => {
     ).toContain('sweep profile#0')
     expect(
       kernelOpSummary({
+        kind: 'sweep_profile_path_true',
+        profileIndex: 0,
+        pathPoints: [
+          [0, 0],
+          [2, 0]
+        ],
+        zStartMm: 0,
+        orientationMode: 'frenet'
+      })
+    ).toContain('sweep(true)')
+    expect(
+      kernelOpSummary({
         kind: 'pipe_path',
         pathPoints: [
           [0, 0],
@@ -113,15 +125,41 @@ describe('kernelOpSummary', () => {
         ],
         outerRadiusMm: 2,
         wallThicknessMm: 0.5,
-        zStartMm: 0
+        zStartMm: 0,
+        orientationMode: 'frenet'
       })
-    ).toContain('pipe pathPts=2')
+    ).toContain('mode=frenet')
     expect(
       kernelOpSummary({
         kind: 'thicken_scale',
         deltaMm: 1.2
       })
     ).toContain('thicken(scale)')
+    expect(
+      kernelOpSummary({
+        kind: 'thicken_offset',
+        distanceMm: 1.2,
+        side: 'both'
+      })
+    ).toContain('thicken(offset)')
+    expect(
+      kernelOpSummary({
+        kind: 'thread_wizard',
+        centerXMm: 0,
+        centerYMm: 0,
+        majorRadiusMm: 4,
+        pitchMm: 1.25,
+        lengthMm: 10,
+        depthMm: 0.6,
+        zStartMm: 0,
+        hand: 'right',
+        mode: 'modeled',
+        standard: 'ISO',
+        designation: 'M8x1.25',
+        class: '6g',
+        starts: 1
+      })
+    ).toContain('thread ISO')
     expect(
       kernelOpSummary({
         kind: 'coil_cut',
@@ -154,5 +192,38 @@ describe('kernelOpSummary', () => {
         zStartMm: 1
       })
     ).toContain('profile#2')
+    expect(
+      kernelOpSummary({
+        kind: 'sheet_fold',
+        bendLineYMm: 5,
+        bendRadiusMm: 1,
+        bendAngleDeg: 90,
+        kFactor: 0.44,
+        bendAllowanceMode: 'k_factor'
+      })
+    ).toContain('sheet fold')
+    expect(
+      kernelOpSummary({
+        kind: 'sheet_flat_pattern',
+        includeBendLines: true
+      })
+    ).toContain('flat pattern')
+    expect(
+      kernelOpSummary({
+        kind: 'loft_guide_rails',
+        rails: [
+          [
+            [0, 0],
+            [3, 0]
+          ]
+        ]
+      })
+    ).toContain('guide rails')
+    expect(
+      kernelOpSummary({
+        kind: 'plastic_rule_fillet',
+        radiusMm: 1
+      })
+    ).toContain('plastic rule fillet')
   })
 })

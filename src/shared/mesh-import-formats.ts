@@ -10,7 +10,9 @@ export const MESH_IMPORT_FILE_EXTENSIONS = [
   '3mf',
   /** Tier B: common trimesh loaders (no extra binary deps in typical installs). */
   'off',
-  'dae'
+  'dae',
+  /** Often needs trimesh + assimp / pyassimp in the same Python env — may fail with `mesh_import_failed`. */
+  'fbx'
 ] as const
 
 export type MeshImportFileExtension = (typeof MESH_IMPORT_FILE_EXTENSIONS)[number]
@@ -23,5 +25,6 @@ export const MESH_PYTHON_EXTENSIONS = new Set<string>([
   'glb',
   '3mf',
   'off',
-  'dae'
+  'dae',
+  'fbx'
 ])

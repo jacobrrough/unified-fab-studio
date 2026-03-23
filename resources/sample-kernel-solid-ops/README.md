@@ -36,13 +36,16 @@ Default **`part/features.json`**: rectangular extrude (10 mm) + **`pattern_recta
 | `features.split-halfspace.example.json` | `split_keep_halfspace` (X, offset 0, keep positive) | default |
 | `features.split-halfspace-negative-offset.example.json` | `split_keep_halfspace` (Y, offset 5 mm, keep negative) | default |
 | `features.transform-translate.example.json` | `transform_translate` | default |
-| `features.thicken-scale.example.json` | `thicken_scale` | default |
+| `features.thicken-scale.example.json` | `thicken_scale` (legacy surrogate) | default |
+| `features.thicken-offset.example.json` | `thicken_offset` (true offset request) | default |
 | `features.boolean-combine-profile.example.json` | `boolean_combine_profile` | **rect + circle** |
 | `features.hole-from-profile.example.json` | `hole_from_profile` (`through_all`) | **rect + circle** |
 | `features.hole-from-profile-depth.example.json` | `hole_from_profile` (`depth` + `depthMm`) | **rect + circle** |
 | `features.press-pull-profile.example.json` | `press_pull_profile` | default |
-| `features.thread-cosmetic.example.json` | `thread_cosmetic` (kernel ≤256 ring cuts) | default |
-| `features.sweep-profile-path.example.json` | `sweep_profile_path` | default |
+| `features.thread-cosmetic.example.json` | `thread_cosmetic` (legacy compatibility, maps to cosmetic thread wizard) | default |
+| `features.thread-wizard.example.json` | `thread_wizard` | default |
+| `features.sweep-profile-path.example.json` | `sweep_profile_path` (legacy compatibility) | default |
+| `features.sweep-profile-path-true.example.json` | `sweep_profile_path_true` | default |
 | `features.pipe-path.example.json` | `pipe_path` | default |
 | `features.coil-cut.example.json` | `coil_cut` (kernel ≤1024 ring instances) | default |
 | `features.sheet-tab-union.example.json` | `sheet_tab_union` | default |

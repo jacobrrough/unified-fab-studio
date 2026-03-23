@@ -24,7 +24,8 @@ export type DrawingManifestPanelProps = {
 }
 
 /**
- * Utilities → Project: `drawing/drawing.json` first-sheet metadata and view placeholder slots (labels only — no 2D projection).
+ * File → Project: `drawing/drawing.json` first-sheet metadata, view slots, and optional per-view **layout** (mm on sheet).
+ * PDF/DXF export runs **Tier A** mesh-edge projection when `output/kernel-part.stl` + Python succeed.
  */
 export function DrawingManifestPanel({
   projectDir,
@@ -125,7 +126,7 @@ export function DrawingManifestPanel({
       className="drawing-manifest-panel"
       aria-labelledby="util-drawing-manifest-heading"
     >
-      <h3 id="util-drawing-manifest-heading" className="subh util-section-heading" style={{ marginTop: '1rem' }}>
+      <h3 id="util-drawing-manifest-heading" className="subh util-section-heading drawing-manifest-h3">
         Drawing manifest
       </h3>
       {!projectDir ? (
@@ -135,13 +136,22 @@ export function DrawingManifestPanel({
       ) : null}
       <p className="msg util-panel-intro">
         Optional <code>drawing/drawing.json</code>: sheet <strong>name</strong> and <strong>scale</strong> feed PDF/DXF title
-        blocks. <strong>View placeholders</strong> carry <strong>labels</strong> plus <strong>view direction</strong> metadata
-        for the export shell — still <strong>no</strong> 2D projection from the 3D model (preview text only).
+        blocks. <strong>View placeholders</strong> set <strong>labels</strong> and <strong>view axes</strong> used by{' '}
+        <code>engines/occt/project_views.py</code> to project <code>output/kernel-part.stl</code> edges into the export (Tier A
+        — no hidden-line removal). Run <strong>Build STEP (kernel)</strong> in Design first.
+      </p>
+      <p className="msg drawing-manifest-clarity">
+        Optional JSON field <code>layout</code> per placeholder (<code>originXMM</code>, <code>originYMM</code>,{' '}
+        <code>widthMM</code>, <code>heightMM</code>) overrides default tile positions on the sheet. Tier B OCC hidden-line views
+        are not implemented yet.
+      </p>
+      <p className="msg util-output-placeholder" role="status">
+        If kernel STL or Python is missing, export still succeeds with title block + manifest text only.
       </p>
       <div id={announceId} className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {announce}
       </div>
-      <div className="row" style={{ marginTop: '0.5rem' }}>
+      <div className="row row--mt-sm">
         <label htmlFor="util-drawing-sheet-name">
           Primary sheet name
           <input
@@ -177,19 +187,19 @@ export function DrawingManifestPanel({
       </div>
       <button
         type="button"
-        className="secondary"
-        style={{ marginTop: '0.5rem' }}
+        className="secondary stack-section--sm"
         disabled={!projectDir}
         onClick={() => void onSaveDrawingManifest()}
       >
         Save drawing manifest
       </button>
-      <fieldset
-        className="drawing-manifest-placeholders-fieldset"
-        style={{ marginTop: '0.75rem', border: '1px solid var(--border)', borderRadius: 6, padding: '0.65rem 0.75rem' }}
-      >
+      <fieldset className="drawing-manifest-placeholders-fieldset drawing-callout">
         <legend className="util-fieldset-legend">View placeholders</legend>
-        <div className="row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+        <p className="msg drawing-manifest-placeholder-help" id="util-drawing-placeholder-help">
+          Add <strong>Base</strong> for a primary view label (with a direction), then add <strong>Projected</strong> slots that
+          point to a base parent + direction. These remain metadata placeholders for downstream drafting.
+        </p>
+        <div className="row row--gap-sm">
           <button
             type="button"
             className="secondary"
@@ -215,8 +225,15 @@ export function DrawingManifestPanel({
             Clear view slots
           </button>
         </div>
+        <p className="msg msg-p-tight">
+          Base and projected slots are metadata-only entries used by current PDF/DXF templates.
+        </p>
         {placeholders.length > 0 ? (
-          <ul className="tools drawing-manifest-placeholder-list" aria-label="Drawing view placeholders" style={{ marginTop: '0.5rem' }}>
+          <ul
+            className="tools drawing-manifest-placeholder-list stack-section--sm"
+            aria-label="Drawing view placeholders"
+            aria-describedby="util-drawing-placeholder-help"
+          >
             {placeholders.map((v) => (
               <li key={v.id} className="drawing-manifest-placeholder-item">
                 <span className="drawing-manifest-kind" aria-hidden="true">
@@ -234,7 +251,7 @@ export function DrawingManifestPanel({
                   />
                 </label>
                 {v.kind === 'base' ? (
-                  <label className="drawing-manifest-axis" style={{ marginLeft: '0.5rem' }}>
+                  <label className="drawing-manifest-axis ml-2">
                     <span className="sr-only">View from axis</span>
                     <select
                       value={v.viewFrom ?? 'front'}
@@ -252,7 +269,7 @@ export function DrawingManifestPanel({
                   </label>
                 ) : (
                   <>
-                    <label className="drawing-manifest-axis" style={{ marginLeft: '0.5rem' }}>
+                    <label className="drawing-manifest-axis ml-2">
                       <span className="sr-only">Parent base view</span>
                       <select
                         value={v.parentPlaceholderId ?? ''}
@@ -273,7 +290,7 @@ export function DrawingManifestPanel({
                           ))}
                       </select>
                     </label>
-                    <label className="drawing-manifest-axis" style={{ marginLeft: '0.35rem' }}>
+                    <label className="drawing-manifest-axis ml-1">
                       <span className="sr-only">Projection direction</span>
                       <select
                         value={v.projectionDirection ?? 'right'}
@@ -295,8 +312,7 @@ export function DrawingManifestPanel({
                 )}
                 <button
                   type="button"
-                  className="secondary"
-                  style={{ marginLeft: '0.5rem', fontSize: '0.8rem' }}
+                  className="secondary drawing-manifest-remove"
                   onClick={() => removeSlot(v.id)}
                 >
                   Remove
@@ -305,7 +321,7 @@ export function DrawingManifestPanel({
             ))}
           </ul>
         ) : (
-          <p className="msg" style={{ marginTop: '0.5rem', marginBottom: 0 }} role="status">
+          <p className="msg stack-section--sm mb-0" role="status">
             No view placeholders yet. Add a slot when the sheet name is set.
           </p>
         )}

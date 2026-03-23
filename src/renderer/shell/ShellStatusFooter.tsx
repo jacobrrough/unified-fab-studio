@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { commandPaletteShortcutLabel } from '../../shared/app-keyboard-shortcuts'
+import { USER_VISIBLE } from './userVisibleStrings'
 import {
   readDiscoverabilityHintDismissed,
   writeDiscoverabilityHintDismissed
@@ -26,7 +27,8 @@ export function ShellStatusFooter({ statusText }: Props) {
       {!hintDismissed ? (
         <div className="shell-discoverability-hint" role="note">
           <span>
-            Tip: press <kbd className="shell-kbd">{keys}</kbd> to open the command palette.
+            {USER_VISIBLE.commandPaletteHint} <kbd className="shell-kbd">{keys}</kbd>{' '}
+            {USER_VISIBLE.commandPaletteHintTail}
           </span>
           <button
             type="button"

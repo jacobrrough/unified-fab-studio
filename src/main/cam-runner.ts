@@ -3,6 +3,7 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { MachineProfile } from '../shared/machine-schema'
 import {
+  computeNegativeZDepthPasses,
   generateContour2dLines,
   generateDrill2dLines,
   generateMeshHeightRasterLines,
@@ -10,6 +11,7 @@ import {
   generatePocket2dLines,
   generateParallelFinishLines
 } from './cam-local'
+import { resolvePencilStepoverMm } from '../shared/cam-cut-params'
 import { getEnginesRoot } from './paths'
 import { renderPost } from './post-process'
 import { collectBinaryStlTriangles, isLikelyAsciiStl, parseBinaryStl } from './stl'
@@ -37,8 +39,32 @@ export type CamJobConfig = {
 }
 
 export type CamRunResult =
-  | { ok: true; gcode: string; usedEngine: 'ocl' | 'builtin'; hint?: string }
+  | {
+      ok: true
+      gcode: string
+      usedEngine: 'ocl' | 'builtin'
+      engine: CamEngineOutcome
+      hint?: string
+    }
   | { ok: false; error: string; hint?: string }
+
+export type CamFallbackReason =
+  | 'invalid_numeric_params'
+  | 'stl_missing'
+  | 'config_error'
+  | 'stl_read_error'
+  | 'opencamlib_not_installed'
+  | 'ocl_runtime_or_empty'
+  | 'python_spawn_failed'
+  | 'unknown_ocl_failure'
+
+export type CamEngineOutcome = {
+  requestedEngine: 'ocl' | 'builtin'
+  usedEngine: 'ocl' | 'builtin'
+  fallbackApplied: boolean
+  fallbackReason?: CamFallbackReason
+  fallbackDetail?: string
+}
 
 export type ReadStlBufferForCamResult =
   | { ok: true; buf: Buffer }
@@ -97,7 +123,7 @@ export async function readStlBufferForCam(stlPath: string): Promise<ReadStlBuffe
 export function manufactureKindUsesOclStrategy(kind: string | undefined): 'waterline' | 'adaptive_waterline' | 'raster' | null {
   if (kind === 'cnc_waterline') return 'waterline'
   if (kind === 'cnc_adaptive') return 'adaptive_waterline'
-  if (kind === 'cnc_raster') return 'raster'
+  if (kind === 'cnc_raster' || kind === 'cnc_pencil') return 'raster'
   return null
 }
 
@@ -336,7 +362,7 @@ async function tryOclToolpath(job: CamJobConfig, strategy: string): Promise<{
 
 /** Maps `ocl_toolpath.py` stdout (JSON error lines) to operator-facing fallback hints. Exported for tests. */
 export function builtinOclFailureHint(stdout: string, operationKind: string | undefined): string | undefined {
-  const raster = operationKind === 'cnc_raster'
+  const raster = operationKind === 'cnc_raster' || operationKind === 'cnc_pencil'
   const waterline = operationKind === 'cnc_waterline'
   const adaptive = operationKind === 'cnc_adaptive'
   if (stdout.includes('invalid_numeric_params')) {
@@ -404,6 +430,27 @@ export function builtinOclFailureHint(stdout: string, operationKind: string | un
   return undefined
 }
 
+/** Normalized OCL failure category used by IPC/renderer fallback messaging. */
+export function resolveOclFallbackReason(stdout: string): CamFallbackReason | undefined {
+  if (stdout.includes('invalid_numeric_params')) return 'invalid_numeric_params'
+  if (stdout.includes('stl_missing')) return 'stl_missing'
+  if (
+    stdout.includes('config_not_found') ||
+    stdout.includes('config_read_error') ||
+    stdout.includes('config_not_utf8') ||
+    stdout.includes('invalid_config_json') ||
+    stdout.includes('invalid_config_shape') ||
+    stdout.includes('config_missing_keys')
+  ) {
+    return 'config_error'
+  }
+  if (stdout.includes('stl_read_error')) return 'stl_read_error'
+  if (stdout.includes('opencamlib_not_installed')) return 'opencamlib_not_installed'
+  if (stdout.includes('ocl_empty_toolpath') || stdout.includes('ocl_runtime_error')) return 'ocl_runtime_or_empty'
+  if (stdout === 'python_spawn_failed') return 'python_spawn_failed'
+  return undefined
+}
+
 const UNVERIFIED =
   'G-code is unverified until you check post, units, and clearances for your machine (docs/MACHINES.md).'
 
@@ -430,8 +477,9 @@ function point2dList(v: unknown): [number, number][] {
 }
 
 /**
- * CAM pipeline: for `cnc_waterline` / `cnc_adaptive` / `cnc_raster`, try OpenCAMLib → toolpath lines → post.
- * Fallbacks: parallel finish (waterline/adaptive) or mesh / ortho raster (`cnc_raster`); other kinds use parallel finish.
+ * CAM pipeline: for `cnc_waterline` / `cnc_adaptive` / `cnc_raster` / `cnc_pencil`, try OpenCAMLib → toolpath lines → post.
+ * `cnc_pencil` uses the **raster** OCL strategy with a tighter stepover (`resolvePencilStepoverMm`).
+ * Fallbacks: parallel finish (waterline/adaptive) or mesh / ortho raster (raster + pencil); other kinds use parallel finish.
  */
 export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
   await mkdir(dirname(job.outputGcodePath), { recursive: true })
@@ -448,16 +496,23 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
     if (job.operationKind === 'cnc_contour') {
       const contour = point2dList(p['contourPoints'])
       const { contourSide, leadInMm, leadOutMm } = resolveContourPathOptions(p)
-      lines = generateContour2dLines({
+      const zStepContour =
+        typeof p['zStepMm'] === 'number' && Number.isFinite(p['zStepMm']) ? Math.max(0.01, p['zStepMm']) : undefined
+      const contourOpts = {
         contourPoints: contour,
-        zPassMm: job.zPassMm,
         feedMmMin: job.feedMmMin,
         plungeMmMin: job.plungeMmMin,
         safeZMm: job.safeZMm,
         contourSide,
         leadInMm,
         leadOutMm
-      })
+      }
+      if (job.zPassMm < 0 && zStepContour != null) {
+        const depths = computeNegativeZDepthPasses(job.zPassMm, zStepContour)
+        lines = depths.flatMap((z) => generateContour2dLines({ ...contourOpts, zPassMm: z }))
+      } else {
+        lines = generateContour2dLines({ ...contourOpts, zPassMm: job.zPassMm })
+      }
       if (lines.length === 0) {
         return {
           ok: false,
@@ -553,6 +608,11 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
       ok: true,
       gcode,
       usedEngine: 'builtin',
+      engine: {
+        requestedEngine: 'builtin',
+        usedEngine: 'builtin',
+        fallbackApplied: false
+      },
       hint: [base2dHint, ...pocketResultHints, ...drillResultHints].filter(Boolean).join(' ')
     }
   }
@@ -561,9 +621,21 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
   if (!stlLoad.ok) return stlLoad
   const meshBuf = stlLoad.buf
 
-  const oclStrategy = manufactureKindUsesOclStrategy(job.operationKind)
+  const camJob =
+    job.operationKind === 'cnc_pencil'
+      ? {
+          ...job,
+          stepoverMm: resolvePencilStepoverMm({
+            baseStepoverMm: job.stepoverMm,
+            toolDiameterMm: job.toolDiameterMm ?? 6,
+            operationParams: job.operationParams
+          })
+        }
+      : job
+
+  const oclStrategy = manufactureKindUsesOclStrategy(camJob.operationKind)
   if (oclStrategy) {
-    const ocl = await tryOclToolpath(job, oclStrategy)
+    const ocl = await tryOclToolpath(camJob, oclStrategy)
     if (ocl.ok && ocl.toolpathLines && ocl.toolpathLines.length > 0) {
       const gcode = await renderPost(job.resourcesRoot, job.machine, ocl.toolpathLines, {
         workCoordinateIndex: job.workCoordinateIndex
@@ -573,28 +645,36 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
         oclStrategy === 'adaptive_waterline'
           ? 'AdaptiveWaterline'
           : oclStrategy === 'raster'
-            ? 'PathDropCutter raster'
+            ? job.operationKind === 'cnc_pencil'
+              ? 'PathDropCutter raster (pencil / tight stepover)'
+              : 'PathDropCutter raster'
             : 'waterline'
       return {
         ok: true,
         gcode,
         usedEngine: 'ocl',
+        engine: {
+          requestedEngine: 'ocl',
+          usedEngine: 'ocl',
+          fallbackApplied: false
+        },
         hint: `OpenCAMLib ${stratLabel} toolpath posted for your machine profile. ${UNVERIFIED}`
       }
     }
+    const fallbackReason = resolveOclFallbackReason(ocl.stdout) ?? 'unknown_ocl_failure'
     const hint = builtinOclFailureHint(ocl.stdout, job.operationKind)
     const bounds = parseBinaryStl(meshBuf)
 
     if (oclStrategy === 'raster') {
       const mesh = collectBinaryStlTriangles(meshBuf)
-      const sampleStepMm = Math.max(0.2, Math.min(job.stepoverMm, 2))
+      const sampleStepMm = Math.max(0.2, Math.min(camJob.stepoverMm, 2))
       let lines = generateMeshHeightRasterLines({
         triangles: mesh.triangles,
         minX: bounds.min[0],
         maxX: bounds.max[0],
         minY: bounds.min[1],
         maxY: bounds.max[1],
-        stepoverMm: job.stepoverMm,
+        stepoverMm: camJob.stepoverMm,
         sampleStepMm,
         feedMmMin: job.feedMmMin,
         plungeMmMin: job.plungeMmMin,
@@ -608,7 +688,7 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
         lines = generateOrthoBoundsRasterLines({
           bounds,
           zPassMm: job.zPassMm,
-          stepoverMm: job.stepoverMm,
+          stepoverMm: camJob.stepoverMm,
           feedMmMin: job.feedMmMin,
           plungeMmMin: job.plungeMmMin,
           safeZMm: job.safeZMm
@@ -621,6 +701,9 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
           'Built-in 2.5D mesh height-field XY raster (upper envelope; no cutter-radius compensation or undercut handling).'
         )
       }
+      if (job.operationKind === 'cnc_pencil') {
+        extras.push('Pencil op: built-in raster uses reduced stepover vs standard raster.')
+      }
       const gcode = await renderPost(job.resourcesRoot, job.machine, lines, {
         workCoordinateIndex: job.workCoordinateIndex
       })
@@ -630,6 +713,13 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
         ok: true,
         gcode,
         usedEngine: 'builtin',
+        engine: {
+          requestedEngine: 'ocl',
+          usedEngine: 'builtin',
+          fallbackApplied: true,
+          fallbackReason,
+          fallbackDetail: extras.join(' ')
+        },
         hint: [hint, tail.trim(), UNVERIFIED].filter(Boolean).join(' ')
       }
     }
@@ -646,7 +736,18 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
       workCoordinateIndex: job.workCoordinateIndex
     })
     await writeFile(job.outputGcodePath, gcode, 'utf-8')
-    return { ok: true, gcode, usedEngine: 'builtin', hint }
+    return {
+      ok: true,
+      gcode,
+      usedEngine: 'builtin',
+      engine: {
+        requestedEngine: 'ocl',
+        usedEngine: 'builtin',
+        fallbackApplied: true,
+        fallbackReason
+      },
+      hint: [hint, UNVERIFIED].filter(Boolean).join(' ')
+    }
   }
 
   const bounds = parseBinaryStl(meshBuf)
@@ -666,6 +767,11 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
     ok: true,
     gcode,
     usedEngine: 'builtin',
+    engine: {
+      requestedEngine: 'builtin',
+      usedEngine: 'builtin',
+      fallbackApplied: false
+    },
     hint: `Built-in parallel finish from STL bounding box (no OpenCAMLib). ${UNVERIFIED}`
   }
 }

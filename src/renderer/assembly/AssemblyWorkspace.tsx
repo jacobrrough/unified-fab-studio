@@ -20,6 +20,7 @@ import {
   parseAssemblyFile
 } from '../../shared/assembly-schema'
 import { lerpMotionRzDeg, parseAssemblyMotionRzKeyframes } from '../../shared/assembly-viewport-math'
+import { solveAssemblyKinematics } from '../../shared/assembly-kinematics-core'
 import { BomMeshThumb } from './BomMeshThumb'
 import { AssemblyViewport3D } from './AssemblyViewport3D'
 
@@ -233,6 +234,7 @@ function summaryReportToText(s: ReturnType<typeof buildAssemblySummaryReport>): 
 export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) {
   const [asm, setAsm] = useState<AssemblyFile>(() => emptyAssembly())
   const [interferenceReport, setInterferenceReport] = useState<AssemblyInterferenceReport | null>(null)
+  const [interferenceAsmKey, setInterferenceAsmKey] = useState<string | null>(null)
   const [explodePreview, setExplodePreview] = useState(0.65)
   const [motionU, setMotionU] = useState(0)
   const [motionPlaying, setMotionPlaying] = useState(false)
@@ -240,6 +242,10 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
   const fab = window.fab
 
   const summary = useMemo(() => buildAssemblySummaryReport(asm), [asm])
+  const solvedKinematics = useMemo(
+    () => solveAssemblyKinematics(asm.components.filter((c) => !c.suppressed)),
+    [asm.components]
+  )
 
   const componentIdToName = useMemo(
     () => new Map(asm.components.map((c) => [c.id, c.name] as const)),
@@ -286,6 +292,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
   useEffect(() => {
     if (!projectDir) {
       setAsm(emptyAssembly())
+      setInterferenceReport(null)
+      setInterferenceAsmKey(null)
       return
     }
     void fab
@@ -294,8 +302,19 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
       .catch((e) => {
         onStatus?.(e instanceof Error ? e.message : String(e))
         setAsm(emptyAssembly())
+        setInterferenceReport(null)
+        setInterferenceAsmKey(null)
       })
-  }, [fab, projectDir])
+  }, [fab, projectDir, onStatus])
+
+  useEffect(() => {
+    if (!interferenceReport) return
+    const currentAsmKey = JSON.stringify(asm)
+    if (interferenceAsmKey === currentAsmKey) return
+    setInterferenceReport(null)
+    setInterferenceAsmKey(null)
+    onStatus?.('Cleared stale interference report after assembly edits/import/load. Run Interference Check again.')
+  }, [asm, interferenceAsmKey, interferenceReport, onStatus])
 
   const save = useCallback(async () => {
     if (!projectDir) return
@@ -329,20 +348,32 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
 
   const exportBom = useCallback(async () => {
     if (!projectDir) return
-    const p = await fab.assemblyExportBom(projectDir)
-    onStatus?.(`BOM: ${p}`)
+    try {
+      const p = await fab.assemblyExportBom(projectDir)
+      onStatus?.(`BOM CSV exported: ${p}`)
+    } catch (e) {
+      onStatus?.(`BOM CSV export failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }, [fab, projectDir, onStatus])
 
   const exportBomHierarchical = useCallback(async () => {
     if (!projectDir) return
-    const p = await fab.assemblyExportBomHierarchical(projectDir)
-    onStatus?.(`BOM tree: ${p}`)
+    try {
+      const p = await fab.assemblyExportBomHierarchical(projectDir)
+      onStatus?.(`BOM tree TXT exported: ${p}`)
+    } catch (e) {
+      onStatus?.(`BOM tree TXT export failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }, [fab, projectDir, onStatus])
 
   const exportBomHierarchyJson = useCallback(async () => {
     if (!projectDir) return
-    const p = await fab.assemblyExportBomHierarchyJson(projectDir)
-    onStatus?.(`BOM hierarchy JSON: ${p}`)
+    try {
+      const p = await fab.assemblyExportBomHierarchyJson(projectDir)
+      onStatus?.(`BOM hierarchy JSON exported: ${p}`)
+    } catch (e) {
+      onStatus?.(`BOM hierarchy JSON export failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }, [fab, projectDir, onStatus])
 
   const exportAssemblyJson = useCallback(() => {
@@ -393,10 +424,15 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
 
   const interferenceStub = useCallback(async () => {
     if (!projectDir) return
-    const r = await fab.assemblyInterferenceCheck(projectDir)
-    setInterferenceReport(r)
-    onStatus?.(r.message)
-  }, [fab, projectDir, onStatus])
+    try {
+      const r = await fab.assemblyInterferenceCheckSimulated(projectDir, asm)
+      setInterferenceReport(r)
+      setInterferenceAsmKey(JSON.stringify(asm))
+      onStatus?.(r.message)
+    } catch (e) {
+      onStatus?.(`Interference check failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }, [asm, fab, projectDir, onStatus])
 
   const exportInterferenceJson = useCallback(() => {
     if (!interferenceReport) return
@@ -511,12 +547,12 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
         keyframes can scrub/play <strong>preview-only</strong> world rotation (not a kinematic solver). Paths are
         relative to the project folder.
       </p>
-      <p className="msg msg--muted" style={{ marginTop: '-0.25rem' }}>
+      <p className="msg msg--muted mt-tight-pull">
         <strong>Interference check</strong> reads saved <code>assembly.json</code> on disk — save after edits so the
         report matches the table below.
       </p>
-      <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-end', gap: '0.75rem', marginBottom: '0.35rem' }}>
-        <label style={{ flex: '1 1 14rem', minWidth: '12rem' }}>
+      <div className="row row--mb-tight row--gap-md">
+        <label className="label--grow-14">
           Assembly name
           <input
             value={asm.name}
@@ -526,7 +562,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
           />
         </label>
       </div>
-      <div className="row" style={{ flexWrap: 'wrap' }}>
+      <div className="row">
         <button type="button" className="secondary" onClick={addComponent}>
           Add component
         </button>
@@ -570,7 +606,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
         </button>
       </div>
 
-      <section className="panel panel--nested" style={{ marginTop: '1rem' }} aria-label="Assembly 3D preview">
+      <section className="panel panel--nested stack-section" aria-label="Assembly 3D preview">
         <h3 className="subh">3D preview (mesh paths)</h3>
         <AssemblyViewport3D
           projectDir={projectDir}
@@ -578,15 +614,15 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
           explodeFactor={asm.explodeView ? explodePreview : 0}
           motionRzDeg={motionRzDeg}
         />
-        <p className="msg msg--muted" style={{ margin: '0.35rem 0 0', fontSize: '0.82rem' }}>
+        <p className="msg msg--muted msg--fine mt-xs">
           <strong>Preview order:</strong> joint row transforms (slider / planar / revolute / universal / cylindrical /
           ball) apply to subtrees first; motion study keyframes then add a <strong>whole-assembly</strong> rotation
           about world +Y
           (preview-only, not a solver).
         </p>
-        <div className="row" style={{ flexWrap: 'wrap', marginTop: '0.5rem', alignItems: 'center', gap: '0.75rem' }}>
+        <div className="row row--mt-sm row--center-gap-md">
           {asm.explodeView ? (
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', minWidth: '12rem' }}>
+            <label className="label--stack-12">
               Explode preview ({asm.explodeView.axis.toUpperCase()}, {asm.explodeView.stepMm} mm/step)
               <input
                 type="range"
@@ -599,7 +635,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
           ) : null}
           {motionSamples ? (
             <>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', minWidth: '12rem' }}>
+              <label className="label--stack-12">
                 Motion scrub (keyframes → +Y °)
                 <input
                   type="range"
@@ -620,21 +656,15 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
         </div>
       </section>
 
-      <section
-        className="panel panel--nested"
-        style={{ marginTop: '1rem' }}
-        aria-label="Explode view and motion study metadata"
-      >
+      <section className="panel panel--nested stack-section" aria-label="Explode view and motion study metadata">
         <h3 className="subh">Explode view &amp; motion study (saved in assembly.json)</h3>
-        <p className="msg msg--muted" style={{ marginTop: '-0.25rem' }}>
+        <p className="msg msg--muted mt-tight-pull">
           Metadata below is persisted; the viewport above uses it for separation and optional keyframe rotation (no joint
           limits or B-rep clash solver).
         </p>
-        <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div className="panel--nested" style={{ flex: '1 1 14rem', minWidth: '12rem' }}>
-            <h4 className="subh" style={{ margin: '0 0 0.5rem' }}>
-              Explode view
-            </h4>
+        <div className="row row--align-start">
+          <div className="panel--nested panel--nested--split-14">
+            <h4 className="subh subh--flush">Explode view</h4>
             {!asm.explodeView ? (
               <button
                 type="button"
@@ -650,7 +680,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
               </button>
             ) : (
               <>
-                <div className="row" style={{ flexWrap: 'wrap' }}>
+                <div className="row">
                   <label>
                     Axis
                     <select
@@ -689,11 +719,11 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                     />
                   </label>
                 </div>
-                <label style={{ display: 'block', marginTop: '0.5rem' }}>
+                <label className="label--block-mt-sm">
                   Notes
                   <textarea
                     rows={2}
-                    style={{ width: '100%' }}
+                    className="input--full"
                     placeholder="e.g. Exploded for assembly drawing A-12"
                     value={asm.explodeView.notes ?? ''}
                     onChange={(e) =>
@@ -709,8 +739,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </label>
                 <button
                   type="button"
-                  className="secondary"
-                  style={{ marginTop: '0.5rem' }}
+                  className="secondary stack-section--sm"
                   onClick={() => setAsm((a) => ({ ...a, explodeView: undefined }))}
                 >
                   Remove explode metadata
@@ -718,10 +747,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
               </>
             )}
           </div>
-          <div className="panel--nested" style={{ flex: '1 1 16rem', minWidth: '12rem' }}>
-            <h4 className="subh" style={{ margin: '0 0 0.5rem' }}>
-              Motion study (stub)
-            </h4>
+          <div className="panel--nested panel--nested--split-16">
+            <h4 className="subh subh--flush">Motion study (stub)</h4>
             {!asm.motionStudy ? (
               <button
                 type="button"
@@ -737,7 +764,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
               </button>
             ) : (
               <>
-                <div className="row" style={{ flexWrap: 'wrap' }}>
+                <div className="row">
                   <label>
                     Name
                     <input
@@ -773,14 +800,12 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                     </select>
                   </label>
                 </div>
-                <p className="msg msg--muted" style={{ marginTop: '0.35rem' }}>
-                  {motionStudyDofHintLine(asm.motionStudy.dofHint)}
-                </p>
-                <label style={{ display: 'block', marginTop: '0.5rem' }}>
+                <p className="msg msg--muted mt-xs">{motionStudyDofHintLine(asm.motionStudy.dofHint)}</p>
+                <label className="label--block-mt-sm">
                   Keyframes (JSON)
                   <textarea
                     rows={3}
-                    style={{ width: '100%' }}
+                    className="input--full"
                     placeholder='e.g. [{"t":0,"rzDeg":0},{"t":1,"rzDeg":45}] — preview +Y rotation'
                     value={asm.motionStudy.keyframesJson ?? ''}
                     onChange={(e) =>
@@ -795,11 +820,11 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                   />
                 </label>
                 {keyframesJsonHint ? <p className="msg msg--muted">{keyframesJsonHint}</p> : null}
-                <label style={{ display: 'block', marginTop: '0.5rem' }}>
+                <label className="label--block-mt-sm">
                   Notes
                   <textarea
                     rows={2}
-                    style={{ width: '100%' }}
+                    className="input--full"
                     value={asm.motionStudy.notes ?? ''}
                     onChange={(e) =>
                       setAsm((a) => ({
@@ -814,8 +839,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </label>
                 <button
                   type="button"
-                  className="secondary"
-                  style={{ marginTop: '0.5rem' }}
+                  className="secondary stack-section--sm"
                   onClick={() => setAsm((a) => ({ ...a, motionStudy: undefined }))}
                 >
                   Remove motion study stub
@@ -826,7 +850,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
         </div>
       </section>
 
-      <section className="panel assembly-summary panel--nested" style={{ marginTop: '1rem' }} aria-label="Assembly summary">
+      <section className="panel assembly-summary panel--nested stack-section" aria-label="Assembly summary">
         <h3 className="subh">Summary (current editor)</h3>
         <div className="assembly-summary-grid">
           <div>
@@ -971,9 +995,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
             </span>
           </div>
         </div>
-        <h4 className="subh" style={{ margin: '0.75rem 0 0.35rem' }}>
-          Joints (active)
-        </h4>
+        <h4 className="subh subh--section">Joints (active)</h4>
         <ul className="interference-pair-list">
           {Object.keys(summary.jointCounts).length === 0 ? (
             <li className="msg msg--muted">No joint kinds set on active rows.</li>
@@ -986,10 +1008,16 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </li>
               ))
           )}
+          <li>
+            <strong>solver clamp violations</strong>: {solvedKinematics.diagnostics.violations.length}
+          </li>
+          {solvedKinematics.diagnostics.violations.slice(0, 3).map((v) => (
+            <li key={`${v.componentId}-${v.dof}`} className="msg msg--muted">
+              {v.componentId} {v.dof}: {v.raw.toFixed(3)} → {v.clamped.toFixed(3)}
+            </li>
+          ))}
         </ul>
-        <h4 className="subh" style={{ margin: '0.75rem 0 0.35rem' }}>
-          Motion link kinds (active)
-        </h4>
+        <h4 className="subh subh--section">Motion link kinds (active)</h4>
         <ul className="interference-pair-list">
           {Object.keys(summary.motionLinkKindCounts).length === 0 ? (
             <li className="msg msg--muted">No motion link kinds set on active rows.</li>
@@ -1005,7 +1033,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
         </ul>
       </section>
 
-      <section className="panel panel--nested" style={{ marginTop: '1rem' }} aria-label="BOM preview">
+      <section className="panel panel--nested stack-section" aria-label="BOM preview">
         <h3 className="subh">BOM preview (same columns as output/bom.csv)</h3>
         <div className="assembly-bom-scroll">
           <table className="assembly-bom-table">
@@ -1078,7 +1106,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                           : '—'}
                       </td>
                       <td>{c.motionLinkKind ?? '—'}</td>
-                      <td title={c.id} style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.8em" }}>
+                      <td title={c.id} className="table-mono">
                         {c.id.length > 12 ? `${c.id.slice(0, 8)}…` : c.id}
                       </td>
                     </tr>
@@ -1093,12 +1121,11 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
       {interferenceReport ? (
         <section
           id="assembly-interference-report"
-          className="panel assembly-interference panel--nested"
-          style={{ marginTop: '1rem' }}
+          className="panel assembly-interference panel--nested stack-section"
           aria-live="polite"
         >
           <h3 className="subh">Last interference report</h3>
-          <div className="row" style={{ marginBottom: '0.5rem' }}>
+          <div className="row row--mb-sm">
             <button type="button" className="secondary" onClick={exportInterferenceJson}>
               Export report JSON
             </button>
@@ -1108,10 +1135,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
           </div>
           <p className="msg">{interferenceReport.message}</p>
           {interferenceReport.assemblyStats ? (
-            <div className="assembly-stats panel--nested" style={{ marginTop: '0.75rem' }}>
-              <h4 className="subh" style={{ margin: '0 0 0.35rem' }}>
-                Assembly summary (active components)
-              </h4>
+            <div className="assembly-stats panel--nested stack-section--md">
+              <h4 className="subh subh--micro">Assembly summary (active components)</h4>
               <p className="msg">
                 Instances: {interferenceReport.assemblyStats.activeComponentCount} · BOM qty sum:{' '}
                 {interferenceReport.assemblyStats.totalBomQuantity}
@@ -1134,10 +1159,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
             </div>
           ) : null}
           {interferenceReport.meshWarnings && interferenceReport.meshWarnings.length > 0 ? (
-            <div className="panel--nested" style={{ marginTop: '0.75rem' }}>
-              <h4 className="subh" style={{ margin: '0 0 0.35rem' }}>
-                Mesh load notes
-              </h4>
+            <div className="panel--nested stack-section--md">
+              <h4 className="subh subh--micro">Mesh load notes</h4>
               <ul className="interference-pair-list">
                 {interferenceReport.meshWarnings.map((w, i) => (
                   <li key={i}>{w}</li>
@@ -1146,16 +1169,14 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
             </div>
           ) : null}
           {interferenceReport.meshResolvedCount != null && interferenceReport.meshResolvedCount > 0 ? (
-            <p className="msg msg--muted" style={{ marginTop: '0.75rem' }}>
+            <p className="msg msg--muted stack-section--md">
               Meshes resolved for interference: {interferenceReport.meshResolvedCount} (binary STL + transform → world
               AABB).
             </p>
           ) : null}
           {interferenceReport.meshAabbOverlapPairs && interferenceReport.meshAabbOverlapPairs.length > 0 ? (
-            <div className="panel--nested" style={{ marginTop: '0.75rem' }}>
-              <h4 className="subh" style={{ margin: '0 0 0.35rem' }}>
-                World AABB overlap (coarse)
-              </h4>
+            <div className="panel--nested stack-section--md">
+              <h4 className="subh subh--micro">World AABB overlap (coarse)</h4>
               <ul className="interference-pair-list">
                 {interferenceReport.meshAabbOverlapPairs.map((p) => (
                   <li key={`mesh-${p.aId}-${p.bId}`}>
@@ -1165,15 +1186,11 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
               </ul>
             </div>
           ) : interferenceReport.meshResolvedCount != null && interferenceReport.meshResolvedCount >= 2 ? (
-            <p className="msg msg--muted" style={{ marginTop: '0.75rem' }}>
-              No world AABB overlaps between resolved meshes.
-            </p>
+            <p className="msg msg--muted stack-section--md">No world AABB overlaps between resolved meshes.</p>
           ) : null}
           {interferenceReport.triangleStubPairs && interferenceReport.triangleStubPairs.length > 0 ? (
-            <div className="panel--nested" style={{ marginTop: '0.75rem' }}>
-              <h4 className="subh" style={{ margin: '0 0 0.35rem' }}>
-                Triangle SAT stub (first triangle vs first triangle)
-              </h4>
+            <div className="panel--nested stack-section--md">
+              <h4 className="subh subh--micro">Triangle SAT stub (first triangle vs first triangle)</h4>
               <ul className="interference-pair-list">
                 {interferenceReport.triangleStubPairs.map((p) => (
                   <li key={`tri-${p.aId}-${p.bId}`}>
@@ -1184,10 +1201,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
             </div>
           ) : null}
           {interferenceReport.narrowPhaseOverlapPairs && interferenceReport.narrowPhaseOverlapPairs.length > 0 ? (
-            <div className="panel--nested" style={{ marginTop: '0.75rem' }}>
-              <h4 className="subh" style={{ margin: '0 0 0.35rem' }}>
-                Narrow-phase mesh overlap (spatial hash + SAT, capped)
-              </h4>
+            <div className="panel--nested stack-section--md">
+              <h4 className="subh subh--micro">Narrow-phase mesh overlap (spatial hash + SAT, capped)</h4>
               <ul className="interference-pair-list">
                 {interferenceReport.narrowPhaseOverlapPairs.map((p) => (
                   <li key={`np-${p.aId}-${p.bId}`}>
@@ -1198,10 +1213,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
             </div>
           ) : null}
           {interferenceReport.meshNarrowPhaseNotes && interferenceReport.meshNarrowPhaseNotes.length > 0 ? (
-            <div className="panel--nested" style={{ marginTop: '0.75rem' }}>
-              <h4 className="subh" style={{ margin: '0 0 0.35rem' }}>
-                Narrow-phase notes
-              </h4>
+            <div className="panel--nested stack-section--md">
+              <h4 className="subh subh--micro">Narrow-phase notes</h4>
               <ul className="interference-pair-list">
                 {interferenceReport.meshNarrowPhaseNotes.map((w, i) => (
                   <li key={`npn-${i}`}>{w}</li>
@@ -1222,7 +1235,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
           )}
         </section>
       ) : null}
-      <ul className="tools entity-list" style={{ marginTop: '1rem' }}>
+      <ul className="tools entity-list entity-list--stack stack-section">
         {asm.components.map((c, i) => {
           const meshIssues = meshPathLintIssues(c.meshPath)
           const revoluteClamp = c.joint === 'revolute' ? clampRevolutePreviewAngle(c) : null
@@ -1237,8 +1250,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
           const ballClampRy = c.joint === 'ball' ? clampBallPreviewRy(c) : null
           const ballClampRz = c.joint === 'ball' ? clampBallPreviewRz(c) : null
           return (
-            <li key={c.id} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-              <div className="row" style={{ width: '100%' }}>
+            <li key={c.id}>
+              <div className="row row--full">
                 <label>
                   Name
                   <input value={c.name} onChange={(e) => update(i, { name: e.target.value })} />
@@ -1511,11 +1524,11 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                   </select>
                 </label>
               </div>
-              <p className="msg msg--muted" style={{ margin: '0.25rem 0 0', fontSize: '0.82rem' }}>
+              <p className="msg msg--muted msg-full-row">
                 {assemblyJointDofHint(c.joint)}
               </p>
               {c.joint === 'revolute' && revoluteClamp ? (
-                <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div className="row">
                   <label>
                     Axis frame
                     <select
@@ -1549,7 +1562,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       <option value="z">+Z</option>
                     </select>
                   </label>
-                  <label style={{ minWidth: '14rem' }}>
+                  <label className="label--min-14">
                     Revolute preview (°) — viewport only at this row pivot
                     <input
                       type="range"
@@ -1620,7 +1633,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </div>
               ) : null}
               {c.joint === 'slider' && sliderClamp ? (
-                <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div className="row">
                   <label>
                     Axis frame
                     <select
@@ -1654,7 +1667,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       <option value="z">+Z</option>
                     </select>
                   </label>
-                  <label style={{ minWidth: '14rem' }}>
+                  <label className="label--min-14">
                     Slider preview (mm) — viewport only
                     <input
                       type="range"
@@ -1725,8 +1738,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </div>
               ) : null}
               {c.joint === 'planar' && planarClampU && planarClampV ? (
-                <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                  <p className="msg msg--muted" style={{ width: '100%', margin: '0.25rem 0 0', fontSize: '0.82rem' }}>
+                <div className="row">
+                  <p className="msg msg--muted msg-full-row">
                     Planar preview — translate in the plane orthogonal to the normal; **U** and **V** are an orthonormal
                     in-plane pair derived from that normal (viewport only).
                   </p>
@@ -1763,7 +1776,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       <option value="z">+Z</option>
                     </select>
                   </label>
-                  <label style={{ minWidth: '12rem' }}>
+                  <label className="label--min-12">
                     U (mm)
                     <input
                       type="range"
@@ -1831,7 +1844,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       }}
                     />
                   </label>
-                  <label style={{ minWidth: '12rem' }}>
+                  <label className="label--min-12">
                     V (mm)
                     <input
                       type="range"
@@ -1902,8 +1915,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </div>
               ) : null}
               {c.joint === 'universal' && universalClamp1 && universalClamp2 ? (
-                <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                  <p className="msg msg--muted" style={{ width: '100%', margin: '0.25rem 0 0', fontSize: '0.82rem' }}>
+                <div className="row">
+                  <p className="msg msg--muted msg-full-row">
                     Universal (Cardan) preview — rotate about axis 1, then axis 2 at this row pivot. Viewport only.
                   </p>
                   <label>
@@ -1939,7 +1952,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       <option value="z">+Z</option>
                     </select>
                   </label>
-                  <label style={{ minWidth: '12rem' }}>
+                  <label className="label--min-12">
                     Angle 1 (°)
                     <input
                       type="range"
@@ -2040,7 +2053,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       <option value="z">+Z</option>
                     </select>
                   </label>
-                  <label style={{ minWidth: '12rem' }}>
+                  <label className="label--min-12">
                     Angle 2 (°)
                     <input
                       type="range"
@@ -2111,8 +2124,8 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </div>
               ) : null}
               {c.joint === 'cylindrical' && cylindricalSlideClamp && cylindricalSpinClamp ? (
-                <div className="row" style={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                  <p className="msg msg--muted" style={{ width: '100%', margin: '0.25rem 0 0', fontSize: '0.82rem' }}>
+                <div className="row">
+                  <p className="msg msg--muted msg-full-row">
                     Cylindrical preview — slide along axis, then spin about the same axis through this pivot. Viewport
                     only.
                   </p>
@@ -2149,7 +2162,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       <option value="z">+Z</option>
                     </select>
                   </label>
-                  <label style={{ minWidth: '12rem' }}>
+                  <label className="label--min-12">
                     Slide (mm)
                     <input
                       type="range"
@@ -2217,7 +2230,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       }}
                     />
                   </label>
-                  <label style={{ minWidth: '12rem' }}>
+                  <label className="label--min-12">
                     Spin (°)
                     <input
                       type="range"
@@ -2288,12 +2301,12 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                 </div>
               ) : null}
               {c.joint === 'ball' && ballClampRx && ballClampRy && ballClampRz ? (
-                <div className="panel--nested" style={{ marginTop: '0.5rem' }}>
-                  <p className="msg msg--muted" style={{ margin: '0 0 0.35rem', fontSize: '0.82rem' }}>
+                <div className="panel--nested stack-section--sm">
+                  <p className="msg msg--muted msg--fine mb-tight-below">
                     Ball preview (viewport only): rotations about world <strong>+X</strong>, then <strong>+Y</strong>,
                     then <strong>+Z</strong> through this row’s pivot.
                   </p>
-                  <div className="row" style={{ flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end' }}>
+                  <div className="row row--gap-md">
                     <label>
                       Rx ° (slider)
                       <input
@@ -2362,7 +2375,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       />
                     </label>
                   </div>
-                  <div className="row" style={{ flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end' }}>
+                  <div className="row row--gap-md">
                     <label>
                       Ry ° (slider)
                       <input
@@ -2431,7 +2444,7 @@ export function AssemblyWorkspace({ projectDir, onStatus, onAfterSave }: Props) 
                       />
                     </label>
                   </div>
-                  <div className="row" style={{ flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end' }}>
+                  <div className="row row--gap-md">
                     <label>
                       Rz ° (slider)
                       <input

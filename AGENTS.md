@@ -1,5 +1,7 @@
 # Multi-agent parity work
 
+**Product stance:** Fusion-style, **local-first** CAD/CAM workflows — not affiliated with Autodesk; see `docs/FUSION_COMMAND_PARITY.md`.
+
 This repo uses **parallel streams** so several Cursor chats (or engineers) can advance CAD parity **without trashing the same files**.
 
 1. Read **[`docs/AGENT_PARALLEL_PLAN.md`](docs/AGENT_PARALLEL_PLAN.md)** — waves, ownership, hot files, merge order.

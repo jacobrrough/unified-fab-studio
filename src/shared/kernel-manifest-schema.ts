@@ -12,10 +12,13 @@ export const kernelManifestSchema = z.object({
   solidKind: z.enum(['extrude', 'revolve', 'loft']).optional(),
   profileCount: z.number().optional(),
   /**
-   * Kernel JSON payload: 1 = base solid only; 2 = postSolidOps (fillet/chamfer/shell);
-   * 3 = extended postSolidOps (pattern, boolean cylinder/box union/subtract box, sheet_tab_union, shell openDirection).
+   * Kernel JSON payload:
+   * 1 = base solid only
+   * 2 = legacy postSolidOps
+   * 3 = extended postSolidOps
+   * 4 = true sweep/thread/thicken op set (with compatibility mapping for legacy surrogates)
    */
-  payloadVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+  payloadVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),
   postSolidOpCount: z.number().optional(),
   /** Placement source used for kernel STEP/STL transform. */
   sketchPlaneKind: z.enum(['datum', 'face']).optional(),
@@ -27,11 +30,15 @@ export const kernelManifestSchema = z.object({
   placementParityMaxDeltaMm: z.number().optional(),
   /** SHA-256 hex of canonical design JSON used for the build (optional). */
   designHash: z.string().optional(),
+  /** SHA-256 hex of canonical `part/features.json` JSON (optional; omitted on older manifests). */
+  featuresHash: z.string().optional(),
   /**
    * CadQuery loft strategy when `solidKind` is loft: two-profile tags (`smooth+align`, `ruled+flip`, …)
    * or multi-profile `multi+union-chain:<n>:…`. Omitted for extrude/revolve or older Python builds.
    */
-  loftStrategy: z.string().trim().min(1).optional()
+  loftStrategy: z.string().trim().min(1).optional(),
+  /** Flat pattern strategy emitted when sheet fold/flat ops are present. */
+  flatPatternStrategy: z.string().trim().min(1).optional()
 })
 
 export type KernelManifest = z.infer<typeof kernelManifestSchema>

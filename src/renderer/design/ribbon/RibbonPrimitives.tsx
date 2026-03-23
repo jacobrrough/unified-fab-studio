@@ -73,10 +73,11 @@ export function RibbonFusionGroup({ label, children }: GroupProps) {
 
 export type DesignRibbonTabId = 'solid' | 'sketch' | 'constraint' | 'modify' | 'inspect'
 
+/** Fusion-style tab labels (ids unchanged for command routing). */
 export const DESIGN_RIBBON_TABS: { id: DesignRibbonTabId; label: string }[] = [
-  { id: 'solid', label: 'Solid' },
-  { id: 'sketch', label: 'Sketch' },
-  { id: 'constraint', label: 'Constraint' },
-  { id: 'modify', label: 'Modify' },
-  { id: 'inspect', label: 'Inspect' }
+  { id: 'solid', label: 'SOLID' },
+  { id: 'sketch', label: 'SKETCH' },
+  { id: 'constraint', label: 'CONSTRAINT' },
+  { id: 'modify', label: 'MODIFY' },
+  { id: 'inspect', label: 'INSPECT' }
 ]

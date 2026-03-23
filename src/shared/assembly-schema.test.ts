@@ -308,6 +308,70 @@ describe('parseAssemblyFile', () => {
     expect(parsed.components[0]!.ballPreviewRyMaxDeg).toBe(45)
   })
 
+  it('migrates legacy preview state/limits into jointState/jointLimits', () => {
+    const a = parseAssemblyFile({
+      version: 2,
+      name: 'LegacyKinematics',
+      components: [
+        {
+          id: 'r',
+          name: 'R',
+          partPath: 'r.json',
+          transform: {},
+          joint: 'revolute',
+          revolutePreviewAngleDeg: 33,
+          revolutePreviewMinDeg: -10,
+          revolutePreviewMaxDeg: 40
+        },
+        {
+          id: 'p',
+          name: 'P',
+          partPath: 'p.json',
+          transform: {},
+          joint: 'planar',
+          planarPreviewUMm: 2,
+          planarPreviewVMm: -3,
+          planarPreviewUMinMm: -4,
+          planarPreviewUMaxMm: 5,
+          planarPreviewVMinMm: -6,
+          planarPreviewVMaxMm: 7
+        }
+      ]
+    })
+    expect(a.components[0]!.jointState).toEqual({ scalarDeg: 33 })
+    expect(a.components[0]!.jointLimits).toEqual({ scalarMinDeg: -10, scalarMaxDeg: 40 })
+    expect(a.components[1]!.jointState).toEqual({ uMm: 2, vMm: -3 })
+    expect(a.components[1]!.jointLimits).toEqual({
+      uMinMm: -4,
+      uMaxMm: 5,
+      vMinMm: -6,
+      vMaxMm: 7
+    })
+  })
+
+  it('preserves explicit jointState/jointLimits when provided', () => {
+    const a = parseAssemblyFile({
+      version: 2,
+      name: 'ExplicitKinematics',
+      components: [
+        {
+          id: 's',
+          name: 'S',
+          partPath: 's.json',
+          transform: {},
+          joint: 'slider',
+          sliderPreviewMm: 12,
+          sliderPreviewMinMm: -100,
+          sliderPreviewMaxMm: 100,
+          jointState: { scalarMm: 7 },
+          jointLimits: { scalarMinMm: -3, scalarMaxMm: 9 }
+        }
+      ]
+    })
+    expect(a.components[0]!.jointState).toEqual({ scalarMm: 7 })
+    expect(a.components[0]!.jointLimits).toEqual({ scalarMinMm: -3, scalarMaxMm: 9 })
+  })
+
   it('accepts motion link stub fields (linkedInstanceId + motionLinkKind)', () => {
     const a = parseAssemblyFile({
       version: 2,
@@ -454,6 +518,37 @@ describe('buildAssemblyBomCsvLines', () => {
     expect(lines[0]).toBe(ASSEMBLY_BOM_CSV_HEADER)
     expect(lines[1]).toContain('y')
     expect(lines[1]).toContain('mate')
+  })
+
+  it('escapes quotes/commas and normalizes CRLF to LF for reliable CSV preview/export', () => {
+    const asm = parseAssemblyFile({
+      version: 2,
+      name: 'Csv',
+      components: [
+        {
+          id: 'c1',
+          name: 'Plate, "Top"',
+          partPath: 'design/top.json',
+          transform: {},
+          grounded: false,
+          meshPath: 'output\\top.stl',
+          referenceTag: 'DWG,01',
+          partNumber: 'PN-"A"',
+          externalComponentRef: 'ERP,42',
+          bomNotes: 'line1\r\nline2, "quoted"',
+          bomQuantity: 3,
+          bomUnit: 'ea',
+          bomVendor: 'Acme, Inc.',
+          bomCostEach: '12.50',
+          suppressed: true,
+          motionIsolated: true
+        }
+      ]
+    })
+    const lines = buildAssemblyBomCsvLines(asm)
+    expect(lines[1]).toBe(
+      '"Plate, ""Top""","design/top.json","output\\top.stl","false","","","DWG,01","PN-""A""","ERP,42","line1\nline2, ""quoted""","3","ea","Acme, Inc.","12.50","true","true","","","c1"'
+    )
   })
 })
 

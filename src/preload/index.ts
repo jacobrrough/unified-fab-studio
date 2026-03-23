@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { AppSettings, ImportHistoryEntry, ProjectFile } from '../shared/project-schema'
 import type { MachineProfile } from '../shared/machine-schema'
 import type {
+  AssemblyComponent,
   AssemblyFile,
   AssemblyInterferenceReport,
   AssemblySummaryReport
@@ -27,7 +28,10 @@ export type Api = {
     defaultPath?: string
   ) => Promise<string | null>
   /** Multi-select file dialog; empty array if canceled. */
-  dialogOpenFiles: (filters: { name: string; extensions: string[] }[]) => Promise<string[]>
+  dialogOpenFiles: (
+    filters: { name: string; extensions: string[] }[],
+    defaultPath?: string
+  ) => Promise<string[]>
   drawingExport: (payload: {
     kind: 'pdf' | 'dxf'
     projectName?: string
@@ -44,6 +48,8 @@ export type Api = {
     definitionsPath?: string
     definitionPath?: string
     slicePreset?: string | null
+    /** Merged Cura `-s` map; when set, overrides preset-only args. */
+    curaEngineSettings?: Record<string, string>
   }) => Promise<{ ok: boolean; stderr?: string; stdout?: string }>
   camRun: (payload: {
     stlPath: string
@@ -60,7 +66,27 @@ export type Api = {
     toolDiameterMm?: number
     operationParams?: Record<string, unknown>
   }) => Promise<
-    | { ok: true; gcode?: string; usedEngine: 'ocl' | 'builtin'; hint?: string }
+    | {
+        ok: true
+        gcode?: string
+        usedEngine: 'ocl' | 'builtin'
+        engine: {
+          requestedEngine: 'ocl' | 'builtin'
+          usedEngine: 'ocl' | 'builtin'
+          fallbackApplied: boolean
+          fallbackReason?:
+            | 'invalid_numeric_params'
+            | 'stl_missing'
+            | 'config_error'
+            | 'stl_read_error'
+            | 'opencamlib_not_installed'
+            | 'ocl_runtime_or_empty'
+            | 'python_spawn_failed'
+            | 'unknown_ocl_failure'
+          fallbackDetail?: string
+        }
+        hint?: string
+      }
     | { ok: false; error: string; hint?: string }
   >
   cadImportStl: (
@@ -111,6 +137,12 @@ export type Api = {
   shellOpenPath: (p: string) => Promise<void>
   readTextFile: (p: string) => Promise<string>
   designLoad: (projectDir: string) => Promise<DesignFileV2 | null>
+  /** Parsed `part/kernel-manifest.json` or null if missing/unreadable. */
+  designReadKernelManifest: (projectDir: string) => Promise<KernelManifest | null>
+  /** Binary `output/kernel-part.stl` as base64 for Design 3D inspect (kernel-accurate mesh). */
+  designReadKernelStlBase64: (
+    projectDir: string
+  ) => Promise<{ ok: true; base64: string } | { ok: false; error: string }>
   designSave: (projectDir: string, json: string) => Promise<void>
   designExportParameters: (projectDir: string) => Promise<{ path: string; keyCount: number }>
   designMergeParameters: (projectDir: string, json: string) => Promise<{ mergedKeyCount: number }>
@@ -121,7 +153,19 @@ export type Api = {
   assemblyExportBomHierarchyJson: (projectDir: string) => Promise<string>
   assemblySaveInterferenceReport: (projectDir: string, json: string) => Promise<string>
   assemblyInterferenceCheck: (projectDir: string) => Promise<AssemblyInterferenceReport>
+  assemblyInterferenceCheckSimulated: (projectDir: string, asm: AssemblyFile) => Promise<AssemblyInterferenceReport>
   assemblySummary: (projectDir: string) => Promise<AssemblySummaryReport>
+  assemblySolve: (asm: AssemblyFile) => Promise<{
+    ok: true
+    transforms: { id: string; transform: AssemblyComponent['transform'] }[]
+    diagnostics: { violations: unknown[]; clampedDofs: string[]; residuals: number[] }
+  }>
+  assemblySimulate: (asm: AssemblyFile, sampleCount?: number) => Promise<{
+    ok: true
+    sampleCount: number
+    poses: { sample: number; transforms: { id: string; transform: AssemblyComponent['transform'] }[] }[]
+    diagnostics: { violations: unknown[]; clampedDofs: string[]; residuals: number[] }
+  }>
   assemblyReadStlBase64: (
     projectDir: string,
     meshPath: string
@@ -150,7 +194,7 @@ const api: Api = {
   projectSave: (dir, project) => ipcRenderer.invoke('project:save', dir, project),
   dialogOpenFile: (filters, defaultPath) =>
     ipcRenderer.invoke('dialog:openFile', filters, defaultPath),
-  dialogOpenFiles: (filters) => ipcRenderer.invoke('dialog:openFiles', filters),
+  dialogOpenFiles: (filters, defaultPath) => ipcRenderer.invoke('dialog:openFiles', filters, defaultPath),
   drawingExport: (payload) => ipcRenderer.invoke('drawing:export', payload),
   stlStage: (projectDir, stlPath) => ipcRenderer.invoke('stl:stage', projectDir, stlPath),
   sliceCura: (payload) => ipcRenderer.invoke('slice:cura', payload),
@@ -170,6 +214,8 @@ const api: Api = {
   shellOpenPath: (p) => ipcRenderer.invoke('shell:openPath', p),
   readTextFile: (p) => ipcRenderer.invoke('file:readText', p),
   designLoad: (projectDir) => ipcRenderer.invoke('design:load', projectDir),
+  designReadKernelManifest: (projectDir) => ipcRenderer.invoke('design:readKernelManifest', projectDir),
+  designReadKernelStlBase64: (projectDir) => ipcRenderer.invoke('design:readKernelStlBase64', projectDir),
   designSave: (projectDir, json) => ipcRenderer.invoke('design:save', projectDir, json),
   designExportParameters: (projectDir) => ipcRenderer.invoke('design:exportParameters', projectDir),
   designMergeParameters: (projectDir, json) => ipcRenderer.invoke('design:mergeParameters', projectDir, json),
@@ -183,7 +229,11 @@ const api: Api = {
   assemblySaveInterferenceReport: (projectDir, json) =>
     ipcRenderer.invoke('assembly:saveInterferenceReport', projectDir, json),
   assemblyInterferenceCheck: (projectDir) => ipcRenderer.invoke('assembly:interferenceCheck', projectDir),
+  assemblyInterferenceCheckSimulated: (projectDir, asm) =>
+    ipcRenderer.invoke('assembly:interferenceCheckSimulated', projectDir, asm),
   assemblySummary: (projectDir) => ipcRenderer.invoke('assembly:summary', projectDir),
+  assemblySolve: (asm) => ipcRenderer.invoke('assembly:solve', asm),
+  assemblySimulate: (asm, sampleCount) => ipcRenderer.invoke('assembly:simulate', asm, sampleCount),
   assemblyReadStlBase64: (projectDir, meshPath) =>
     ipcRenderer.invoke('assembly:readStlBase64', projectDir, meshPath),
   featuresLoad: (projectDir) => ipcRenderer.invoke('features:load', projectDir),

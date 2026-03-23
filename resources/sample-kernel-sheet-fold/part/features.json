@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "sk1", "kind": "sketch", "label": "Sketch1" },
+    { "id": "ex1", "kind": "extrude", "label": "Extrude1", "params": { "depthKey": "extrudeDepthMm" } },
+    { "id": "sm1", "kind": "sheet", "label": "Sheet sheet_fold", "params": { "kernelOp": "sheet_fold" } },
+    { "id": "pl1", "kind": "plastic", "label": "Plastic plastic_boss", "params": { "kernelOp": "plastic_boss" } }
+  ],
+  "kernelOps": [
+    { "kind": "sheet_tab_union", "centerXMm": 10, "centerYMm": 0, "zBaseMm": 2, "lengthMm": 12, "widthMm": 8, "heightMm": 6 },
+    {
+      "kind": "sheet_fold",
+      "bendLineYMm": 0,
+      "bendRadiusMm": 1.5,
+      "bendAngleDeg": 90,
+      "kFactor": 0.44,
+      "bendAllowanceMode": "k_factor"
+    },
+    { "kind": "sheet_flat_pattern", "includeBendLines": true },
+    { "kind": "loft_guide_rails", "rails": [[[0, -10], [0, 10]]] },
+    { "kind": "plastic_rule_fillet", "radiusMm": 0.6 },
+    {
+      "kind": "plastic_boss",
+      "centerXMm": -12,
+      "centerYMm": 0,
+      "zBaseMm": 2,
+      "outerRadiusMm": 3,
+      "holeRadiusMm": 1.2,
+      "heightMm": 5
+    },
+    {
+      "kind": "plastic_lip_groove",
+      "mode": "groove",
+      "xMinMm": -8,
+      "xMaxMm": 8,
+      "yMinMm": -2,
+      "yMaxMm": 2,
+      "zBaseMm": 2,
+      "depthMm": 1
+    }
+  ]
+}

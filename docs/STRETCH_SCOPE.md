@@ -15,8 +15,8 @@ The **stretch** rows in [`PARITY_REMAINING_ROADMAP.md`](PARITY_REMAINING_ROADMAP
 | Assembly | **Hierarchical BOM** text: `output/bom-hierarchical.txt` from `parentId` tree (`assembly:exportBomHierarchical`, `buildHierarchicalBomText`). |
 | Assembly | **Hierarchical BOM JSON** (active rows only): `output/bom-hierarchy.json` via `assembly:exportBomHierarchyJson` + `buildBomHierarchy`. |
 | Design | **Parameters file I/O**: `design:exportParameters` → `output/design-parameters.json`; `design:mergeParameters` merges `{ parameters }` into `design/sketch.json` (Utilities → Project). |
-| Drawings | **View placeholders** on the primary sheet (`drawing/drawing.json`) — listed on PDF/DXF title-block shell; not geometry. |
-| Manufacture | **Simulation stub** on the Manufacture tab (`#manufacture-simulation-stub`): no stock-removal or kinematics sim; Utilities → **CAM** adds **G-code text analysis** only (bounds/motion cues). Catalog `mf_simulate` → **partial**; see `docs/VERIFICATION.md`. |
+| Drawings | **`drawing/drawing.json`** + Project **Drawing manifest** (sheet + view slots). PDF/DXF run **Tier A** mesh-edge projection via `engines/occt/project_views.py` when **`output/kernel-part.stl`** + Python succeed (**no HLR**); otherwise title block + placeholder copy. |
+| Manufacture | **Simulation (`mf_simulate` partial):** Manufacture tab **Tier 1** G0/G1 path preview + **Tier 2** coarse 2.5D removal proxy + optional **Tier 3** experimental voxel carve — **not** swept-volume boolean, **not** collision-safe, **not** machine kinematics. Utilities → **CAM** keeps **G-code text analysis** (bounds/motion cues). See `docs/VERIFICATION.md`. |
 
 ## Roadmap vs catalog
 

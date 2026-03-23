@@ -473,6 +473,24 @@ describe('part-features-schema', () => {
     ).toThrow()
   })
 
+  it('parses sweep_profile_path_true with fixed normal mode', () => {
+    const parsed = partFeaturesFileSchema.parse({
+      version: 1,
+      items: [],
+      kernelOps: [
+        {
+          kind: 'sweep_profile_path_true',
+          profileIndex: 0,
+          pathPoints: [[0, 0], [10, 0], [10, 8]],
+          zStartMm: 0,
+          orientationMode: 'fixed_normal',
+          fixedNormal: [0, 0, 1]
+        }
+      ]
+    })
+    expect(parsed.kernelOps?.[0]?.kind).toBe('sweep_profile_path_true')
+  })
+
   it('parses pipe_path and rejects invalid wall thickness', () => {
     const parsed = partFeaturesFileSchema.parse({
       version: 1,
@@ -503,6 +521,65 @@ describe('part-features-schema', () => {
         kernelOps: [{ kind: 'thicken_scale', deltaMm: 0 }]
       })
     ).toThrow()
+  })
+
+  it('parses thicken_offset and rejects zero distance', () => {
+    const parsed = partFeaturesFileSchema.parse({
+      version: 1,
+      items: [],
+      kernelOps: [{ kind: 'thicken_offset', distanceMm: 1.25, side: 'both' }]
+    })
+    expect(parsed.kernelOps?.[0]?.kind).toBe('thicken_offset')
+    expect(() =>
+      partFeaturesFileSchema.parse({
+        version: 1,
+        items: [],
+        kernelOps: [{ kind: 'thicken_offset', distanceMm: 0, side: 'outward' }]
+      })
+    ).toThrow()
+  })
+
+  it('parses thread_wizard modeled/cosmetic variants', () => {
+    const parsed = partFeaturesFileSchema.parse({
+      version: 1,
+      items: [],
+      kernelOps: [
+        {
+          kind: 'thread_wizard',
+          centerXMm: 0,
+          centerYMm: 0,
+          majorRadiusMm: 4,
+          pitchMm: 1.5,
+          lengthMm: 8,
+          depthMm: 0.4,
+          zStartMm: 0,
+          mode: 'modeled',
+          hand: 'right',
+          standard: 'ISO',
+          designation: 'M8x1.25',
+          class: '6g',
+          starts: 1
+        },
+        {
+          kind: 'thread_wizard',
+          centerXMm: 0,
+          centerYMm: 0,
+          majorRadiusMm: 4,
+          pitchMm: 1.5,
+          lengthMm: 8,
+          depthMm: 0.4,
+          zStartMm: 0,
+          mode: 'cosmetic',
+          hand: 'left',
+          standard: 'ISO',
+          designation: 'M8x1.25',
+          class: '6g',
+          starts: 2
+        }
+      ]
+    })
+    expect(parsed.kernelOps?.[0]?.kind).toBe('thread_wizard')
+    expect(parsed.kernelOps?.[1]?.kind).toBe('thread_wizard')
   })
 
   it('parses coil_cut', () => {
@@ -542,6 +619,75 @@ describe('part-features-schema', () => {
       kernelOps: [{ kind: 'fillet_all', radiusMm: 1, suppressed: true }]
     })
     expect(parsed.kernelOps?.[0]).toMatchObject({ kind: 'fillet_all', suppressed: true })
+  })
+
+  it('parses sheet_fold and sheet_flat_pattern', () => {
+    const parsed = partFeaturesFileSchema.parse({
+      version: 1,
+      items: [],
+      kernelOps: [
+        {
+          kind: 'sheet_fold',
+          bendLineYMm: 12,
+          bendRadiusMm: 1.5,
+          bendAngleDeg: 90,
+          kFactor: 0.42,
+          bendAllowanceMode: 'k_factor'
+        },
+        {
+          kind: 'sheet_flat_pattern',
+          includeBendLines: true
+        }
+      ]
+    })
+    expect(parsed.kernelOps?.[0]?.kind).toBe('sheet_fold')
+    expect(parsed.kernelOps?.[1]?.kind).toBe('sheet_flat_pattern')
+  })
+
+  it('parses loft_guide_rails and plastic MVP ops', () => {
+    const parsed = partFeaturesFileSchema.parse({
+      version: 1,
+      items: [],
+      kernelOps: [
+        {
+          kind: 'loft_guide_rails',
+          rails: [
+            [
+              [0, 0],
+              [10, 0],
+              [10, 5]
+            ]
+          ]
+        },
+        {
+          kind: 'plastic_rule_fillet',
+          radiusMm: 0.8
+        },
+        {
+          kind: 'plastic_boss',
+          centerXMm: 0,
+          centerYMm: 0,
+          zBaseMm: 0,
+          outerRadiusMm: 3,
+          holeRadiusMm: 1.2,
+          heightMm: 5
+        },
+        {
+          kind: 'plastic_lip_groove',
+          mode: 'groove',
+          xMinMm: -5,
+          xMaxMm: 5,
+          yMinMm: -1,
+          yMaxMm: 1,
+          zBaseMm: 2,
+          depthMm: 1.5
+        }
+      ]
+    })
+    expect(parsed.kernelOps?.[0]?.kind).toBe('loft_guide_rails')
+    expect(parsed.kernelOps?.[1]?.kind).toBe('plastic_rule_fillet')
+    expect(parsed.kernelOps?.[2]?.kind).toBe('plastic_boss')
+    expect(parsed.kernelOps?.[3]?.kind).toBe('plastic_lip_groove')
   })
 
   it('rejects degenerate boolean_intersect_box', () => {

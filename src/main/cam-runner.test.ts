@@ -9,6 +9,7 @@ import {
   manufactureKindUsesOclStrategy,
   manufactureKindUsesOclWaterline,
   readStlBufferForCam,
+  resolveOclFallbackReason,
   resolveContourPathOptions,
   resolveDrillCycleDecision,
   resolveDrillCycleMode,
@@ -98,6 +99,7 @@ describe('builtinOclFailureHint', () => {
   it('covers Python OCL error tokens for waterline vs raster wording', () => {
     expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_waterline')).toMatch(/missing STL path/i)
     expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_raster')).toMatch(/mesh or orthogonal/i)
+    expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_pencil')).toMatch(/mesh or orthogonal/i)
     expect(builtinOclFailureHint('{"error":"config_missing_keys"}', 'cnc_adaptive')).toMatch(/temp config JSON/i)
     expect(builtinOclFailureHint('invalid_numeric_params', undefined)).toMatch(/feed|tool|stepover/i)
     expect(builtinOclFailureHint('{"ok":false,"error":"stl_read_error"}', 'cnc_waterline')).toMatch(
@@ -113,6 +115,20 @@ describe('builtinOclFailureHint', () => {
     expect(builtinOclFailureHint('ocl_runtime_error', 'cnc_adaptive')).toMatch(/OpenCAMLib AdaptiveWaterline did not produce/)
     expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_waterline')).toMatch(/Waterline intent/)
     expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_adaptive')).toMatch(/Adaptive clearing intent/)
+  })
+})
+
+describe('resolveOclFallbackReason', () => {
+  it('normalizes known OpenCAMLib failure tokens', () => {
+    expect(resolveOclFallbackReason('invalid_numeric_params')).toBe('invalid_numeric_params')
+    expect(resolveOclFallbackReason('stl_missing')).toBe('stl_missing')
+    expect(resolveOclFallbackReason('config_missing_keys')).toBe('config_error')
+    expect(resolveOclFallbackReason('stl_read_error')).toBe('stl_read_error')
+    expect(resolveOclFallbackReason('opencamlib_not_installed')).toBe('opencamlib_not_installed')
+    expect(resolveOclFallbackReason('ocl_runtime_error')).toBe('ocl_runtime_or_empty')
+    expect(resolveOclFallbackReason('ocl_empty_toolpath')).toBe('ocl_runtime_or_empty')
+    expect(resolveOclFallbackReason('python_spawn_failed')).toBe('python_spawn_failed')
+    expect(resolveOclFallbackReason('unexpected_token')).toBe(undefined)
   })
 })
 
@@ -140,6 +156,9 @@ describe('runCamPipeline', () => {
       expect(r.ok).toBe(true)
       if (r.ok) {
         expect(r.usedEngine).toBe('builtin')
+        expect(r.engine.requestedEngine).toBe('builtin')
+        expect(r.engine.usedEngine).toBe('builtin')
+        expect(r.engine.fallbackApplied).toBe(false)
         expect(r.hint).toMatch(/parallel finish.*STL bounding box/i)
         expect(r.hint).toMatch(/unverified|MACHINES\.md/i)
       }
@@ -170,8 +189,44 @@ describe('runCamPipeline', () => {
     })
     expect(r.ok).toBe(true)
     if (r.ok) {
+      expect(r.engine.requestedEngine).toBe('builtin')
+      expect(r.engine.fallbackApplied).toBe(false)
       expect(r.hint).toMatch(/safeZMm \(10\.0 mm\)/)
       expect(r.hint).toMatch(/zPassMm \(-4\.000 mm\)/)
+    }
+    await unlink(out).catch(() => {})
+  })
+
+  it('runs multi-depth cnc_contour when zPassMm is negative and zStepMm is set', async () => {
+    const out = join(tmpdir(), 'ufs-cam-contour-step.nc')
+    const resourcesRoot = join(process.cwd(), 'resources')
+    const square: [number, number][] = [
+      [0, 0],
+      [20, 0],
+      [20, 20],
+      [0, 20]
+    ]
+    const r = await runCamPipeline({
+      stlPath: join(tmpdir(), 'unused-contour.stl'),
+      outputGcodePath: out,
+      machine: testMill,
+      resourcesRoot,
+      appRoot: process.cwd(),
+      zPassMm: -6,
+      stepoverMm: 2,
+      feedMmMin: 500,
+      plungeMmMin: 300,
+      safeZMm: 10,
+      pythonPath: 'python',
+      operationKind: 'cnc_contour',
+      operationParams: { contourPoints: square, zStepMm: 2 }
+    })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      const zCuts = (r.gcode.match(/G1 Z-2\.000/g) ?? []).length
+      expect(zCuts).toBeGreaterThanOrEqual(1)
+      expect(r.gcode).toMatch(/G1 Z-4\.000/)
+      expect(r.gcode).toMatch(/G1 Z-6\.000/)
     }
     await unlink(out).catch(() => {})
   })
@@ -195,6 +250,7 @@ describe('manufactureKindUsesOclStrategy', () => {
     expect(manufactureKindUsesOclStrategy('cnc_waterline')).toBe('waterline')
     expect(manufactureKindUsesOclStrategy('cnc_adaptive')).toBe('adaptive_waterline')
     expect(manufactureKindUsesOclStrategy('cnc_raster')).toBe('raster')
+    expect(manufactureKindUsesOclStrategy('cnc_pencil')).toBe('raster')
     expect(manufactureKindUsesOclStrategy('cnc_parallel')).toBe(null)
     expect(manufactureKindUsesOclStrategy(undefined)).toBe(null)
   })
@@ -205,6 +261,7 @@ describe('manufactureKindUsesOclWaterline', () => {
     expect(manufactureKindUsesOclWaterline('cnc_waterline')).toBe('waterline')
     expect(manufactureKindUsesOclWaterline('cnc_adaptive')).toBe('adaptive_waterline')
     expect(manufactureKindUsesOclWaterline('cnc_raster')).toBe(null)
+    expect(manufactureKindUsesOclWaterline('cnc_pencil')).toBe(null)
     expect(manufactureKindUsesOclWaterline('cnc_parallel')).toBe(null)
     expect(manufactureKindUsesOclWaterline(undefined)).toBe(null)
   })

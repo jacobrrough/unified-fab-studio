@@ -7,7 +7,7 @@ type Props = {
 }
 
 /**
- * Fusion-style “Drawing” strip for Utilities: real PDF/DXF template export (no 2D views from the model yet).
+ * Fusion-style “Drawing” strip for File → Project: real PDF/DXF template export (no 2D views from the model yet).
  */
 export function DrawingExportRibbon({ projectName, disabled, onExportPdf, onExportDxf }: Props) {
   return (
@@ -21,14 +21,20 @@ export function DrawingExportRibbon({ projectName, disabled, onExportPdf, onExpo
       <div className="ribbon-group">
         <span className="ribbon-group-label">Drawing</span>
         <p className="msg drawing-export-hint">
-          Export a printable <strong>PDF title block</strong> (A4) or a minimal <strong>DXF</strong> sheet. Model
-          projection is not wired yet — use Design for meshes or Manufacture for toolpaths.
+          Export a printable <strong>PDF title block</strong> (A4) or a <strong>DXF</strong> sheet. With view slots in{' '}
+          <strong>drawing/drawing.json</strong> and <code>output/kernel-part.stl</code> from <strong>Build STEP (kernel)</strong>,
+          exports embed <strong>Tier A</strong> mesh-edge projections (no hidden-line removal). Otherwise you get the title
+          block and manifest text only. Use Design for meshes or Manufacture for toolpaths.
           {projectName ? (
             <>
               {' '}
               Current document: <strong>{projectName}</strong>.
             </>
           ) : null}
+        </p>
+        <p className="msg drawing-export-clarity">
+          Tier A projections are tessellated-edge documentation only — not certified mechanical drawings. Optional OCC hidden-line
+          (Tier B) is future work.
         </p>
         <div className="ribbon-row" role="group" aria-label="Drawing export formats">
           <button

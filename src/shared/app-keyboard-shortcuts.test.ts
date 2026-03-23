@@ -9,7 +9,7 @@ import {
 
 describe('app-keyboard-shortcuts', () => {
   it('defines non-empty groups', () => {
-    expect(APP_KEYBOARD_SHORTCUT_GROUPS.length).toBeGreaterThanOrEqual(3)
+    expect(APP_KEYBOARD_SHORTCUT_GROUPS.length).toBeGreaterThanOrEqual(4)
     for (const g of APP_KEYBOARD_SHORTCUT_GROUPS) {
       expect(g.rows.length).toBeGreaterThan(0)
     }

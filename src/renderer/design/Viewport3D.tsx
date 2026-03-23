@@ -1,8 +1,10 @@
 import { Canvas } from '@react-three/fiber'
 import { Bounds, Grid, OrbitControls } from '@react-three/drei'
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import { measureMarkerRadiusMmFromGeometry } from './viewport3d-bounds'
+import { Viewport3DDatumPlanes, type SketchDatumId } from './Viewport3DDatumPlanes'
 
 export type MeasureMarker = { x: number; y: number; z: number }
 
@@ -12,8 +14,14 @@ type FacePick = {
   xAxis: [number, number, number]
 }
 
+type NavMode = 'orbit' | 'pan' | 'zoom'
+
 type Props = {
   geometry: THREE.BufferGeometry | null
+  /**
+   * 3D pick modes are mutually exclusive in the parent (`DesignWorkspace` viewport reducer):
+   * measure (Shift+click), project (plain click), face pick. `Solid` evaluates handlers in that order.
+   */
   /** When true, **Shift+click** the solid to pick world points (see `onMeasurePoint`). */
   measureMode?: boolean
   onMeasurePoint?: (p: THREE.Vector3) => void
@@ -26,7 +34,14 @@ type Props = {
   measureMarkers?: MeasureMarker[]
   /** World Y (mm) — clip geometry below this plane when `sectionClipY` is finite. */
   sectionClipY?: number | null
+  /** Sketch tab + model phase: allow clicking tinted datum planes (with solid / measure / face pick off). */
+  datumPlanePickMode?: boolean
+  sketchPlaneIsFace?: boolean
+  activeDatum?: SketchDatumId | null
+  onDatumPlaneSelect?: (d: SketchDatumId) => void
 }
+
+const HOME_POS: [number, number, number] = [120, 90, 120]
 
 /** Geometry is already placed in world space (see `sketchPreviewPlacementMatrix`). */
 const Solid = memo(function Solid({
@@ -102,6 +117,128 @@ const Markers = memo(function Markers({ markers, radiusMm }: { markers: MeasureM
   )
 })
 
+function applyStandardView(controls: OrbitControlsImpl, preset: 'top' | 'front' | 'back' | 'right' | 'left' | 'iso') {
+  const cam = controls.object as THREE.PerspectiveCamera
+  const t = controls.target
+  const dist = Math.max(80, cam.position.distanceTo(t))
+
+  cam.up.set(0, 1, 0)
+
+  switch (preset) {
+    case 'top':
+      cam.position.set(t.x, t.y + dist, t.z)
+      cam.up.set(0, 0, -1)
+      cam.lookAt(t)
+      break
+    case 'front':
+      cam.position.set(t.x, t.y, t.z + dist)
+      cam.lookAt(t)
+      break
+    case 'back':
+      cam.position.set(t.x, t.y, t.z - dist)
+      cam.lookAt(t)
+      break
+    case 'right':
+      cam.position.set(t.x + dist, t.y, t.z)
+      cam.lookAt(t)
+      break
+    case 'left':
+      cam.position.set(t.x - dist, t.y, t.z)
+      cam.lookAt(t)
+      break
+    case 'iso': {
+      const d = new THREE.Vector3(1, 0.75, 1).normalize().multiplyScalar(dist)
+      cam.position.set(t.x + d.x, t.y + d.y, t.z + d.z)
+      cam.up.set(0, 1, 0)
+      cam.lookAt(t)
+      break
+    }
+    default:
+      break
+  }
+  controls.update()
+}
+
+function ViewportHud({
+  controlsRef,
+  navMode,
+  onNavMode
+}: {
+  controlsRef: React.RefObject<OrbitControlsImpl | null>
+  navMode: NavMode
+  onNavMode: (m: NavMode) => void
+}) {
+  const run = useCallback(
+    (fn: (c: OrbitControlsImpl) => void) => {
+      const c = controlsRef.current
+      if (c) fn(c)
+    },
+    [controlsRef]
+  )
+
+  return (
+    <div className="viewport-3d__hud">
+      <div className="viewport-3d__viewcube" role="group" aria-label="Standard views">
+        <button type="button" className="viewport-3d__cube-btn" onClick={() => run((c) => applyStandardView(c, 'iso'))} title="Isometric">
+          ISO
+        </button>
+        <button type="button" className="viewport-3d__cube-btn" onClick={() => run((c) => applyStandardView(c, 'top'))} title="Top">
+          T
+        </button>
+        <button type="button" className="viewport-3d__cube-btn" onClick={() => run((c) => applyStandardView(c, 'front'))} title="Front">
+          F
+        </button>
+        <button type="button" className="viewport-3d__cube-btn" onClick={() => run((c) => applyStandardView(c, 'right'))} title="Right">
+          R
+        </button>
+        <button
+          type="button"
+          className="viewport-3d__cube-btn viewport-3d__cube-btn--home"
+          onClick={() =>
+            run((c) => {
+              const cam = c.object as THREE.PerspectiveCamera
+              cam.position.set(HOME_POS[0], HOME_POS[1], HOME_POS[2])
+              c.target.set(0, 0, 0)
+              cam.up.set(0, 1, 0)
+              c.update()
+            })
+          }
+          title="Home view"
+        >
+          ⌂
+        </button>
+      </div>
+
+      <div className="viewport-3d__navstrip" role="toolbar" aria-label="Viewport navigation">
+        <button
+          type="button"
+          className={`viewport-3d__nav-btn${navMode === 'orbit' ? ' viewport-3d__nav-btn--active' : ''}`}
+          onClick={() => onNavMode('orbit')}
+          title="Orbit (rotate)"
+        >
+          Orbit
+        </button>
+        <button
+          type="button"
+          className={`viewport-3d__nav-btn${navMode === 'pan' ? ' viewport-3d__nav-btn--active' : ''}`}
+          onClick={() => onNavMode('pan')}
+          title="Pan"
+        >
+          Pan
+        </button>
+        <button
+          type="button"
+          className={`viewport-3d__nav-btn${navMode === 'zoom' ? ' viewport-3d__nav-btn--active' : ''}`}
+          onClick={() => onNavMode('zoom')}
+          title="Zoom only"
+        >
+          Zoom
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function Viewport3D({
   geometry,
   measureMode,
@@ -111,9 +248,16 @@ export function Viewport3D({
   facePickMode,
   onPickFace,
   measureMarkers,
-  sectionClipY
+  sectionClipY,
+  datumPlanePickMode = false,
+  sketchPlaneIsFace = false,
+  activeDatum = null,
+  onDatumPlaneSelect
 }: Props) {
   const disposed = useRef<THREE.BufferGeometry | null>(null)
+  const controlsRef = useRef<OrbitControlsImpl | null>(null)
+  const [navMode, setNavMode] = useState<NavMode>('orbit')
+
   useEffect(() => {
     return () => {
       disposed.current?.dispose()
@@ -133,12 +277,19 @@ export function Viewport3D({
 
   const clipping = clipPlane != null
 
+  const gridFade = datumPlanePickMode ? 1.12 : clipping ? 0.92 : 1.05
+  const gridCell = datumPlanePickMode ? '#1a1220' : clipping ? '#30253c' : '#2a1f38'
+
   const measureMarkerRadiusMm = useMemo(() => measureMarkerRadiusMmFromGeometry(stable), [stable])
+
+  const enableRotate = navMode === 'orbit'
+  const enablePan = navMode !== 'zoom'
+  const enableZoom = true
 
   return (
     <div className="viewport-3d">
       <Canvas
-        camera={{ position: [120, 90, 120], fov: 45, near: 0.5, far: 8000 }}
+        camera={{ position: HOME_POS, fov: 45, near: 0.5, far: 8000 }}
         dpr={[1, 2]}
         gl={{ antialias: true, powerPreference: 'high-performance', alpha: false, localClippingEnabled: clipping }}
       >
@@ -168,17 +319,25 @@ export function Viewport3D({
           args={[520, 520]}
           cellSize={10}
           sectionSize={50}
-          cellColor={clipping ? '#30253c' : '#2a1f38'}
+          cellColor={gridCell}
           sectionColor={clipping ? '#8b7aad' : '#4c3d63'}
           cellThickness={0.6}
           sectionThickness={clipping ? 1.42 : 1.1}
           fadeDistance={clipping ? 380 : 300}
-          fadeStrength={clipping ? 0.92 : 1.05}
+          fadeStrength={gridFade}
           infiniteGrid
           followCamera
           position={[0, 0, 0]}
         />
+        <Viewport3DDatumPlanes
+          halfExtentMm={200}
+          datumPlanePickMode={datumPlanePickMode}
+          sketchPlaneIsFace={sketchPlaneIsFace}
+          activeDatum={activeDatum}
+          onDatumPlaneSelect={onDatumPlaneSelect}
+        />
         <OrbitControls
+          ref={controlsRef}
           makeDefault
           enableDamping
           dampingFactor={0.085}
@@ -190,8 +349,12 @@ export function Viewport3D({
           maxPolarAngle={Math.PI / 2 - 0.06}
           minPolarAngle={0.12}
           screenSpacePanning={false}
+          enableRotate={enableRotate}
+          enablePan={enablePan}
+          enableZoom={enableZoom}
         />
       </Canvas>
+      <ViewportHud controlsRef={controlsRef} navMode={navMode} onNavMode={setNavMode} />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { Vector3 } from 'three'
 import type { DesignFileV2, SketchConstraint } from '../../shared/design-schema'
@@ -8,9 +8,17 @@ import { circleThroughThreePoints } from '../../shared/sketch-profile'
 import {
   circularPatternSketchInstances,
   linearPatternSketchInstances,
-  offsetClosedPolylineEntity
+  offsetClosedPolylineEntity,
+  pathPatternSketchInstances,
+  sanitizeProjectedPolylineDraft
 } from './design-ops'
+import { constraintTypeForDesignCommand, sketchToolForDesignCommand } from './design-command-map'
 import { useDesignCommandListener } from './design-command-bridge'
+import {
+  appendMeasureSample,
+  initialViewportInteractionState,
+  viewportInteractionReducer
+} from './design-viewport-interaction'
 import { meshToStlBase64 } from './export-stl'
 import { Sketch2DCanvas, type SketchTool } from './Sketch2DCanvas'
 import { Viewport3D } from './Viewport3D'
@@ -26,16 +34,13 @@ import {
   IconKernel,
   IconLine,
   IconLoft,
-  IconMeasure,
   IconMirror,
-  IconParams,
   IconPattern,
   IconPolygon,
   IconPolyline,
   IconRect,
   IconRevolve,
   IconSave,
-  IconSection,
   IconSketchPoint,
   IconSketchFillet,
   IconChamfer,
@@ -44,6 +49,8 @@ import {
   IconTrim,
   IconUndo
 } from './ribbon/designRibbonIcons'
+import { InspectRibbonModelPanel } from './ribbon/InspectRibbonModelPanel'
+import { InspectRibbonSketchGatePanel } from './ribbon/InspectRibbonSketchGatePanel'
 import {
   DESIGN_RIBBON_TABS,
   type DesignRibbonTabId,
@@ -57,13 +64,23 @@ function sketchDatumLabel(plane: DesignFileV2['sketchPlane']): string {
   return labels[plane.datum]
 }
 
-export function DesignWorkspace() {
+export type DesignWorkspaceProps = {
+  /** Same flow as File → Project → **Import 3D model…** (writes under `assets/`). */
+  onImport3D?: () => void | Promise<void>
+}
+
+export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
   const ctx = useDesignSession()
   const {
     projectDir,
     design,
     loaded,
     geometry,
+    viewportGeometry,
+    inspectMeshSourceLabel,
+    kernelManifest,
+    kernelInspectStaleReason,
+    refreshKernelInspectGeometry,
     onDesignChange,
     dispatch,
     saveDesign,
@@ -106,11 +123,13 @@ export function DesignWorkspace() {
   const [sketchPatternInstances, setSketchPatternInstances] = useState(2)
   const [sketchPatternDx, setSketchPatternDx] = useState(40)
   const [sketchPatternDy, setSketchPatternDy] = useState(0)
-  const [sketchPatternMode, setSketchPatternMode] = useState<'linear' | 'circular'>('linear')
+  const [sketchPatternMode, setSketchPatternMode] = useState<'linear' | 'circular' | 'path'>('linear')
   const [sketchCircPivotX, setSketchCircPivotX] = useState(0)
   const [sketchCircPivotY, setSketchCircPivotY] = useState(0)
   const [sketchCircTotalDeg, setSketchCircTotalDeg] = useState(360)
   const [sketchCircStartDeg, setSketchCircStartDeg] = useState(0)
+  const [sketchPathPatternEntityId, setSketchPathPatternEntityId] = useState('')
+  const [sketchPathPatternClosed, setSketchPathPatternClosed] = useState(false)
   const [kernelChamferMm, setKernelChamferMm] = useState(1)
   const [kernelEdgeDirection, setKernelEdgeDirection] = useState<'+X' | '-X' | '+Y' | '-Y' | '+Z' | '-Z'>('+Z')
   const [kernelShellMm, setKernelShellMm] = useState(2)
@@ -158,6 +177,12 @@ export function DesignWorkspace() {
   const [kernelThreadLen, setKernelThreadLen] = useState(8)
   const [kernelThreadDepth, setKernelThreadDepth] = useState(0.4)
   const [kernelThreadZ0, setKernelThreadZ0] = useState(0)
+  const [kernelThreadStandard, setKernelThreadStandard] = useState('ISO')
+  const [kernelThreadDesignation, setKernelThreadDesignation] = useState('M8x1.25')
+  const [kernelThreadClass, setKernelThreadClass] = useState('6g')
+  const [kernelThreadStarts, setKernelThreadStarts] = useState(1)
+  const [kernelThreadHand, setKernelThreadHand] = useState<'right' | 'left'>('right')
+  const [kernelThreadMode, setKernelThreadMode] = useState<'modeled' | 'cosmetic'>('modeled')
   const [kernelMoveDx, setKernelMoveDx] = useState(10)
   const [kernelMoveDy, setKernelMoveDy] = useState(0)
   const [kernelMoveDz, setKernelMoveDz] = useState(0)
@@ -168,12 +193,19 @@ export function DesignWorkspace() {
   const [kernelSweepProfileIndex, setKernelSweepProfileIndex] = useState(0)
   const [kernelSweepPathEntityId, setKernelSweepPathEntityId] = useState('')
   const [kernelSweepZStartMm, setKernelSweepZStartMm] = useState(0)
+  const [kernelSweepOrientationMode, setKernelSweepOrientationMode] = useState<'fixed_normal' | 'frenet' | 'path_tangent_lock'>(
+    'frenet'
+  )
   const [kernelPipePathEntityId, setKernelPipePathEntityId] = useState('')
   const [kernelPipeOuterRadiusMm, setKernelPipeOuterRadiusMm] = useState(2)
   const [kernelPipeWallThicknessMm, setKernelPipeWallThicknessMm] = useState(0)
   const [kernelPipeUseWall, setKernelPipeUseWall] = useState(false)
   const [kernelPipeZStartMm, setKernelPipeZStartMm] = useState(0)
+  const [kernelPipeOrientationMode, setKernelPipeOrientationMode] = useState<'fixed_normal' | 'frenet' | 'path_tangent_lock'>(
+    'frenet'
+  )
   const [kernelThickenDeltaMm, setKernelThickenDeltaMm] = useState(1)
+  const [kernelThickenSide, setKernelThickenSide] = useState<'outward' | 'inward' | 'both'>('outward')
   const [kernelCoilCx, setKernelCoilCx] = useState(0)
   const [kernelCoilCy, setKernelCoilCy] = useState(0)
   const [kernelCoilRadius, setKernelCoilRadius] = useState(4)
@@ -187,6 +219,32 @@ export function DesignWorkspace() {
   const [kernelTabLen, setKernelTabLen] = useState(14)
   const [kernelTabWid, setKernelTabWid] = useState(8)
   const [kernelTabHt, setKernelTabHt] = useState(5)
+  const [kernelSheetFoldLineY, setKernelSheetFoldLineY] = useState(0)
+  const [kernelSheetFoldRadiusMm, setKernelSheetFoldRadiusMm] = useState(1.2)
+  const [kernelSheetFoldAngleDeg, setKernelSheetFoldAngleDeg] = useState(90)
+  const [kernelSheetFoldKFactor, setKernelSheetFoldKFactor] = useState(0.44)
+  const [kernelSheetAllowanceMode, setKernelSheetAllowanceMode] = useState<'k_factor' | 'allowance_mm' | 'deduction_mm'>(
+    'k_factor'
+  )
+  const [kernelSheetAllowanceMm, setKernelSheetAllowanceMm] = useState(1)
+  const [kernelSheetDeductionMm, setKernelSheetDeductionMm] = useState(1)
+  const [kernelFlatIncludeBendLines, setKernelFlatIncludeBendLines] = useState(true)
+  const [kernelGuideRailEntityId, setKernelGuideRailEntityId] = useState('')
+  const [kernelPlasticFilletRadiusMm, setKernelPlasticFilletRadiusMm] = useState(0.8)
+  const [kernelPlasticBossCx, setKernelPlasticBossCx] = useState(0)
+  const [kernelPlasticBossCy, setKernelPlasticBossCy] = useState(0)
+  const [kernelPlasticBossZBase, setKernelPlasticBossZBase] = useState(0)
+  const [kernelPlasticBossOuterR, setKernelPlasticBossOuterR] = useState(3)
+  const [kernelPlasticBossHoleR, setKernelPlasticBossHoleR] = useState(1.2)
+  const [kernelPlasticBossUseHole, setKernelPlasticBossUseHole] = useState(true)
+  const [kernelPlasticBossHeight, setKernelPlasticBossHeight] = useState(5)
+  const [kernelPlasticLipMode, setKernelPlasticLipMode] = useState<'lip' | 'groove'>('lip')
+  const [kernelPlasticLipXMin, setKernelPlasticLipXMin] = useState(-5)
+  const [kernelPlasticLipXMax, setKernelPlasticLipXMax] = useState(5)
+  const [kernelPlasticLipYMin, setKernelPlasticLipYMin] = useState(-1.5)
+  const [kernelPlasticLipYMax, setKernelPlasticLipYMax] = useState(1.5)
+  const [kernelPlasticLipZBase, setKernelPlasticLipZBase] = useState(2)
+  const [kernelPlasticLipDepth, setKernelPlasticLipDepth] = useState(1.5)
   const [offsetPolyId, setOffsetPolyId] = useState('')
   const [offsetMm, setOffsetMm] = useState(2)
   const [linearDimStep, setLinearDimStep] = useState<'off' | 'a' | 'b'>('off')
@@ -197,17 +255,17 @@ export function DesignWorkspace() {
   const [angularDimL1, setAngularDimL1] = useState<{ a: string; b: string } | null>(null)
   const [dimEntityId, setDimEntityId] = useState('')
   const [dimEntityPickMode, setDimEntityPickMode] = useState(false)
-  const [measureMode, setMeasureMode] = useState(false)
-  const [measurePts, setMeasurePts] = useState<Array<{ x: number; y: number; z: number }>>([])
-  const [sectionEnabled, setSectionEnabled] = useState(false)
+  const [viewportInteraction, dispatchViewport] = useReducer(viewportInteractionReducer, initialViewportInteractionState)
+  const { measureMode, measurePts, sectionEnabled, projectSketchMode, projectSketchDraftMm, facePickMode } =
+    viewportInteraction
   const [sectionYMm, setSectionYMm] = useState(20)
   const [ribbonTab, setRibbonTab] = useState<DesignRibbonTabId>('solid')
   /** Model = 3D viewport + plane pick; Sketch = full-screen 2D grid only. */
   const [canvasPhase, setCanvasPhase] = useState<'model' | 'sketch'>('model')
-  const [facePickMode, setFacePickMode] = useState(false)
-  /** Click solid in 3D → project hit points onto sketch plane; Commit adds a polyline. */
-  const [projectSketchMode, setProjectSketchMode] = useState(false)
-  const [projectSketchDraftMm, setProjectSketchDraftMm] = useState<Array<{ x: number; y: number }>>([])
+  const measurePtsRef = useRef(measurePts)
+  useEffect(() => {
+    measurePtsRef.current = measurePts
+  }, [measurePts])
 
   const kernelOpActiveCount = features?.kernelOps?.filter((o) => !o.suppressed).length ?? 0
   const kernelOpTotal = features?.kernelOps?.length ?? 0
@@ -219,6 +277,16 @@ export function DesignWorkspace() {
         .sort((a, b) => a.localeCompare(b)),
     [design.entities]
   )
+
+  useEffect(() => {
+    if (polylineEntityIds.length === 0) {
+      if (sketchPathPatternEntityId !== '') setSketchPathPatternEntityId('')
+      return
+    }
+    if (!polylineEntityIds.includes(sketchPathPatternEntityId)) {
+      setSketchPathPatternEntityId(polylineEntityIds[0] ?? '')
+    }
+  }, [polylineEntityIds, sketchPathPatternEntityId])
 
   useEffect(() => {
     if (polylineEntityIds.length === 0) {
@@ -250,6 +318,16 @@ export function DesignWorkspace() {
     }
   }, [kernelPipePathEntityId, polylineEntityIds])
 
+  useEffect(() => {
+    if (polylineEntityIds.length === 0) {
+      if (kernelGuideRailEntityId !== '') setKernelGuideRailEntityId('')
+      return
+    }
+    if (!polylineEntityIds.includes(kernelGuideRailEntityId)) {
+      setKernelGuideRailEntityId(polylineEntityIds[0] ?? '')
+    }
+  }, [kernelGuideRailEntityId, polylineEntityIds])
+
   const twoLineConstraint =
     cType === 'perpendicular' || cType === 'parallel' || cType === 'equal' || cType === 'angle'
   const threePointConstraint = cType === 'collinear' || cType === 'midpoint'
@@ -258,35 +336,7 @@ export function DesignWorkspace() {
 
   const applyCommandFromPalette = useCallback(
     (commandId: string) => {
-      const tools: Record<string, SketchTool> = {
-        sk_rect: 'rect',
-        sk_rect_3pt: 'rect_3pt',
-        sk_slot_center: 'slot_center',
-        sk_slot_overall: 'slot_overall',
-        sk_circle_center: 'circle',
-        sk_circle_2pt: 'circle_2pt',
-        sk_circle_3pt: 'circle_3pt',
-        sk_polyline: 'polyline',
-        sk_polygon: 'polygon',
-        sk_point: 'point',
-        sk_line: 'line',
-        sk_arc_3pt: 'arc',
-        sk_arc_center: 'arc_center',
-        sk_ellipse: 'ellipse',
-        sk_spline_fit: 'spline_fit',
-        sk_spline_cp: 'spline_cp',
-        sk_trim: 'trim',
-        sk_split: 'split',
-        sk_break: 'break',
-        sk_extend: 'extend',
-        sk_fillet_sk: 'fillet',
-        sk_chamfer_sk: 'chamfer',
-        sk_move_sk: 'move_sk',
-        sk_rotate_sk: 'rotate_sk',
-        sk_scale_sk: 'scale_sk',
-        sk_mirror_sk: 'mirror_sk'
-      }
-      const t = tools[commandId]
+      const t = sketchToolForDesignCommand(commandId)
       if (t) {
         setRibbonTab('sketch')
         setCanvasPhase('sketch')
@@ -294,25 +344,7 @@ export function DesignWorkspace() {
         onStatus?.(`Sketch tool: ${t}`)
         return
       }
-      const ct: Record<string, SketchConstraint['type']> = {
-        co_horizontal: 'horizontal',
-        co_vertical: 'vertical',
-        co_coincident: 'coincident',
-        co_distance: 'distance',
-        co_fix: 'fix',
-        co_perpendicular: 'perpendicular',
-        co_parallel: 'parallel',
-        co_equal: 'equal',
-        co_collinear: 'collinear',
-        co_midpoint: 'midpoint',
-        co_angle: 'angle',
-        co_tangent: 'tangent',
-        co_symmetric: 'symmetric',
-        co_concentric: 'concentric',
-        co_radius: 'radius',
-        co_diameter: 'diameter'
-      }
-      const nextC = ct[commandId]
+      const nextC = constraintTypeForDesignCommand(commandId)
       if (nextC) {
         setRibbonTab('constraint')
         setCanvasPhase('sketch')
@@ -323,16 +355,15 @@ export function DesignWorkspace() {
       if (commandId === 'ut_measure') {
         setRibbonTab('inspect')
         setCanvasPhase('model')
-        setMeasureMode(true)
-        setMeasurePts([])
+        dispatchViewport({ type: 'measure_start' })
         onStatus?.('Measure on — Shift+click two points on the 3D solid. Esc clears.')
         return
       }
       if (commandId === 'ut_section') {
         setRibbonTab('inspect')
         setCanvasPhase('model')
-        setSectionEnabled(true)
-        const ext = geometry ? worldYRangeFromExtrudeMeshGeometry(geometry) : { min: 0, max: 40 }
+        dispatchViewport({ type: 'palette_section_start' })
+        const ext = viewportGeometry ? worldYRangeFromExtrudeMeshGeometry(viewportGeometry) : { min: 0, max: 40 }
         setSectionYMm((ext.min + ext.max) / 2)
         onStatus?.('Section on — drag Y clip under 3D preview. Esc clears.')
         return
@@ -348,9 +379,7 @@ export function DesignWorkspace() {
       if (commandId === 'sk_choose_plane') {
         setRibbonTab('sketch')
         setCanvasPhase('model')
-        setFacePickMode(false)
-        setMeasureMode(false)
-        setSectionEnabled(false)
+        dispatchViewport({ type: 'choose_plane_flow' })
         onStatus?.('Choose a sketch plane (Top/Front/Right or Face), then click Enter sketch.')
         return
       }
@@ -404,11 +433,9 @@ export function DesignWorkspace() {
       if (commandId === 'sk_project') {
         setRibbonTab('sketch')
         setCanvasPhase('model')
-        setFacePickMode(false)
-        setProjectSketchDraftMm([])
-        setProjectSketchMode(true)
+        dispatchViewport({ type: 'project_start' })
         onStatus?.(
-          'Project: click the solid to sample points (orthogonal to sketch plane). Commit (≥2 pts) adds an open polyline. Esc cancels.'
+          'Project: click the solid to sample points (orthogonal to sketch plane). Commit sanitizes chain points and may auto-close near-loop drafts. Esc cancels.'
         )
         return
       }
@@ -418,29 +445,23 @@ export function DesignWorkspace() {
         queueMicrotask(() => {
           document.getElementById('design-sketch-pattern-controls')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
         })
-        onStatus?.('Sketch pattern: linear (ΔX/ΔY) or circular (pivot, total°, start°), then Pattern.')
+        onStatus?.('Sketch pattern: linear, circular, or path (polyline).')
         return
       }
     },
-    [onStatus, geometry]
+    [onStatus, viewportGeometry, dispatchViewport]
   )
   useDesignCommandListener(applyCommandFromPalette)
 
   useEffect(() => {
     if (canvasPhase !== 'sketch') return
-    setMeasureMode(false)
-    setMeasurePts([])
-    setSectionEnabled(false)
-    setFacePickMode(false)
-    setProjectSketchMode(false)
-    setProjectSketchDraftMm([])
+    dispatchViewport({ type: 'enter_sketch_phase' })
   }, [canvasPhase])
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape' && projectSketchMode) {
-        setProjectSketchMode(false)
-        setProjectSketchDraftMm([])
+        dispatchViewport({ type: 'project_cancel' })
         onStatus?.('Project cancelled.')
       }
     }
@@ -451,11 +472,8 @@ export function DesignWorkspace() {
   const onProjectSketchViewportPoint = useCallback(
     (p: THREE.Vector3) => {
       const { x, y } = worldPointToSketchMm(design.sketchPlane, p)
-      setProjectSketchDraftMm((d) => {
-        const next = [...d, { x, y }]
-        onStatus?.(`Project: ${next.length} sample(s) — Commit (≥2) or Esc.`)
-        return next
-      })
+      dispatchViewport({ type: 'project_append', pt: { x, y } })
+      onStatus?.('Project: sample added — Commit (≥2) or Esc.')
     },
     [design.sketchPlane, onStatus]
   )
@@ -465,78 +483,86 @@ export function DesignWorkspace() {
       onStatus?.('Need at least 2 projected points.')
       return
     }
-    const ids = projectSketchDraftMm.map(() => crypto.randomUUID())
+    const draft = sanitizeProjectedPolylineDraft(projectSketchDraftMm)
+    if (draft.points.length < 2) {
+      onStatus?.('Need at least 2 distinct projected points.')
+      return
+    }
+    const ids = draft.points.map(() => crypto.randomUUID())
     const nextPoints = { ...design.points }
-    for (let i = 0; i < projectSketchDraftMm.length; i++) {
-      nextPoints[ids[i]!] = { x: projectSketchDraftMm[i]!.x, y: projectSketchDraftMm[i]!.y }
+    for (let i = 0; i < draft.points.length; i++) {
+      nextPoints[ids[i]!] = { x: draft.points[i]!.x, y: draft.points[i]!.y }
     }
     const eid = crypto.randomUUID()
     onDesignChange({
       ...design,
       points: nextPoints,
-      entities: [...design.entities, { id: eid, kind: 'polyline', pointIds: ids, closed: false }]
+      entities: [...design.entities, { id: eid, kind: 'polyline', pointIds: ids, closed: draft.closed }]
     })
-    setProjectSketchDraftMm([])
-    setProjectSketchMode(false)
+    dispatchViewport({ type: 'project_cancel' })
     setCanvasPhase('sketch')
-    onStatus?.('Projected polyline added.')
-  }, [design, onDesignChange, onStatus, projectSketchDraftMm])
+    onStatus?.(draft.closed ? 'Projected loop added.' : 'Projected polyline added.')
+  }, [design, onDesignChange, onStatus, projectSketchDraftMm, dispatchViewport])
 
   const setSketchDatum = useCallback(
     (datum: 'XY' | 'XZ' | 'YZ') => {
-      setFacePickMode(false)
+      dispatchViewport({ type: 'face_pick_off' })
       dispatch({
         type: 'edit',
         design: { ...design, sketchPlane: { kind: 'datum', datum } }
       })
     },
-    [design, dispatch]
+    [design, dispatch, dispatchViewport]
   )
 
   const onPickSketchFace = useCallback(
     (pick: { origin: [number, number, number]; normal: [number, number, number]; xAxis: [number, number, number] }) => {
-      setFacePickMode(false)
+      dispatchViewport({ type: 'face_pick_off' })
       dispatch({
         type: 'edit',
         design: { ...design, sketchPlane: { kind: 'face', origin: pick.origin, normal: pick.normal, xAxis: pick.xAxis } }
       })
       onStatus?.('Sketch plane set from picked face. Enter sketch to draw on 2D grid.')
     },
-    [design, dispatch, onStatus]
+    [design, dispatch, dispatchViewport, onStatus]
   )
 
   const worldYExtents = useMemo(() => {
-    if (!geometry) return { min: 0, max: 40 }
-    return worldYRangeFromExtrudeMeshGeometry(geometry)
-  }, [geometry])
+    if (!viewportGeometry) return { min: 0, max: 40 }
+    return worldYRangeFromExtrudeMeshGeometry(viewportGeometry)
+  }, [viewportGeometry])
+
+  const datumPlanePickMode = useMemo(
+    () =>
+      ribbonTab === 'sketch' &&
+      canvasPhase === 'model' &&
+      !measureMode &&
+      !projectSketchMode &&
+      !facePickMode,
+    [ribbonTab, canvasPhase, measureMode, projectSketchMode, facePickMode]
+  )
+
+  const viewportActiveDatum = design.sketchPlane.kind === 'datum' ? design.sketchPlane.datum : null
+  const viewportSketchPlaneIsFace = design.sketchPlane.kind === 'face'
 
   useEffect(() => {
-    if (!geometry) return
-    const { min, max } = worldYRangeFromExtrudeMeshGeometry(geometry)
+    if (!viewportGeometry) return
+    const { min, max } = worldYRangeFromExtrudeMeshGeometry(viewportGeometry)
     setSectionYMm((y) => {
       if (!Number.isFinite(y)) return (min + max) / 2
       return Math.min(max, Math.max(min, y))
     })
-  }, [geometry])
+  }, [viewportGeometry])
 
   const onMeasureViewportPoint = useCallback(
     (p: Vector3) => {
       const v = { x: p.x, y: p.y, z: p.z }
-      setMeasurePts((prev) => {
-        if (prev.length >= 2) {
-          onStatus?.('Measure: first point — Shift+click again.')
-          return [v]
-        }
-        if (prev.length === 0) {
-          onStatus?.('Measure: Shift+click second point on the solid.')
-          return [v]
-        }
-        const d = Math.hypot(v.x - prev[0].x, v.y - prev[0].y, v.z - prev[0].z)
-        onStatus?.(`Distance: ${d.toFixed(3)} mm (preview mesh; verify against kernel if needed).`)
-        return [prev[0], v]
-      })
+      const prev = measurePtsRef.current
+      const { next, status } = appendMeasureSample(prev, v, inspectMeshSourceLabel)
+      dispatchViewport({ type: 'measure_set_pts', pts: next })
+      onStatus?.(status)
     },
-    [onStatus]
+    [onStatus, inspectMeshSourceLabel]
   )
 
   const closedPolyIds = useMemo(
@@ -557,6 +583,7 @@ export function DesignWorkspace() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      dispatchViewport({ type: 'esc_overlay' })
       setPickSlot(null)
       setEntityPickSlot(null)
       setLinearDimStep('off')
@@ -566,13 +593,111 @@ export function DesignWorkspace() {
       setAngularDimStep('off')
       setAngularDimL1(null)
       setDimEntityPickMode(false)
-      setMeasureMode(false)
-      setMeasurePts([])
-      setSectionEnabled(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  function addAutoDrivingDistanceDimension(kind: 'linear' | 'aligned', aId: string, bId: string): void {
+    const pa = design.points[aId]
+    const pb = design.points[bId]
+    const measured = pa && pb ? Math.hypot(pb.x - pa.x, pb.y - pa.y) : 25
+    const key = nextParamSuffix('d')
+    const did = crypto.randomUUID()
+    const cid = crypto.randomUUID()
+    onDesignChange({
+      ...design,
+      parameters: { ...design.parameters, [key]: Number(measured.toFixed(3)) },
+      dimensions: [...(design.dimensions ?? []), { id: did, kind, aId, bId, parameterKey: key }],
+      constraints: [
+        ...design.constraints,
+        { id: cid, type: 'distance', a: { pointId: aId }, b: { pointId: bId }, parameterKey: key }
+      ]
+    })
+    onStatus?.(`${kind === 'linear' ? 'Linear' : 'Aligned'} dimension added (auto-driving ${key}).`)
+  }
+
+  function addAutoDrivingRadialDimension(kind: 'radial' | 'diameter', entityId: string): void {
+    const ent = design.entities.find((e) => e.id === entityId)
+    let radiusMm = 10
+    if (ent?.kind === 'circle') {
+      radiusMm = ent.r
+    } else if (ent?.kind === 'arc') {
+      const ps = design.points[ent.startId]
+      const pv = design.points[ent.viaId]
+      const pe = design.points[ent.endId]
+      if (ps && pv && pe) {
+        const circ = circleThroughThreePoints(ps.x, ps.y, pv.x, pv.y, pe.x, pe.y)
+        if (circ) radiusMm = circ.r
+      }
+    } else if (ent?.kind === 'ellipse') {
+      radiusMm = (ent.rx + ent.ry) * 0.5
+    }
+    const key = nextParamSuffix('d')
+    const did = crypto.randomUUID()
+    const cid = crypto.randomUUID()
+    const value = kind === 'diameter' ? radiusMm * 2 : radiusMm
+    onDesignChange({
+      ...design,
+      parameters: { ...design.parameters, [key]: Number(value.toFixed(3)) },
+      dimensions: [...(design.dimensions ?? []), { id: did, kind, entityId, parameterKey: key }],
+      constraints: [
+        ...design.constraints,
+        kind === 'radial'
+          ? { id: cid, type: 'radius', entityId, parameterKey: key }
+          : { id: cid, type: 'diameter', entityId, parameterKey: key }
+      ]
+    })
+    onStatus?.(`${kind === 'radial' ? 'Radial' : 'Diameter'} dimension added (auto-driving ${key}).`)
+  }
+
+  function addAutoDrivingAngularDimension(
+    l1: { a: string; b: string },
+    l2a: string,
+    l2b: string
+  ): void {
+    const p1 = design.points[l1.a]
+    const p2 = design.points[l1.b]
+    const p3 = design.points[l2a]
+    const p4 = design.points[l2b]
+    let measuredDeg = 45
+    if (p1 && p2 && p3 && p4) {
+      const v1x = p2.x - p1.x
+      const v1y = p2.y - p1.y
+      const v2x = p4.x - p3.x
+      const v2y = p4.y - p3.y
+      const l1n = Math.hypot(v1x, v1y)
+      const l2n = Math.hypot(v2x, v2y)
+      if (l1n > 1e-9 && l2n > 1e-9) {
+        const cos = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1n * l2n)))
+        measuredDeg = (Math.acos(cos) * 180) / Math.PI
+      }
+    }
+    const key = nextParamSuffix('ang')
+    const did = crypto.randomUUID()
+    const cid = crypto.randomUUID()
+    onDesignChange({
+      ...design,
+      parameters: { ...design.parameters, [key]: Number(measuredDeg.toFixed(3)) },
+      dimensions: [
+        ...(design.dimensions ?? []),
+        { id: did, kind: 'angular', a1Id: l1.a, b1Id: l1.b, a2Id: l2a, b2Id: l2b, parameterKey: key }
+      ],
+      constraints: [
+        ...design.constraints,
+        {
+          id: cid,
+          type: 'angle',
+          a1: { pointId: l1.a },
+          b1: { pointId: l1.b },
+          a2: { pointId: l2a },
+          b2: { pointId: l2b },
+          parameterKey: key
+        }
+      ]
+    })
+    onStatus?.(`Angular dimension added (auto-driving ${key}).`)
+  }
 
   const applyConstraintPointPick = useCallback(
     (id: string) => {
@@ -583,14 +708,9 @@ export function DesignWorkspace() {
         return
       }
       if (linearDimStep === 'b') {
-        const did = crypto.randomUUID()
-        onDesignChange({
-          ...design,
-          dimensions: [...(design.dimensions ?? []), { id: did, kind: 'linear', aId: linearDimAId, bId: id }]
-        })
+        addAutoDrivingDistanceDimension('linear', linearDimAId, id)
         setLinearDimStep('off')
         setLinearDimAId('')
-        onStatus?.('Linear dimension added (annotation only).')
         return
       }
       if (alignedDimStep === 'a') {
@@ -600,14 +720,9 @@ export function DesignWorkspace() {
         return
       }
       if (alignedDimStep === 'b') {
-        const did = crypto.randomUUID()
-        onDesignChange({
-          ...design,
-          dimensions: [...(design.dimensions ?? []), { id: did, kind: 'aligned', aId: alignedDimAId, bId: id }]
-        })
+        addAutoDrivingDistanceDimension('aligned', alignedDimAId, id)
         setAlignedDimStep('off')
         setAlignedDimAId('')
-        onStatus?.('Aligned dimension added (annotation only).')
         return
       }
       if (!pickSlot) return
@@ -673,17 +788,9 @@ export function DesignWorkspace() {
           onStatus?.('Angular dimension reset: pick first segment.')
           return
         }
-        const did = crypto.randomUUID()
-        onDesignChange({
-          ...design,
-          dimensions: [
-            ...(design.dimensions ?? []),
-            { id: did, kind: 'angular', a1Id: angularDimL1.a, b1Id: angularDimL1.b, a2Id: a, b2Id: b }
-          ]
-        })
+        addAutoDrivingAngularDimension(angularDimL1, a, b)
         setAngularDimStep('off')
         setAngularDimL1(null)
-        onStatus?.('Angular dimension added (annotation only).')
         return
       }
       if (!pickSlot) return
@@ -791,6 +898,7 @@ export function DesignWorkspace() {
       }
       onStatus?.(`Kernel build OK — STEP + STL written.${parityMsg}`)
       onExportedStl?.(r.stlPath)
+      await refreshKernelInspectGeometry()
     } else {
       onStatus?.(formatKernelBuildStatus(r.error, r.detail))
     }
@@ -805,7 +913,12 @@ export function DesignWorkspace() {
   if (!projectDir) {
     return (
       <div className="workspace-placeholder panel">
-        <p className="msg">Open a project folder from Utilities → Project to edit the design.</p>
+        <p className="msg">Open a project folder from File → Project to edit the design.</p>
+        <p className="msg msg--muted stack-section--sm">
+          Or use <strong>New from 3D…</strong> in the top bar to create a project from an STL/mesh without opening a folder
+          first. After a project is open, use <strong>Import 3D model…</strong> on the Design ribbon, or{' '}
+          <strong>File → Project</strong>, or the command palette (<strong>ut_import_3d</strong> / “import 3d”).
+        </p>
       </div>
     )
   }
@@ -814,8 +927,7 @@ export function DesignWorkspace() {
     <div className="design-workspace design-workspace--shell">
       <div className="design-ribbon design-ribbon-fusion">
         <div className="design-ribbon-chrome">
-          <div className="design-workspace-pill">Design</div>
-          <nav className="design-ribbon-tabs" role="tablist" aria-label="Design ribbon">
+          <nav className="design-ribbon-tabs" role="tablist" aria-label="Design modeling ribbon">
             {DESIGN_RIBBON_TABS.map((t) => (
               <button
                 key={t.id}
@@ -829,6 +941,18 @@ export function DesignWorkspace() {
               </button>
             ))}
           </nav>
+          {onImport3D ? (
+            <div className="design-ribbon-chrome-trail">
+              <button
+                type="button"
+                className="secondary design-ribbon-import-3d"
+                title="Import STL, STEP, OBJ, etc. into assets/ (same as File → Project)"
+                onClick={() => void onImport3D()}
+              >
+                Import 3D…
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="design-ribbon-toolbar">
           {ribbonTab === 'solid' && (
@@ -1606,10 +1730,39 @@ export function DesignWorkspace() {
             >
               + hole
             </button>
-            <label title="Cosmetic thread axis center X/Y">
+            <label title="Thread wizard axis center X/Y">
               Thread X/Y
               <input type="number" step={0.5} value={kernelThreadCx} onChange={(e) => setKernelThreadCx(Number(e.target.value) || 0)} />
               <input type="number" step={0.5} value={kernelThreadCy} onChange={(e) => setKernelThreadCy(Number(e.target.value) || 0)} />
+            </label>
+            <label title="Thread wizard metadata">
+              std / designation / class
+              <input type="text" value={kernelThreadStandard} onChange={(e) => setKernelThreadStandard(e.target.value || 'ISO')} />
+              <input
+                type="text"
+                value={kernelThreadDesignation}
+                onChange={(e) => setKernelThreadDesignation(e.target.value || 'M8x1.25')}
+              />
+              <input type="text" value={kernelThreadClass} onChange={(e) => setKernelThreadClass(e.target.value || '6g')} />
+            </label>
+            <label>
+              mode / hand / starts
+              <select value={kernelThreadMode} onChange={(e) => setKernelThreadMode(e.target.value as 'modeled' | 'cosmetic')}>
+                <option value="modeled">modeled</option>
+                <option value="cosmetic">cosmetic</option>
+              </select>
+              <select value={kernelThreadHand} onChange={(e) => setKernelThreadHand(e.target.value as 'right' | 'left')}>
+                <option value="right">right</option>
+                <option value="left">left</option>
+              </select>
+              <input
+                type="number"
+                min={1}
+                max={8}
+                step={1}
+                value={kernelThreadStarts}
+                onChange={(e) => setKernelThreadStarts(Math.max(1, Math.min(8, Math.floor(Number(e.target.value) || 1))))}
+              />
             </label>
             <label>
               R / pitch
@@ -1649,21 +1802,27 @@ export function DesignWorkspace() {
             <button
               type="button"
               className="secondary"
-              title="Simplified cosmetic rings (not true helical thread)"
+              title="Thread wizard: modeled helical cut or cosmetic marker"
               onClick={() => {
                 void appendKernelOp({
-                  kind: 'thread_cosmetic',
+                  kind: 'thread_wizard',
                   centerXMm: kernelThreadCx,
                   centerYMm: kernelThreadCy,
                   majorRadiusMm: kernelThreadR,
                   pitchMm: kernelThreadPitch,
                   lengthMm: kernelThreadLen,
                   depthMm: kernelThreadDepth,
-                  zStartMm: kernelThreadZ0
+                  zStartMm: kernelThreadZ0,
+                  mode: kernelThreadMode,
+                  hand: kernelThreadHand,
+                  standard: kernelThreadStandard.trim() || 'ISO',
+                  designation: kernelThreadDesignation.trim() || 'M',
+                  class: kernelThreadClass.trim() || '6g',
+                  starts: kernelThreadStarts
                 } satisfies KernelPostSolidOp)
               }}
             >
-              + thread cosmetic
+              + thread wizard
             </button>
             <label title="Move/copy translation in mm">
               Move ΔX/Y/Z
@@ -1776,10 +1935,21 @@ export function DesignWorkspace() {
                 onChange={(e) => setKernelSweepZStartMm(Number(e.target.value) || 0)}
               />
             </label>
+            <label title="Sweep orientation follow mode">
+              orientation
+              <select
+                value={kernelSweepOrientationMode}
+                onChange={(e) => setKernelSweepOrientationMode(e.target.value as 'fixed_normal' | 'frenet' | 'path_tangent_lock')}
+              >
+                <option value="frenet">frenet</option>
+                <option value="path_tangent_lock">path_tangent_lock</option>
+                <option value="fixed_normal">fixed_normal (+Z)</option>
+              </select>
+            </label>
             <button
               type="button"
               className="secondary"
-              title="Partial sweep: profile extruded segment-by-segment along path"
+              title="True sweep path mode with orientation follow"
               onClick={() => {
                 const ent = design.entities.find((e) => e.id === kernelSweepPathEntityId)
                 if (!ent || ent.kind !== 'polyline') {
@@ -1809,14 +1979,16 @@ export function DesignWorkspace() {
                   return
                 }
                 void appendKernelOp({
-                  kind: 'sweep_profile_path',
+                  kind: 'sweep_profile_path_true',
                   profileIndex: kernelSweepProfileIndex,
                   pathPoints,
-                  zStartMm: kernelSweepZStartMm
+                  zStartMm: kernelSweepZStartMm,
+                  orientationMode: kernelSweepOrientationMode,
+                  fixedNormal: kernelSweepOrientationMode === 'fixed_normal' ? [0, 0, 1] : undefined
                 } satisfies KernelPostSolidOp)
               }}
             >
-              + sweep
+              + sweep true
             </button>
             <label title="Pipe path polyline">
               Pipe path
@@ -1868,6 +2040,17 @@ export function DesignWorkspace() {
                 onChange={(e) => setKernelPipeZStartMm(Number(e.target.value) || 0)}
               />
             </label>
+            <label title="Pipe orientation follow mode">
+              pipe orientation
+              <select
+                value={kernelPipeOrientationMode}
+                onChange={(e) => setKernelPipeOrientationMode(e.target.value as 'fixed_normal' | 'frenet' | 'path_tangent_lock')}
+              >
+                <option value="frenet">frenet</option>
+                <option value="path_tangent_lock">path_tangent_lock</option>
+                <option value="fixed_normal">fixed_normal (+Z)</option>
+              </select>
+            </label>
             <button
               type="button"
               className="secondary"
@@ -1909,14 +2092,16 @@ export function DesignWorkspace() {
                   pathPoints,
                   outerRadiusMm: kernelPipeOuterRadiusMm,
                   wallThicknessMm: kernelPipeUseWall ? kernelPipeWallThicknessMm : undefined,
-                  zStartMm: kernelPipeZStartMm
+                  zStartMm: kernelPipeZStartMm,
+                  orientationMode: kernelPipeOrientationMode,
+                  fixedNormal: kernelPipeOrientationMode === 'fixed_normal' ? [0, 0, 1] : undefined
                 } satisfies KernelPostSolidOp)
               }}
             >
               + pipe
             </button>
-            <label title="Partial thicken surrogate using isotropic scale about body center">
-              Thicken Δ
+            <label title="True thicken/offset request">
+              Thicken d
               <input
                 type="number"
                 step={0.5}
@@ -1924,22 +2109,34 @@ export function DesignWorkspace() {
                 onChange={(e) => setKernelThickenDeltaMm(Number(e.target.value) || 0)}
               />
             </label>
+            <label>
+              side
+              <select
+                value={kernelThickenSide}
+                onChange={(e) => setKernelThickenSide(e.target.value as 'outward' | 'inward' | 'both')}
+              >
+                <option value="outward">outward</option>
+                <option value="inward">inward</option>
+                <option value="both">both</option>
+              </select>
+            </label>
             <button
               type="button"
               className="secondary"
-              title="Scale-based surrogate; not true face offset"
+              title="True offset thicken request (kernel offset API)"
               onClick={() => {
                 if (kernelThickenDeltaMm === 0) {
                   onStatus?.('Thicken requires non-zero Δ')
                   return
                 }
                 void appendKernelOp({
-                  kind: 'thicken_scale',
-                  deltaMm: kernelThickenDeltaMm
+                  kind: 'thicken_offset',
+                  distanceMm: kernelThickenDeltaMm,
+                  side: kernelThickenSide
                 } satisfies KernelPostSolidOp)
               }}
             >
-              + thicken
+              + thicken true
             </button>
             <label title="Coil center X/Y">
               Coil X/Y
@@ -2069,6 +2266,218 @@ export function DesignWorkspace() {
             >
               + sheet tab
             </button>
+            <span className="ribbon-kernel-ops" title="Sheet fold + flat pattern marker">
+              Sheet fold/flat
+            </span>
+            <label>
+              bend y / R / A
+              <input type="number" step={0.5} value={kernelSheetFoldLineY} onChange={(e) => setKernelSheetFoldLineY(Number(e.target.value) || 0)} />
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={kernelSheetFoldRadiusMm}
+                onChange={(e) => setKernelSheetFoldRadiusMm(Math.max(0.1, Number(e.target.value) || 0.1))}
+              />
+              <input type="number" step={1} value={kernelSheetFoldAngleDeg} onChange={(e) => setKernelSheetFoldAngleDeg(Number(e.target.value) || 0)} />
+            </label>
+            <label>
+              k / mode
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={kernelSheetFoldKFactor}
+                onChange={(e) => setKernelSheetFoldKFactor(Math.min(1, Math.max(0, Number(e.target.value) || 0)))}
+              />
+              <select
+                value={kernelSheetAllowanceMode}
+                onChange={(e) => setKernelSheetAllowanceMode(e.target.value as 'k_factor' | 'allowance_mm' | 'deduction_mm')}
+              >
+                <option value="k_factor">k_factor</option>
+                <option value="allowance_mm">allowance_mm</option>
+                <option value="deduction_mm">deduction_mm</option>
+              </select>
+            </label>
+            <label>
+              allow / ded
+              <input type="number" step={0.1} value={kernelSheetAllowanceMm} onChange={(e) => setKernelSheetAllowanceMm(Number(e.target.value) || 0)} />
+              <input type="number" step={0.1} value={kernelSheetDeductionMm} onChange={(e) => setKernelSheetDeductionMm(Number(e.target.value) || 0)} />
+            </label>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void appendKernelOp({
+                  kind: 'sheet_fold',
+                  bendLineYMm: kernelSheetFoldLineY,
+                  bendRadiusMm: kernelSheetFoldRadiusMm,
+                  bendAngleDeg: kernelSheetFoldAngleDeg,
+                  kFactor: kernelSheetFoldKFactor,
+                  bendAllowanceMode: kernelSheetAllowanceMode,
+                  allowanceMm: kernelSheetAllowanceMode === 'allowance_mm' ? kernelSheetAllowanceMm : undefined,
+                  deductionMm: kernelSheetAllowanceMode === 'deduction_mm' ? kernelSheetDeductionMm : undefined
+                } satisfies KernelPostSolidOp)
+              }
+            >
+              + fold
+            </button>
+            <label>
+              bend lines
+              <input
+                type="checkbox"
+                checked={kernelFlatIncludeBendLines}
+                onChange={(e) => setKernelFlatIncludeBendLines(e.target.checked)}
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void appendKernelOp({
+                  kind: 'sheet_flat_pattern',
+                  includeBendLines: kernelFlatIncludeBendLines
+                } satisfies KernelPostSolidOp)
+              }
+            >
+              + flat pattern
+            </button>
+            <label title="Guide rail polyline for loft validation marker">
+              guide rail
+              <select value={kernelGuideRailEntityId} onChange={(e) => setKernelGuideRailEntityId(e.target.value)} disabled={polylineEntityIds.length === 0}>
+                {polylineEntityIds.length === 0 ? (
+                  <option value="">(no polyline)</option>
+                ) : (
+                  polylineEntityIds.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                const ent = design.entities.find((e) => e.id === kernelGuideRailEntityId)
+                if (!ent || ent.kind !== 'polyline') {
+                  onStatus?.('Guide rail requires a polyline path entity')
+                  return
+                }
+                const rail: [number, number][] =
+                  'pointIds' in ent
+                    ? ent.pointIds
+                        .map((pid) => {
+                          const p = design.points[pid]
+                          return p ? ([p.x, p.y] as [number, number]) : null
+                        })
+                        .filter((p): p is [number, number] => p !== null)
+                    : ent.points.map(([x, y]) => [x, y] as [number, number])
+                if (rail.length < 2) {
+                  onStatus?.('Guide rail needs at least 2 valid points')
+                  return
+                }
+                void appendKernelOp({ kind: 'loft_guide_rails', rails: [rail] } satisfies KernelPostSolidOp)
+              }}
+            >
+              + guide rails
+            </button>
+            <span className="ribbon-kernel-ops" title="Plastic-rule MVP features">
+              Plastic
+            </span>
+            <label>
+              rule fillet R
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={kernelPlasticFilletRadiusMm}
+                onChange={(e) => setKernelPlasticFilletRadiusMm(Math.max(0.1, Number(e.target.value) || 0.1))}
+              />
+            </label>
+            <button type="button" className="secondary" onClick={() => void appendKernelOp({ kind: 'plastic_rule_fillet', radiusMm: kernelPlasticFilletRadiusMm } satisfies KernelPostSolidOp)}>
+              + rule fillet
+            </button>
+            <label>
+              boss XY/Z
+              <input type="number" step={0.5} value={kernelPlasticBossCx} onChange={(e) => setKernelPlasticBossCx(Number(e.target.value) || 0)} />
+              <input type="number" step={0.5} value={kernelPlasticBossCy} onChange={(e) => setKernelPlasticBossCy(Number(e.target.value) || 0)} />
+              <input type="number" step={0.5} value={kernelPlasticBossZBase} onChange={(e) => setKernelPlasticBossZBase(Number(e.target.value) || 0)} />
+            </label>
+            <label>
+              boss R/hole/h
+              <input type="number" min={0.1} step={0.1} value={kernelPlasticBossOuterR} onChange={(e) => setKernelPlasticBossOuterR(Math.max(0.1, Number(e.target.value) || 0.1))} />
+              <input
+                type="number"
+                min={0.05}
+                step={0.05}
+                value={kernelPlasticBossHoleR}
+                onChange={(e) => setKernelPlasticBossHoleR(Math.max(0.05, Number(e.target.value) || 0.05))}
+                disabled={!kernelPlasticBossUseHole}
+              />
+              <input type="number" min={0.1} step={0.1} value={kernelPlasticBossHeight} onChange={(e) => setKernelPlasticBossHeight(Math.max(0.1, Number(e.target.value) || 0.1))} />
+            </label>
+            <label>
+              hole?
+              <input type="checkbox" checked={kernelPlasticBossUseHole} onChange={(e) => setKernelPlasticBossUseHole(e.target.checked)} />
+            </label>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void appendKernelOp({
+                  kind: 'plastic_boss',
+                  centerXMm: kernelPlasticBossCx,
+                  centerYMm: kernelPlasticBossCy,
+                  zBaseMm: kernelPlasticBossZBase,
+                  outerRadiusMm: kernelPlasticBossOuterR,
+                  holeRadiusMm: kernelPlasticBossUseHole ? kernelPlasticBossHoleR : undefined,
+                  heightMm: kernelPlasticBossHeight,
+                  draftDeg: 1
+                } satisfies KernelPostSolidOp)
+              }
+            >
+              + boss
+            </button>
+            <label>
+              lip mode
+              <select value={kernelPlasticLipMode} onChange={(e) => setKernelPlasticLipMode(e.target.value as 'lip' | 'groove')}>
+                <option value="lip">lip</option>
+                <option value="groove">groove</option>
+              </select>
+            </label>
+            <label>
+              lip x/y
+              <input type="number" step={0.5} value={kernelPlasticLipXMin} onChange={(e) => setKernelPlasticLipXMin(Number(e.target.value) || 0)} />
+              <input type="number" step={0.5} value={kernelPlasticLipXMax} onChange={(e) => setKernelPlasticLipXMax(Number(e.target.value) || 0)} />
+              <input type="number" step={0.5} value={kernelPlasticLipYMin} onChange={(e) => setKernelPlasticLipYMin(Number(e.target.value) || 0)} />
+              <input type="number" step={0.5} value={kernelPlasticLipYMax} onChange={(e) => setKernelPlasticLipYMax(Number(e.target.value) || 0)} />
+            </label>
+            <label>
+              z/depth
+              <input type="number" step={0.5} value={kernelPlasticLipZBase} onChange={(e) => setKernelPlasticLipZBase(Number(e.target.value) || 0)} />
+              <input type="number" min={0.1} step={0.1} value={kernelPlasticLipDepth} onChange={(e) => setKernelPlasticLipDepth(Math.max(0.1, Number(e.target.value) || 0.1))} />
+            </label>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void appendKernelOp({
+                  kind: 'plastic_lip_groove',
+                  mode: kernelPlasticLipMode,
+                  xMinMm: kernelPlasticLipXMin,
+                  xMaxMm: kernelPlasticLipXMax,
+                  yMinMm: kernelPlasticLipYMin,
+                  yMaxMm: kernelPlasticLipYMax,
+                  zBaseMm: kernelPlasticLipZBase,
+                  depthMm: kernelPlasticLipDepth
+                } satisfies KernelPostSolidOp)
+              }
+            >
+              + lip/groove
+            </button>
                 </div>
               </RibbonFusionGroup>
             </div>
@@ -2103,7 +2512,7 @@ export function DesignWorkspace() {
                 type="button"
                 className="primary"
                 onClick={() => {
-                  setFacePickMode(false)
+                  dispatchViewport({ type: 'face_pick_off' })
                   setCanvasPhase('sketch')
                 }}
               >
@@ -2112,17 +2521,15 @@ export function DesignWorkspace() {
               <button
                 type="button"
                 className={facePickMode ? 'primary' : 'secondary'}
-                disabled={!geometry}
+                disabled={!viewportGeometry}
                 title={
-                  geometry
+                  viewportGeometry
                     ? 'Click a face in the 3D view to set sketch plane.'
-                    : 'Need 3D geometry first (extrude/revolve/loft) before face pick.'
+                    : 'Need 3D geometry first (extrude/revolve/loft or kernel STL) before face pick.'
                 }
                 onClick={() => {
                   setCanvasPhase('model')
-                  setFacePickMode((v) => !v)
-                  setMeasureMode(false)
-                  setSectionEnabled(false)
+                  dispatchViewport({ type: 'face_pick_toggle' })
                   onStatus?.('Face pick mode: click a model face in 3D view.')
                 }}
               >
@@ -2319,14 +2726,14 @@ export function DesignWorkspace() {
               onClick={() => setTool('move_sk')}
               title="Translate whole sketch: first point → second point"
             />
-            <label className="msg" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <label className="msg label--inline-flex">
               Rot°
               <input
                 type="number"
                 step={1}
                 value={sketchRotateDeg}
                 onChange={(e) => setSketchRotateDeg(Number(e.target.value) || 0)}
-                style={{ width: 52 }}
+                className="input-w-52"
               />
             </label>
             <RibbonIconButton
@@ -2337,7 +2744,7 @@ export function DesignWorkspace() {
               onClick={() => setTool('rotate_sk')}
               title="Click pivot; rotates whole sketch by Rot°"
             />
-            <label className="msg" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <label className="msg label--inline-flex">
               Scl
               <input
                 type="number"
@@ -2345,7 +2752,7 @@ export function DesignWorkspace() {
                 min={0.01}
                 value={sketchScaleFactor}
                 onChange={(e) => setSketchScaleFactor(Math.max(0.01, Number(e.target.value) || 1))}
-                style={{ width: 52 }}
+                className="input-w-52"
               />
             </label>
             <RibbonIconButton
@@ -2442,20 +2849,21 @@ export function DesignWorkspace() {
             >
               Offset loop
             </button>
-            <div
-              id="design-sketch-pattern-controls"
-              className="ribbon-row ribbon-row--wrap"
-              style={{ alignItems: 'center', gap: 6 }}
-            >
+            <div id="design-sketch-pattern-controls" className="ribbon-row ribbon-row--wrap ribbon-row--center-gap-6">
               <label title="Linear: copies along Δ. Circular: copies rotated around pivot (same step rule as kernel pattern_circular).">
                 Pattern
                 <select
                   value={sketchPatternMode}
-                  onChange={(e) => setSketchPatternMode(e.target.value === 'circular' ? 'circular' : 'linear')}
-                  style={{ width: 88 }}
+                  onChange={(e) =>
+                    setSketchPatternMode(
+                      e.target.value === 'circular' ? 'circular' : e.target.value === 'path' ? 'path' : 'linear'
+                    )
+                  }
+                  className="input-w-88"
                 >
                   <option value="linear">Linear</option>
                   <option value="circular">Circular</option>
+                  <option value="path">Path</option>
                 </select>
               </label>
               <label title="Total instances (original + copies); circular uses total° ÷ count per kernel">
@@ -2466,7 +2874,7 @@ export function DesignWorkspace() {
                   max={64}
                   value={sketchPatternInstances}
                   onChange={(e) => setSketchPatternInstances(Math.max(2, Math.min(64, Math.floor(Number(e.target.value) || 2))))}
-                  style={{ width: 48 }}
+                  className="input-w-48"
                 />
               </label>
               {sketchPatternMode === 'linear' ? (
@@ -2478,7 +2886,7 @@ export function DesignWorkspace() {
                       step={0.5}
                       value={sketchPatternDx}
                       onChange={(e) => setSketchPatternDx(Number(e.target.value) || 0)}
-                      style={{ width: 52 }}
+                      className="input-w-52"
                     />
                   </label>
                   <label>
@@ -2488,11 +2896,11 @@ export function DesignWorkspace() {
                       step={0.5}
                       value={sketchPatternDy}
                       onChange={(e) => setSketchPatternDy(Number(e.target.value) || 0)}
-                      style={{ width: 52 }}
+                      className="input-w-52"
                     />
                   </label>
                 </>
-              ) : (
+              ) : sketchPatternMode === 'circular' ? (
                 <>
                   <label title="Rotation center (sketch mm)">
                     Pivot X
@@ -2501,7 +2909,7 @@ export function DesignWorkspace() {
                       step={0.5}
                       value={sketchCircPivotX}
                       onChange={(e) => setSketchCircPivotX(Number(e.target.value) || 0)}
-                      style={{ width: 52 }}
+                      className="input-w-52"
                     />
                   </label>
                   <label title="Rotation center (sketch mm)">
@@ -2511,7 +2919,7 @@ export function DesignWorkspace() {
                       step={0.5}
                       value={sketchCircPivotY}
                       onChange={(e) => setSketchCircPivotY(Number(e.target.value) || 0)}
-                      style={{ width: 52 }}
+                      className="input-w-52"
                     />
                   </label>
                   <label title="Total angular span (0° &lt; total ≤ 360°); step = total ÷ Pat #">
@@ -2525,7 +2933,7 @@ export function DesignWorkspace() {
                       onChange={(e) =>
                         setSketchCircTotalDeg(Math.max(1, Math.min(360, Math.floor(Number(e.target.value) || 360))))
                       }
-                      style={{ width: 52 }}
+                      className="input-w-52"
                     />
                   </label>
                   <label title="First copy angle offset (degrees)">
@@ -2535,8 +2943,38 @@ export function DesignWorkspace() {
                       step={1}
                       value={sketchCircStartDeg}
                       onChange={(e) => setSketchCircStartDeg(Number(e.target.value) || 0)}
-                      style={{ width: 52 }}
+                      className="input-w-52"
                     />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label title="Polyline path used for sample spacing.">
+                    Path
+                    <select
+                      value={sketchPathPatternEntityId}
+                      onChange={(e) => setSketchPathPatternEntityId(e.target.value)}
+                      className="input-w-112"
+                      disabled={polylineEntityIds.length === 0}
+                    >
+                      {polylineEntityIds.length === 0 ? (
+                        <option value="">(no polyline)</option>
+                      ) : (
+                        polylineEntityIds.map((id) => (
+                          <option key={id} value={id}>
+                            {id.slice(0, 8)}...
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  <label title="Include last→first edge in path arc-length sampling.">
+                    <input
+                      type="checkbox"
+                      checked={sketchPathPatternClosed}
+                      onChange={(e) => setSketchPathPatternClosed(e.target.checked)}
+                    />
+                    Closed path
                   </label>
                 </>
               )}
@@ -2546,7 +2984,9 @@ export function DesignWorkspace() {
                 title={
                   sketchPatternMode === 'linear'
                     ? 'Linear pattern: duplicate original sketch along Δ×(1…n−1)'
-                    : 'Circular pattern: rotate copies around pivot (total° ÷ Pat #, same as kernel pattern_circular)'
+                    : sketchPatternMode === 'circular'
+                      ? 'Circular pattern: rotate copies around pivot (total° ÷ Pat #, same as kernel pattern_circular)'
+                      : 'Path pattern: duplicate original sketch at evenly spaced samples along selected polyline'
                 }
                 commandId="sk_pattern_sk"
                 onClick={() => {
@@ -2563,26 +3003,49 @@ export function DesignWorkspace() {
                     )
                     return
                   }
-                  if (sketchCircTotalDeg <= 0 || sketchCircTotalDeg > 360) {
-                    onStatus?.('Circular pattern: Total° must be between 1 and 360.')
+                  if (sketchPatternMode === 'circular') {
+                    if (sketchCircTotalDeg <= 0 || sketchCircTotalDeg > 360) {
+                      onStatus?.('Circular pattern: Total° must be between 1 and 360.')
+                      return
+                    }
+                    const next = circularPatternSketchInstances(
+                      design,
+                      sketchCircPivotX,
+                      sketchCircPivotY,
+                      sketchPatternInstances,
+                      sketchCircTotalDeg,
+                      sketchCircStartDeg
+                    )
+                    if (next.entities.length === design.entities.length) {
+                      onStatus?.('Circular pattern: no copies added (check Pat # and Total°).')
+                      return
+                    }
+                    onDesignChange(next)
+                    const step = sketchCircTotalDeg / sketchPatternInstances
+                    onStatus?.(
+                      `Circular pattern: ${sketchPatternInstances} instance(s) around (${sketchCircPivotX}, ${sketchCircPivotY}) mm, step ${step.toFixed(1)}°, total ${sketchCircTotalDeg}°, start ${sketchCircStartDeg}.`
+                    )
                     return
                   }
-                  const next = circularPatternSketchInstances(
+                  if (!sketchPathPatternEntityId) {
+                    onStatus?.('Path pattern: choose a polyline path first.')
+                    return
+                  }
+                  const next = pathPatternSketchInstances(
                     design,
-                    sketchCircPivotX,
-                    sketchCircPivotY,
+                    sketchPathPatternEntityId,
                     sketchPatternInstances,
-                    sketchCircTotalDeg,
-                    sketchCircStartDeg
+                    sketchPathPatternClosed
                   )
                   if (next.entities.length === design.entities.length) {
-                    onStatus?.('Circular pattern: no copies added (check Pat # and Total°).')
+                    onStatus?.('Path pattern: no copies added (check path polyline and Pat #).')
                     return
                   }
                   onDesignChange(next)
-                  const step = sketchCircTotalDeg / sketchPatternInstances
                   onStatus?.(
-                    `Circular pattern: ${sketchPatternInstances} instance(s) around (${sketchCircPivotX}, ${sketchCircPivotY}) mm, step ${step.toFixed(1)}°, total ${sketchCircTotalDeg}°, start ${sketchCircStartDeg}°.`
+                    `Path pattern: ${sketchPatternInstances} instance(s) along ${sketchPathPatternEntityId.slice(0, 8)}${
+                      sketchPathPatternClosed ? ' (closed)' : ''
+                    }.`
                   )
                 }}
               />
@@ -2664,12 +3127,7 @@ export function DesignWorkspace() {
                   onStatus?.('Radial dimension: choose a circle or arc first.')
                   return
                 }
-                const did = crypto.randomUUID()
-                onDesignChange({
-                  ...design,
-                  dimensions: [...(design.dimensions ?? []), { id: did, kind: 'radial', entityId: dimEntityId }]
-                })
-                onStatus?.('Radial dimension added (annotation only).')
+                addAutoDrivingRadialDimension('radial', dimEntityId)
               }}
             />
             <RibbonIconButton
@@ -2682,12 +3140,7 @@ export function DesignWorkspace() {
                   onStatus?.('Diameter dimension: choose a circle or arc first.')
                   return
                 }
-                const did = crypto.randomUUID()
-                onDesignChange({
-                  ...design,
-                  dimensions: [...(design.dimensions ?? []), { id: did, kind: 'diameter', entityId: dimEntityId }]
-                })
-                onStatus?.('Diameter dimension added (annotation only).')
+                addAutoDrivingRadialDimension('diameter', dimEntityId)
               }}
             />
           </div>
@@ -2756,15 +3209,15 @@ export function DesignWorkspace() {
                 </div>
               </>
             ) : cType === 'radius' || cType === 'diameter' ? (
-              <div className="constraint-field-row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
-                <label style={{ minWidth: 180, flex: '1 1 180px' }}>
+              <div className="constraint-field-row constraint-field-row--wrap">
+                <label className="label--grow-180">
                   Entity
                   <input value={cA} onChange={(e) => setCA(e.target.value)} onFocus={() => setEntityPickSlot('cA')} list="entity-ids-ribbon" />
                 </label>
                 <button type="button" className="secondary constraint-pick-target" aria-label="Pick entity" onClick={() => setEntityPickSlot('cA')}>
                   ⌖
                 </button>
-                <label style={{ minWidth: 160, flex: '1 1 160px' }}>
+                <label className="label--grow-160">
                   {cType === 'radius' ? 'Driving radius (mm)' : 'Driving diameter (mm)'}
                   <input value={cParam} onChange={(e) => setCParam(e.target.value)} list="design-param-keys" />
                 </label>
@@ -3222,8 +3675,8 @@ export function DesignWorkspace() {
               </>
             )}
             {(cType === 'distance' || cType === 'angle') && (
-              <div className="constraint-field-row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
-                <label style={{ minWidth: 160, flex: '1 1 160px' }}>
+              <div className="constraint-field-row constraint-field-row--wrap">
+                <label className="label--grow-160">
                   {cType === 'distance' ? 'Driving length (mm)' : 'Driving angle (degrees)'}
                   <input
                     value={cParam}
@@ -3291,9 +3744,7 @@ export function DesignWorkspace() {
 
         <div id="design-parameters-panel" className="ribbon-group ribbon-group--params">
           <span className="ribbon-group-label">Parameters</span>
-          <span className="msg" style={{ marginLeft: 8, fontSize: '0.85em' }}>
-            d* = mm (distance), a* = ° (angle)
-          </span>
+          <span className="msg design-params-hint">d* = mm (distance), a* = ° (angle)</span>
           <div className="ribbon-row ribbon-row--wrap">
             {Object.entries(design.parameters).map(([k, v]) => (
               <label key={k}>
@@ -3316,89 +3767,50 @@ export function DesignWorkspace() {
         </>
         )}
 
-          {ribbonTab === 'inspect' && canvasPhase === 'sketch' && (
-            <div className="ribbon-toolbar-strip">
-              <div className="ribbon-group ribbon-group--in-tab">
-                <p className="msg sketch-gate-msg">
-                  <strong>Finish sketch</strong> to use 3D measure and section on the model view.
-                </p>
-              </div>
-            </div>
-          )}
+          {ribbonTab === 'inspect' && canvasPhase === 'sketch' && <InspectRibbonSketchGatePanel />}
 
           {ribbonTab === 'inspect' && canvasPhase === 'model' && (
-            <div className="ribbon-toolbar-strip">
-              <RibbonFusionGroup label="Inspect">
-                <div className="ribbon-row ribbon-row--fusion">
-                  <RibbonIconButton
-                    icon={<IconMeasure />}
-                    label="Measure"
-                    title="Shift+click two points on the 3D solid"
-                    active={measureMode}
-                    disabled={!geometry}
-                    commandId="ut_measure"
-                    onClick={() => {
-                      setCanvasPhase('model')
-                      setMeasureMode(true)
-                      setMeasurePts([])
-                      onStatus?.('Measure on — Shift+click two points on the 3D solid. Esc clears.')
-                    }}
-                  />
-                  <RibbonIconButton
-                    icon={<IconSection />}
-                    label="Section"
-                    title="Clip 3D preview at Y plane"
-                    active={sectionEnabled}
-                    disabled={!geometry}
-                    commandId="ut_section"
-                    onClick={() => {
-                      setCanvasPhase('model')
-                      setSectionEnabled(true)
-                      const ext = geometry ? worldYRangeFromExtrudeMeshGeometry(geometry) : { min: 0, max: 40 }
-                      setSectionYMm((ext.min + ext.max) / 2)
-                      onStatus?.('Section on — drag Y clip under 3D preview. Esc clears.')
-                    }}
-                  />
-                  <RibbonIconButton
-                    icon={<IconDim />}
-                    label="Linear dim"
-                    title="Pick two sketch points for annotation dimension"
-                    active={linearDimStep !== 'off'}
-                    commandId="dim_linear"
-                    onClick={() => {
-                      setRibbonTab('sketch')
-                      setCanvasPhase('sketch')
-                      setLinearDimStep('a')
-                      setPickSlot(null)
-                      onStatus?.('Linear dimension: pick first point, then second.')
-                    }}
-                  />
-                  <RibbonIconButton
-                    icon={<IconParams />}
-                    label="Params"
-                    title="Scroll to named parameters"
-                    commandId="ut_parameters"
-                    onClick={() => {
-                      setRibbonTab('constraint')
-                      setCanvasPhase('sketch')
-                      queueMicrotask(() => {
-                        document.getElementById('design-parameters-panel')?.scrollIntoView({
-                          behavior: 'smooth',
-                          block: 'nearest'
-                        })
-                      })
-                      onStatus?.('Parameters — Constraint tab.')
-                    }}
-                  />
-                </div>
-              </RibbonFusionGroup>
-            </div>
+            <InspectRibbonModelPanel
+              viewportGeometry={viewportGeometry}
+              measureMode={measureMode}
+              sectionEnabled={sectionEnabled}
+              linearDimStep={linearDimStep}
+              onEnsureModelPhase={() => setCanvasPhase('model')}
+              onMeasureActivate={() => {
+                dispatchViewport({ type: 'measure_start' })
+                onStatus?.('Measure on — Shift+click two points on the 3D solid. Esc clears.')
+              }}
+              onSectionActivate={() => {
+                dispatchViewport({ type: 'palette_section_start' })
+                const ext = viewportGeometry ? worldYRangeFromExtrudeMeshGeometry(viewportGeometry) : { min: 0, max: 40 }
+                setSectionYMm((ext.min + ext.max) / 2)
+                onStatus?.('Section on — drag Y clip under 3D preview. Esc clears.')
+              }}
+              onStartLinearDimension={() => {
+                setRibbonTab('sketch')
+                setCanvasPhase('sketch')
+                setLinearDimStep('a')
+                setPickSlot(null)
+                onStatus?.('Linear dimension: pick first point, then second.')
+              }}
+              onOpenParametersInConstraintTab={() => {
+                setRibbonTab('constraint')
+                setCanvasPhase('sketch')
+                queueMicrotask(() => {
+                  document.getElementById('design-parameters-panel')?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'nearest'
+                  })
+                })
+                onStatus?.('Parameters — Constraint tab.')
+              }}
+            />
           )}
         </div>
       </div>
 
       {solveReport ? (
-        <pre className="code design-solve-report" style={{ maxHeight: 72 }}>
+        <pre className="code design-solve-report design-solve-report--short">
           {solveReport}
         </pre>
       ) : null}
@@ -3408,7 +3820,9 @@ export function DesignWorkspace() {
           ? `${sketchDatumLabel(design.sketchPlane)} — 2D sketch only (X right, Y up). Pan: middle mouse or Shift+drag.`
           : facePickMode
             ? 'Model view — face pick is active. Click a solid face to set sketch plane.'
-            : 'Model view — orbit the 3D preview. To sketch: open the Sketch tab, pick datum or Face, then Enter sketch.'}
+            : ribbonTab === 'sketch'
+              ? 'Model view — tinted Top / Front / Right planes: click to choose datum (or use ribbon). Orbit with empty space.'
+              : 'Model view — orbit the 3D preview. To sketch: open the Sketch tab, pick datum or Face, then Enter sketch.'}
         {canvasPhase === 'sketch' && linearDimStep !== 'off'
           ? ' Linear dimension: pick two vertices (Esc cancels).'
           : canvasPhase === 'sketch' && alignedDimStep !== 'off'
@@ -3461,6 +3875,7 @@ export function DesignWorkspace() {
                 onSketchHint={onStatus}
                 sketchRotateDeg={sketchRotateDeg}
                 sketchScaleFactor={sketchScaleFactor}
+                planeLabel={sketchDatumLabel(design.sketchPlane)}
               />
             </div>
             {loaded && (
@@ -3491,6 +3906,7 @@ export function DesignWorkspace() {
                   <li key={dim.id}>
                     {(() => {
                       const linearLike = dim.kind === 'linear' || dim.kind === 'aligned'
+                      const angularLike = dim.kind === 'angular'
                       const radialLike = dim.kind === 'radial'
                       const diameterLike = dim.kind === 'diameter'
                       const linkedDriver = linearLike
@@ -3510,7 +3926,20 @@ export function DesignWorkspace() {
                                 (c): c is Extract<SketchConstraint, { type: 'diameter' }> =>
                                   c.type === 'diameter' && c.entityId === dim.entityId
                               )
-                            : undefined
+                            : angularLike
+                              ? design.constraints.find(
+                                  (c): c is Extract<SketchConstraint, { type: 'angle' }> =>
+                                    c.type === 'angle' &&
+                                    ((c.a1.pointId === dim.a1Id &&
+                                      c.b1.pointId === dim.b1Id &&
+                                      c.a2.pointId === dim.a2Id &&
+                                      c.b2.pointId === dim.b2Id) ||
+                                      (c.a1.pointId === dim.a2Id &&
+                                        c.b1.pointId === dim.b2Id &&
+                                        c.a2.pointId === dim.a1Id &&
+                                        c.b2.pointId === dim.b1Id))
+                                )
+                              : undefined
                       const linkedParamKey = linkedDriver?.parameterKey
                       const linkedParamValue =
                         linkedParamKey != null ? design.parameters[linkedParamKey] : undefined
@@ -3528,13 +3957,15 @@ export function DesignWorkspace() {
                             : `angular dim ${dim.a1Id.slice(0, 6)}…/${dim.a2Id.slice(0, 6)}…`}
                       {linkedParamKey
                         ? ` · [${linkedDriver?.type ?? 'driver'}] ${linkedParamKey}${
-                            typeof linkedParamValue === 'number' ? ` = ${linkedParamValue.toFixed(3)} mm` : ''
+                            typeof linkedParamValue === 'number'
+                              ? ` = ${linkedParamValue.toFixed(3)} ${angularLike ? 'deg' : 'mm'}`
+                              : ''
                           }`
                         : ''}
                     </span>
                     {linkedParamKey && typeof linkedParamValue === 'number' && (
                       <label>
-                        Value (mm)
+                        Value ({angularLike ? 'deg' : 'mm'})
                         <input
                           type="number"
                           step={0.1}
@@ -3588,13 +4019,15 @@ export function DesignWorkspace() {
                         Unlink
                       </button>
                     )}
-                    {(linearLike || radialLike || diameterLike) && (
+                    {(linearLike || angularLike || radialLike || diameterLike) && (
                       <button
                         type="button"
                         className="secondary"
                         title={
                           linearLike
                             ? 'Create distance constraint + parameter from this dimension'
+                            : angularLike
+                              ? 'Create angle constraint + parameter from this dimension'
                             : radialLike
                               ? 'Create radius constraint + parameter from this dimension'
                               : 'Create diameter constraint + parameter from this dimension'
@@ -3614,6 +4047,37 @@ export function DesignWorkspace() {
                               cParam: key
                             })
                             onStatus?.(`Driving distance created: ${key} = ${measured.toFixed(3)} mm`)
+                            return
+                          }
+                          if (angularLike) {
+                            const p1 = design.points[dim.a1Id]
+                            const p2 = design.points[dim.b1Id]
+                            const p3 = design.points[dim.a2Id]
+                            const p4 = design.points[dim.b2Id]
+                            const key = nextParamSuffix('ang')
+                            let measuredDeg = 45
+                            if (p1 && p2 && p3 && p4) {
+                              const v1x = p2.x - p1.x
+                              const v1y = p2.y - p1.y
+                              const v2x = p4.x - p3.x
+                              const v2y = p4.y - p3.y
+                              const l1 = Math.hypot(v1x, v1y)
+                              const l2 = Math.hypot(v2x, v2y)
+                              if (l1 > 1e-9 && l2 > 1e-9) {
+                                const cos = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+                                measuredDeg = (Math.acos(cos) * 180) / Math.PI
+                              }
+                            }
+                            setParameter(key, Number(measuredDeg.toFixed(3)))
+                            addConstraint({
+                              cType: 'angle',
+                              cA: dim.a1Id,
+                              cB: dim.b1Id,
+                              cC: dim.a2Id,
+                              cD: dim.b2Id,
+                              cParam: key
+                            })
+                            onStatus?.(`Driving angle created: ${key} = ${measuredDeg.toFixed(3)} deg`)
                             return
                           }
                           const ent = design.entities.find((e) => e.id === dim.entityId)
@@ -3679,16 +4143,26 @@ export function DesignWorkspace() {
           <div className="design-model-fullscreen">
             <div className="design-3d design-3d--fill design-3d--solo">
               <h3>3D preview</h3>
-              <div className="row design-viewport-tools" style={{ flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
+              {kernelManifest && kernelInspectStaleReason ? (
+                <p className="msg" role="status">
+                  <strong>Kernel mesh may be stale</strong> — measure/section use the sketch preview until you{' '}
+                  <strong>Build STEP (kernel)</strong> again. ({kernelInspectStaleReason})
+                </p>
+              ) : null}
+              <p
+                className={`msg${kernelManifest && kernelInspectStaleReason ? ' mt-xs' : ' msg--mt-zero'}`}
+              >
+                Inspect source: <strong>{inspectMeshSourceLabel}</strong>
+              </p>
+              <div className="row design-viewport-tools design-viewport-tools--wrap">
                 <label className="chk">
                   <input
                     type="checkbox"
                     checked={measureMode}
                     onChange={(e) => {
-                      setMeasureMode(e.target.checked)
-                      if (!e.target.checked) setMeasurePts([])
+                      dispatchViewport({ type: 'measure_set', enabled: e.target.checked })
                     }}
-                    disabled={!geometry}
+                    disabled={!viewportGeometry}
                   />
                   Measure
                 </label>
@@ -3696,12 +4170,12 @@ export function DesignWorkspace() {
                   type="button"
                   className="secondary"
                   disabled={measurePts.length === 0}
-                  onClick={() => setMeasurePts([])}
+                  onClick={() => dispatchViewport({ type: 'measure_clear_pts' })}
                 >
                   Clear picks
                 </button>
                 {measurePts.length === 2 ? (
-                  <span className="msg" style={{ margin: 0 }}>
+                  <span className="msg msg--zero">
                     Δ{' '}
                     {Math.hypot(
                       measurePts[1].x - measurePts[0].x,
@@ -3717,18 +4191,18 @@ export function DesignWorkspace() {
                     checked={sectionEnabled}
                     onChange={(e) => {
                       const on = e.target.checked
-                      setSectionEnabled(on)
-                      if (on && geometry) {
+                      dispatchViewport({ type: 'section_set', enabled: on })
+                      if (on && viewportGeometry) {
                         const { min, max } = worldYExtents
                         setSectionYMm((min + max) / 2)
                       }
                     }}
-                    disabled={!geometry}
+                    disabled={!viewportGeometry}
                   />
                   Section (Y)
                 </label>
-                {sectionEnabled && geometry ? (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                {sectionEnabled && viewportGeometry ? (
+                  <label className="label--row">
                     Clip Y (mm)
                     <input
                       type="range"
@@ -3738,19 +4212,17 @@ export function DesignWorkspace() {
                       value={Math.min(worldYExtents.max, Math.max(worldYExtents.min, sectionYMm))}
                       onChange={(e) => setSectionYMm(Number.parseFloat(e.target.value))}
                     />
-                    <span className="msg" style={{ margin: 0 }}>
-                      {sectionYMm.toFixed(2)}
-                    </span>
+                    <span className="msg msg--zero">{sectionYMm.toFixed(2)}</span>
                   </label>
                 ) : null}
               </div>
               {measureMode ? (
-                <p className="msg" style={{ marginTop: 0 }}>
+                <p className="msg msg--mt-zero">
                   <strong>Shift+click</strong> the solid for each sample (orbit with drag still works if you miss the mesh).
                 </p>
               ) : null}
-              {projectSketchMode && geometry ? (
-                <div className="msg" style={{ marginTop: 0, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              {projectSketchMode && viewportGeometry ? (
+                <div className="msg design-project-sketch-row">
                   <span>
                     <strong>Project</strong>: click the solid to add samples ({projectSketchDraftMm.length}).
                   </span>
@@ -3761,8 +4233,7 @@ export function DesignWorkspace() {
                     type="button"
                     className="secondary"
                     onClick={() => {
-                      setProjectSketchMode(false)
-                      setProjectSketchDraftMm([])
+                      dispatchViewport({ type: 'project_cancel' })
                       onStatus?.('Project cancelled.')
                     }}
                   >
@@ -3771,15 +4242,19 @@ export function DesignWorkspace() {
                 </div>
               ) : null}
               <Viewport3D
-                geometry={geometry}
+                geometry={viewportGeometry}
                 measureMode={measureMode}
                 onMeasurePoint={onMeasureViewportPoint}
-                projectSketchMode={!!geometry && projectSketchMode && !measureMode}
+                projectSketchMode={!!viewportGeometry && projectSketchMode && !measureMode}
                 onProjectSketchPoint={onProjectSketchViewportPoint}
                 facePickMode={facePickMode}
                 onPickFace={onPickSketchFace}
                 measureMarkers={measurePts}
-                sectionClipY={sectionEnabled && geometry ? sectionYMm : null}
+                sectionClipY={sectionEnabled && viewportGeometry ? sectionYMm : null}
+                datumPlanePickMode={datumPlanePickMode}
+                sketchPlaneIsFace={viewportSketchPlaneIsFace}
+                activeDatum={viewportActiveDatum}
+                onDatumPlaneSelect={setSketchDatum}
               />
             </div>
           </div>

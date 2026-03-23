@@ -5,7 +5,17 @@ export const viewFromAxisSchema = z.enum(['front', 'top', 'right', 'back', 'left
 
 export type ViewFromAxis = z.infer<typeof viewFromAxisSchema>
 
-/** Placeholder slots for documentation exports (no real model projection). */
+/** Optional sheet layout box (mm, title-block coordinates: X right, Y up from bottom-left of sheet frame). */
+export const drawingViewLayoutSchema = z.object({
+  originXMM: z.number().finite().optional(),
+  originYMM: z.number().finite().optional(),
+  widthMM: z.number().finite().positive().optional(),
+  heightMM: z.number().finite().positive().optional()
+})
+
+export type DrawingViewLayout = z.infer<typeof drawingViewLayoutSchema>
+
+/** View slots — projected linework when kernel STL + Python project pipeline succeeds. */
 export const drawingViewPlaceholderSchema = z.object({
   id: z.string(),
   kind: z.enum(['base', 'projected']),
@@ -15,7 +25,9 @@ export const drawingViewPlaceholderSchema = z.object({
   /** Projected: parent view slot id (usually a base view). */
   parentPlaceholderId: z.string().optional(),
   /** Projected: which orthographic direction this view represents relative to the parent. */
-  projectionDirection: viewFromAxisSchema.optional()
+  projectionDirection: viewFromAxisSchema.optional(),
+  /** Where to draw projected segments on the exported sheet (defaults applied in templates). */
+  layout: drawingViewLayoutSchema.optional()
 })
 
 export type DrawingViewPlaceholder = z.infer<typeof drawingViewPlaceholderSchema>
@@ -79,7 +91,7 @@ export function resolveExportViewRows(placeholders: DrawingViewPlaceholder[]): D
       return {
         kind: p.kind,
         label: p.label,
-        detailLine: `Base · view from ${axis} — preview metadata only (no projected geometry)`
+        detailLine: `Base · view from ${axis} — PDF/DXF embed Tier A mesh edges when output/kernel-part.stl + Python succeed`
       }
     }
     const parent = p.parentPlaceholderId
@@ -89,7 +101,7 @@ export function resolveExportViewRows(placeholders: DrawingViewPlaceholder[]): D
     return {
       kind: p.kind,
       label: p.label,
-      detailLine: `Projected · parent “${parent}” · direction ${dir} — preview metadata only (no projected geometry)`
+      detailLine: `Projected · parent “${parent}” · direction ${dir} — same Tier A projection pipeline as base slots`
     }
   })
 }

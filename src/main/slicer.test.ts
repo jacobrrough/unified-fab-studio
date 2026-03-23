@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CURA_SLICE_PRESETS } from '../shared/cura-slice-defaults'
-import { buildCuraSliceArgs } from './slicer'
+import { buildCuraSliceArgs, buildCuraSliceArgsFromSettingsMap } from './slicer'
 
 describe('buildCuraSliceArgs (K2 / CuraEngine)', () => {
   it('includes slice, definition json, and model paths', () => {
@@ -36,5 +36,23 @@ describe('buildCuraSliceArgs (K2 / CuraEngine)', () => {
     expect(args).toContain(`layer_height=${CURA_SLICE_PRESETS.draft.layerHeightMm}`)
     expect(args).toContain(`wall_line_count=${CURA_SLICE_PRESETS.draft.wallLineCount}`)
     expect(args).toContain(`infill_sparse_density=${CURA_SLICE_PRESETS.draft.infillSparseDensity}`)
+  })
+
+  it('buildCuraSliceArgsFromSettingsMap preserves custom keys', () => {
+    const root = join('C:', 'app', 'resources')
+    const map = new Map<string, string>([
+      ['layer_height', '0.15'],
+      ['infill_pattern', 'grid']
+    ])
+    const args = buildCuraSliceArgsFromSettingsMap(
+      root,
+      {
+        inputStlPath: 'C:\\job\\assets\\cube.stl',
+        outputGcodePath: 'C:\\job\\out.gcode'
+      },
+      map
+    )
+    expect(args).toContain('layer_height=0.15')
+    expect(args).toContain('infill_pattern=grid')
   })
 })

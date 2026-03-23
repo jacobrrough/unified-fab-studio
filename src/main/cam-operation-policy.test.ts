@@ -52,6 +52,11 @@ describe('describeCamOperationKind', () => {
     }
   })
 
+  it('documents contour multi-depth zStepMm when zPassMm is negative', () => {
+    const r = describeCamOperationKind('cnc_contour')
+    expect(r.hint).toMatch(/multi-depth|zStepMm/i)
+  })
+
   it('documents pocket params with explicit ramp/finish semantics', () => {
     const r = describeCamOperationKind('cnc_pocket')
     expect(r.runnable).toBe(true)
@@ -67,6 +72,14 @@ describe('describeCamOperationKind', () => {
     expect(r.runnable).toBe(true)
     expect(r.hint).toMatch(/OpenCAMLib|PathDropCutter/i)
     expect(r.hint).toMatch(/mesh|height-field|orthogonal/i)
+    expect(r.hint).toMatch(/MACHINES/i)
+  })
+
+  it('documents pencil as tight raster rest cleanup', () => {
+    const r = describeCamOperationKind('cnc_pencil')
+    expect(r.runnable).toBe(true)
+    expect(r.hint).toMatch(/pencil|tight|stepover/i)
+    expect(r.hint).toMatch(/OpenCAMLib|raster/i)
     expect(r.hint).toMatch(/MACHINES/i)
   })
 })

@@ -5,19 +5,27 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   useState,
   type ReactNode
 } from 'react'
 import * as THREE from 'three'
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { DesignFileV2, SketchConstraint } from '../../shared/design-schema'
 import { emptyDesign } from '../../shared/design-schema'
 import { formatLoadRejection } from '../../shared/file-parse-errors'
+import {
+  kernelInspectStaleReason,
+  type KernelInspectStaleReason
+} from '../../shared/kernel-inspect-hash'
+import type { KernelManifest } from '../../shared/kernel-manifest-schema'
 import { defaultPartFeatures, type KernelPostSolidOp, type PartFeaturesFile } from '../../shared/part-features-schema'
 import { linearPatternSketch, mirrorDesignAcrossYAxis } from './design-ops'
 import { derivePartFeatures } from './derive-features'
 import { meshToStlBase64 } from './export-stl'
 import { sketchPreviewPlacementMatrix } from './sketch-preview-placement'
 import { buildExtrudedGeometry } from './sketch-mesh'
+import { computeKernelDesignHashWeb, computeKernelFeaturesHashWeb } from './kernel-inspect-web-hash'
 import { cloneDesign, sketchResidualReport, solveSketch } from './solver2d'
 
 type DocState = { design: DesignFileV2; past: DesignFileV2[] }
@@ -42,6 +50,34 @@ function docReducer(state: DocState, action: DocAction): DocState {
   }
 }
 
+const kernelFinishingOpKinds = new Set<KernelPostSolidOp['kind']>([
+  'fillet_all',
+  'fillet_select',
+  'chamfer_all',
+  'chamfer_select',
+  'shell_inward'
+])
+
+function isKernelFinishingOp(op: KernelPostSolidOp): boolean {
+  return kernelFinishingOpKinds.has(op.kind)
+}
+
+function canSwapKernelOpOrder(
+  movingOp: KernelPostSolidOp,
+  neighborOp: KernelPostSolidOp,
+  delta: -1 | 1
+): { ok: true } | { ok: false; reason: string } {
+  const movingIsFinishing = isKernelFinishingOp(movingOp)
+  const neighborIsFinishing = isKernelFinishingOp(neighborOp)
+  if (delta < 0 && movingIsFinishing && !neighborIsFinishing) {
+    return { ok: false, reason: 'Finishing ops should stay after create/boolean/pattern ops.' }
+  }
+  if (delta > 0 && !movingIsFinishing && neighborIsFinishing) {
+    return { ok: false, reason: 'Move blocked: keep finishing ops at the end of the queue.' }
+  }
+  return { ok: true }
+}
+
 export type DesignSelection =
   | { scope: 'feature'; id: string }
   | { scope: 'entity'; id: string }
@@ -55,7 +91,18 @@ export type DesignSessionValue = {
   pastLength: number
   features: PartFeaturesFile | null
   loaded: boolean
+  /** Sketch/extrude preview mesh (Design workspace). */
   geometry: THREE.BufferGeometry | null
+  /** 3D model view: kernel STL when fresh, else preview mesh. */
+  viewportGeometry: THREE.BufferGeometry | null
+  /** Human-readable inspect source for measure/section copy. */
+  inspectMeshSourceLabel: string
+  /** Last-read `part/kernel-manifest.json` (null if missing). */
+  kernelManifest: KernelManifest | null
+  /** When non-null, kernel mesh exists but current design/features may not match it. */
+  kernelInspectStaleReason: KernelInspectStaleReason | null
+  /** Reload `output/kernel-part.stl` + manifest (e.g. after Build STEP). */
+  refreshKernelInspectGeometry: () => Promise<void>
   selection: DesignSelection
   setSelection: (s: DesignSelection) => void
   dispatch: React.Dispatch<DocAction>
@@ -104,6 +151,11 @@ type ProviderProps = {
   projectDir: string | null
   /** Increment (e.g. after IPC merges disk-only edits) to reload sketch + features from project. */
   designDiskRevision?: number
+  /**
+   * Relative mesh paths from `project.json` (`meshes` array).
+   * First `.stl` is shown in the 3D viewport when there is no kernel mesh and no sketch preview yet.
+   */
+  assetMeshRelPaths?: string[]
   children: ReactNode
   onStatus?: (msg: string) => void
   onExportedStl?: (path: string) => void
@@ -112,6 +164,7 @@ type ProviderProps = {
 export function DesignSessionProvider({
   projectDir,
   designDiskRevision = 0,
+  assetMeshRelPaths,
   children,
   onStatus,
   onExportedStl
@@ -121,6 +174,13 @@ export function DesignSessionProvider({
   const [loaded, setLoaded] = useState(false)
   const [selection, setSelection] = useState<DesignSelection>(null)
   const [solveReport, setSolveReport] = useState('')
+  const [kernelManifest, setKernelManifest] = useState<KernelManifest | null>(null)
+  const [kernelInspectGeometry, setKernelInspectGeometry] = useState<THREE.BufferGeometry | null>(null)
+  const [assetImportGeometry, setAssetImportGeometry] = useState<THREE.BufferGeometry | null>(null)
+  const [designHashHex, setDesignHashHex] = useState('')
+  const [featuresHashHex, setFeaturesHashHex] = useState('')
+  const kernelGeomRef = useRef<THREE.BufferGeometry | null>(null)
+  const assetGeomRef = useRef<THREE.BufferGeometry | null>(null)
 
   const fab = window.fab
 
@@ -171,6 +231,179 @@ export function DesignSessionProvider({
       geometry?.dispose()
     }
   }, [geometry])
+
+  useEffect(() => {
+    let cancelled = false
+    void computeKernelDesignHashWeb(design).then((h) => {
+      if (!cancelled) setDesignHashHex(h)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [design])
+
+  useEffect(() => {
+    let cancelled = false
+    void computeKernelFeaturesHashWeb(features).then((h) => {
+      if (!cancelled) setFeaturesHashHex(h)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [features])
+
+  const kernelInspectStale = useMemo(
+    () =>
+      kernelInspectStaleReason({
+        manifest: kernelManifest,
+        designHash: designHashHex,
+        featuresHash: featuresHashHex
+      }),
+    [kernelManifest, designHashHex, featuresHashHex]
+  )
+
+  const refreshKernelInspectGeometry = useCallback(async () => {
+    if (!projectDir) {
+      setKernelManifest(null)
+      if (kernelGeomRef.current) {
+        kernelGeomRef.current.dispose()
+        kernelGeomRef.current = null
+      }
+      setKernelInspectGeometry(null)
+      return
+    }
+    const man = await fab.designReadKernelManifest(projectDir)
+    setKernelManifest(man)
+    if (!man?.ok) {
+      if (kernelGeomRef.current) {
+        kernelGeomRef.current.dispose()
+        kernelGeomRef.current = null
+      }
+      setKernelInspectGeometry(null)
+      return
+    }
+    const r = await fab.designReadKernelStlBase64(projectDir)
+    if (!r.ok) {
+      if (kernelGeomRef.current) {
+        kernelGeomRef.current.dispose()
+        kernelGeomRef.current = null
+      }
+      setKernelInspectGeometry(null)
+      return
+    }
+    try {
+      const loader = new STLLoader()
+      const raw = atob(r.base64)
+      const buf = new Uint8Array(raw.length)
+      for (let k = 0; k < raw.length; k++) buf[k] = raw.charCodeAt(k)
+      const geom = loader.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+      geom.computeVertexNormals()
+      kernelGeomRef.current?.dispose()
+      kernelGeomRef.current = geom
+      setKernelInspectGeometry(geom)
+    } catch {
+      if (kernelGeomRef.current) {
+        kernelGeomRef.current.dispose()
+        kernelGeomRef.current = null
+      }
+      setKernelInspectGeometry(null)
+    }
+  }, [fab, projectDir])
+
+  useEffect(() => {
+    if (!projectDir || !loaded) {
+      setKernelManifest(null)
+      if (kernelGeomRef.current) {
+        kernelGeomRef.current.dispose()
+        kernelGeomRef.current = null
+      }
+      setKernelInspectGeometry(null)
+      return
+    }
+    void refreshKernelInspectGeometry()
+  }, [projectDir, loaded, designDiskRevision, refreshKernelInspectGeometry])
+
+  useEffect(() => {
+    return () => {
+      kernelGeomRef.current?.dispose()
+      kernelGeomRef.current = null
+    }
+  }, [])
+
+  const assetMeshPathsKey = useMemo(() => (assetMeshRelPaths ?? []).join('\0'), [assetMeshRelPaths])
+
+  useEffect(() => {
+    if (!projectDir || !loaded) {
+      assetGeomRef.current?.dispose()
+      assetGeomRef.current = null
+      setAssetImportGeometry(null)
+      return
+    }
+    const stlRel = (assetMeshRelPaths ?? []).find((p) => p.toLowerCase().endsWith('.stl'))
+    if (!stlRel) {
+      assetGeomRef.current?.dispose()
+      assetGeomRef.current = null
+      setAssetImportGeometry(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      const r = await fab.assemblyReadStlBase64(projectDir, stlRel)
+      if (cancelled) return
+      if (!r.ok) {
+        assetGeomRef.current?.dispose()
+        assetGeomRef.current = null
+        setAssetImportGeometry(null)
+        if (r.error === 'ascii_stl_not_supported_in_viewport') {
+          onStatus?.('Imported STL is ASCII; 3D preview needs binary STL. Re-import or convert the file.')
+        }
+        return
+      }
+      try {
+        const loader = new STLLoader()
+        const raw = atob(r.base64)
+        const buf = new Uint8Array(raw.length)
+        for (let k = 0; k < raw.length; k++) buf[k] = raw.charCodeAt(k)
+        const geom = loader.parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+        geom.computeVertexNormals()
+        assetGeomRef.current?.dispose()
+        assetGeomRef.current = geom
+        setAssetImportGeometry(geom)
+      } catch {
+        assetGeomRef.current?.dispose()
+        assetGeomRef.current = null
+        setAssetImportGeometry(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projectDir, loaded, assetMeshPathsKey, fab, onStatus])
+
+  useEffect(() => {
+    return () => {
+      assetGeomRef.current?.dispose()
+      assetGeomRef.current = null
+    }
+  }, [])
+
+  const viewportGeometry = useMemo(() => {
+    if (kernelInspectGeometry && kernelManifest?.ok && kernelInspectStale == null) {
+      return kernelInspectGeometry
+    }
+    if (geometry) return geometry
+    if (assetImportGeometry) return assetImportGeometry
+    return null
+  }, [kernelInspectGeometry, kernelManifest, kernelInspectStale, geometry, assetImportGeometry])
+
+  const inspectMeshSourceLabel = useMemo(() => {
+    if (kernelInspectGeometry && kernelManifest?.ok && kernelInspectStale == null) {
+      return 'Kernel STL (tessellated)'
+    }
+    if (geometry) return 'Sketch preview mesh'
+    if (assetImportGeometry) return 'Imported asset (STL)'
+    return '—'
+  }, [kernelInspectGeometry, kernelManifest, kernelInspectStale, geometry, assetImportGeometry])
 
   const onDesignChange = useCallback((next: DesignFileV2) => {
     dispatch({ type: 'edit', design: next })
@@ -431,6 +664,11 @@ export function DesignSessionProvider({
       if (index < 0 || index >= ops.length || j < 0 || j >= ops.length) return
       const a = ops[index]!
       const b = ops[j]!
+      const order = canSwapKernelOpOrder(a, b, delta)
+      if (!order.ok) {
+        onStatus?.(order.reason)
+        return
+      }
       ops[index] = b
       ops[j] = a
       const next: PartFeaturesFile = { ...base, kernelOps: ops }
@@ -489,6 +727,11 @@ export function DesignSessionProvider({
       features,
       loaded,
       geometry,
+      viewportGeometry,
+      inspectMeshSourceLabel,
+      kernelManifest,
+      kernelInspectStaleReason: kernelInspectStale,
+      refreshKernelInspectGeometry,
       selection,
       setSelection,
       dispatch,
@@ -520,6 +763,11 @@ export function DesignSessionProvider({
       features,
       loaded,
       geometry,
+      viewportGeometry,
+      inspectMeshSourceLabel,
+      kernelManifest,
+      kernelInspectStale,
+      refreshKernelInspectGeometry,
       selection,
       solveReport,
       onDesignChange,

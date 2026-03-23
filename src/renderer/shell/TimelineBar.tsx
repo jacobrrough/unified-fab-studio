@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { kernelOpSummary } from '../../shared/kernel-op-summary'
 import { useDesignSessionOptional } from '../design/DesignSessionContext'
 
@@ -12,6 +12,43 @@ export function TimelineBar() {
     () => (selectedFeatureId ? items.find((x) => x.id === selectedFeatureId) : undefined),
     [items, selectedFeatureId]
   )
+
+  const featureIx = useMemo(
+    () => (selectedFeatureId ? items.findIndex((x) => x.id === selectedFeatureId) : -1),
+    [items, selectedFeatureId]
+  )
+
+  const featuresScrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!selectedFeatureId || !featuresScrollRef.current) return
+    const el = featuresScrollRef.current.querySelector<HTMLElement>(`[data-timeline-feature-id="${selectedFeatureId}"]`)
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selectedFeatureId])
+
+  const goFirstFeature = useCallback(() => {
+    if (!ctx || items.length === 0) return
+    ctx.setSelection({ scope: 'feature', id: items[0]!.id })
+  }, [ctx, items])
+
+  const goLastFeature = useCallback(() => {
+    if (!ctx || items.length === 0) return
+    ctx.setSelection({ scope: 'feature', id: items[items.length - 1]!.id })
+  }, [ctx, items])
+
+  const goPrevFeature = useCallback(() => {
+    if (!ctx || items.length === 0) return
+    const ix = featureIx >= 0 ? featureIx : items.length
+    const nextIx = Math.max(0, ix - 1)
+    ctx.setSelection({ scope: 'feature', id: items[nextIx]!.id })
+  }, [ctx, items, featureIx])
+
+  const goNextFeature = useCallback(() => {
+    if (!ctx || items.length === 0) return
+    const ix = featureIx >= 0 ? featureIx : -1
+    const nextIx = Math.min(items.length - 1, ix + 1)
+    ctx.setSelection({ scope: 'feature', id: items[nextIx]!.id })
+  }, [ctx, items, featureIx])
 
   if (!ctx?.projectDir) {
     return <div className="timeline-bar timeline-bar--empty">Open a project for feature history.</div>
@@ -79,8 +116,50 @@ export function TimelineBar() {
       </div>
 
       <div className="timeline-bar timeline-bar--features" role="list" aria-label="Feature timeline">
+        <div className="timeline-feature-controls" aria-label="Feature timeline navigation">
+          <button
+            type="button"
+            className="timeline-transport-btn"
+            disabled={!ctx || items.length === 0}
+            onClick={goFirstFeature}
+            title="Go to first feature"
+            aria-label="Go to first feature"
+          >
+            ⏮
+          </button>
+          <button
+            type="button"
+            className="timeline-transport-btn"
+            disabled={!ctx || items.length === 0 || featureIx === 0}
+            onClick={goPrevFeature}
+            title="Previous feature"
+            aria-label="Previous feature"
+          >
+            ◀
+          </button>
+          <button
+            type="button"
+            className="timeline-transport-btn"
+            disabled={!ctx || items.length === 0 || featureIx === items.length - 1}
+            onClick={goNextFeature}
+            title="Next feature"
+            aria-label="Next feature"
+          >
+            ▶
+          </button>
+          <button
+            type="button"
+            className="timeline-transport-btn"
+            disabled={!ctx || items.length === 0}
+            onClick={goLastFeature}
+            title="Go to last feature"
+            aria-label="Go to last feature"
+          >
+            ⏭
+          </button>
+        </div>
         <span className="timeline-rail-label">Features</span>
-        <div className="timeline-rail-scroll">
+        <div className="timeline-rail-scroll" ref={featuresScrollRef}>
           {items.length === 0 ? (
             <span className="timeline-empty">No feature metadata — save design to derive features.</span>
           ) : (
@@ -91,6 +170,7 @@ export function TimelineBar() {
                   key={it.id}
                   type="button"
                   role="listitem"
+                  data-timeline-feature-id={it.id}
                   className={`timeline-item ${active ? 'active' : ''} ${it.suppressed ? 'suppressed' : ''}`}
                   onClick={() => ctx.setSelection({ scope: 'feature', id: it.id })}
                   title={it.label}

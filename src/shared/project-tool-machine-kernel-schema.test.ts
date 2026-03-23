@@ -16,6 +16,20 @@ describe('project-schema', () => {
     expect(p.importHistory).toEqual([])
   })
 
+  it('parses optional physicalMaterial and appearanceNotes', () => {
+    const p = projectSchema.parse({
+      version: 1,
+      name: 'Demo',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+      activeMachineId: 'm1',
+      physicalMaterial: { name: 'PLA', densityKgM3: 1250 },
+      appearanceNotes: 'Matte black'
+    })
+    expect(p.physicalMaterial?.name).toBe('PLA')
+    expect(p.physicalMaterial?.densityKgM3).toBe(1250)
+    expect(p.appearanceNotes).toBe('Matte black')
+  })
+
   it('trims name and activeMachineId', () => {
     const p = projectSchema.parse({
       version: 1,
@@ -51,6 +65,10 @@ describe('project-schema', () => {
 
   it('appSettingsSchema defaults theme to dark', () => {
     expect(appSettingsSchema.parse({}).theme).toBe('dark')
+  })
+
+  it('appSettingsSchema defaults recentProjectPaths to empty', () => {
+    expect(appSettingsSchema.parse({}).recentProjectPaths).toEqual([])
   })
 })
 

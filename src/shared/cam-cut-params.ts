@@ -1,4 +1,4 @@
-import type { ManufactureOperation } from './manufacture-schema'
+import type { ManufactureFile, ManufactureOperation, ManufactureSetup } from './manufacture-schema'
 
 /** Matches previous hardcoded `cam:run` values from the Make tab. */
 export const CAM_CUT_DEFAULTS = {
@@ -53,4 +53,47 @@ export function resolveCamCutParams(operation: ManufactureOperation | undefined)
     plungeMmMin: finitePositiveNumber(p['plungeMmMin']) ?? CAM_CUT_DEFAULTS.plungeMmMin,
     safeZMm: finitePositiveNumber(p['safeZMm']) ?? CAM_CUT_DEFAULTS.safeZMm
   }
+}
+
+/**
+ * Same setup resolution as Make → Generate CAM (`cam:run`): prefer a setup whose `machineId`
+ * matches the CNC machine used for the run, else first setup.
+ */
+/**
+ * Tighter stepover for `cnc_pencil` (rest / cleanup raster intent).
+ * Uses optional `pencilStepoverMm`, else `pencilStepoverFactor` × base stepover (default 0.22), clamped to tool Ø.
+ */
+export function resolvePencilStepoverMm(input: {
+  baseStepoverMm: number
+  toolDiameterMm: number
+  operationParams?: Record<string, unknown>
+}): number {
+  const p = input.operationParams ?? {}
+  const toolD = Math.max(0.1, input.toolDiameterMm)
+  const explicit = finitePositiveNumber(p['pencilStepoverMm'])
+  if (explicit != null) {
+    return Math.min(Math.max(explicit, 0.05), toolD * 0.49)
+  }
+  const rawFactor = p['pencilStepoverFactor']
+  let factor = 0.22
+  if (typeof rawFactor === 'number' && Number.isFinite(rawFactor)) {
+    factor = Math.min(1, Math.max(0.05, rawFactor))
+  } else if (typeof rawFactor === 'string' && rawFactor.trim() !== '') {
+    const n = Number.parseFloat(rawFactor)
+    if (Number.isFinite(n)) factor = Math.min(1, Math.max(0.05, n))
+  }
+  const scaled = input.baseStepoverMm * factor
+  return Math.min(Math.max(scaled, 0.05), toolD * 0.49)
+}
+
+export function resolveManufactureSetupForCam(
+  mfg: Pick<ManufactureFile, 'setups'>,
+  cncMachineId: string | undefined
+): ManufactureSetup | undefined {
+  if (mfg.setups.length === 0) return undefined
+  if (cncMachineId) {
+    const hit = mfg.setups.find((s) => s.machineId === cncMachineId)
+    if (hit) return hit
+  }
+  return mfg.setups[0]
 }

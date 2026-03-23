@@ -1,9 +1,19 @@
 import { APP_KEYBOARD_SHORTCUT_GROUPS } from '../../shared/app-keyboard-shortcuts'
 
 /**
- * Utilities → Shortcuts: readable map of implemented shell shortcuts.
+ * Keyboard shortcuts reference (Ctrl+Shift+? / ⌘⇧? opens as a dialog).
  */
 export function KeyboardShortcutsPanel() {
+  function openCommandPalette(): void {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'k',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
+  }
+
   return (
     <section className="panel workspace-util-panel keyboard-shortcuts-panel" aria-labelledby="keyboard-shortcuts-heading">
       <h2 id="keyboard-shortcuts-heading">Keyboard shortcuts</h2>
@@ -16,6 +26,11 @@ export function KeyboardShortcutsPanel() {
         Offline copy: <code>docs/KEYBOARD_SHORTCUTS.md</code> (kept in sync with{' '}
         <code>src/shared/app-keyboard-shortcuts.ts</code>).
       </p>
+      <div className="row keyboard-shortcuts-actions" role="group" aria-label="Shortcut actions">
+        <button type="button" className="secondary" onClick={openCommandPalette}>
+          Open command palette (Ctrl+K / ⌘K)
+        </button>
+      </div>
 
       <h3 className="subh util-section-heading" id="keyboard-shortcuts-by-category-heading">
         By category

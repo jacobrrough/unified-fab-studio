@@ -139,6 +139,27 @@ describe('assembly-viewport-math', () => {
     expect(tb.rzDeg).toBeCloseTo(90, 5)
   })
 
+  it('prefers jointState/jointLimits over legacy preview fields when present', () => {
+    const active = [
+      {
+        id: 'a',
+        name: 'A',
+        partPath: 'p',
+        transform: { x: 0, y: 0, z: 0, rxDeg: 0, ryDeg: 0, rzDeg: 0 },
+        grounded: true,
+        bomQuantity: 1,
+        joint: 'revolute',
+        revolutePreviewAngleDeg: 10,
+        revolutePreviewMinDeg: -180,
+        revolutePreviewMaxDeg: 180,
+        jointState: { scalarDeg: 999 },
+        jointLimits: { scalarMinDeg: -20, scalarMaxDeg: 20 }
+      }
+    ] as AssemblyComponent[]
+    const m = computeAssemblyKinematicPreviewTransforms(active)
+    expect(m.get('a')!.rzDeg).toBeCloseTo(20, 5)
+  })
+
   it('computeAssemblyKinematicPreviewTransforms uses revolutePreviewAxis X for euler rxDeg', () => {
     const active = [
       {

@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import {
   type CommandParityStatus,
   type CommandRibbonGroup,
@@ -8,13 +8,23 @@ import {
   catalogStats,
   filterCatalog
 } from '../../shared/fusion-style-command-catalog'
+import {
+  readPersistedCommandCatalogQuery,
+  readPersistedCommandCatalogRibbon,
+  readPersistedCommandCatalogStatus,
+  readPersistedCommandCatalogWorkspace,
+  writePersistedCommandCatalogQuery,
+  writePersistedCommandCatalogRibbon,
+  writePersistedCommandCatalogStatus,
+  writePersistedCommandCatalogWorkspace
+} from '../shell/workspaceMemory'
 
 const WORKSPACES: { id: CommandShellWorkspace | 'all'; label: string }[] = [
   { id: 'all', label: 'All workspaces' },
   { id: 'design', label: 'Design' },
   { id: 'assemble', label: 'Assemble' },
   { id: 'manufacture', label: 'Manufacture' },
-  { id: 'utilities', label: 'Utilities' }
+  { id: 'utilities', label: 'File' }
 ]
 
 const STATUSES: { id: CommandParityStatus | 'all'; label: string }[] = [
@@ -35,10 +45,12 @@ export function CommandCatalogPanel({ onStatus }: Props) {
   const statusFilterId = useId()
   const ribbonFilterId = useId()
 
-  const [q, setQ] = useState('')
-  const [workspace, setWorkspace] = useState<CommandShellWorkspace | 'all'>('all')
-  const [status, setStatus] = useState<CommandParityStatus | 'all'>('all')
-  const [ribbon, setRibbon] = useState<CommandRibbonGroup | 'all'>('all')
+  const [q, setQ] = useState(() => readPersistedCommandCatalogQuery(''))
+  const [workspace, setWorkspace] = useState<CommandShellWorkspace | 'all'>(() =>
+    readPersistedCommandCatalogWorkspace('all')
+  )
+  const [status, setStatus] = useState<CommandParityStatus | 'all'>(() => readPersistedCommandCatalogStatus('all'))
+  const [ribbon, setRibbon] = useState<CommandRibbonGroup | 'all'>(() => readPersistedCommandCatalogRibbon('all'))
 
   const stats = useMemo(() => catalogStats(), [])
   const rows = useMemo(
@@ -69,6 +81,21 @@ export function CommandCatalogPanel({ onStatus }: Props) {
     setRibbon('all')
   }, [])
 
+  const openCommandPalette = useCallback(() => {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'k',
+        ctrlKey: true,
+        bubbles: true
+      })
+    )
+  }, [])
+
+  useEffect(() => writePersistedCommandCatalogQuery(q), [q])
+  useEffect(() => writePersistedCommandCatalogWorkspace(workspace), [workspace])
+  useEffect(() => writePersistedCommandCatalogStatus(status), [status])
+  useEffect(() => writePersistedCommandCatalogRibbon(ribbon), [ribbon])
+
   return (
     <section
       className="panel workspace-util-panel command-catalog"
@@ -78,6 +105,8 @@ export function CommandCatalogPanel({ onStatus }: Props) {
       <p className="msg util-panel-intro">
         Inventory aligned with common parametric CAD workflows (e.g. sketch → constrain → solid → assemble → manufacture).{' '}
         <strong>Planned</strong> means not built here yet — not a promise of 1:1 behavior with any commercial product.
+        Use <strong>Ctrl+K</strong> / <strong>⌘K</strong> to run these commands from the palette (recent commands show
+        first when search is empty).
       </p>
       <p className="msg command-catalog-safety">
         Slice and CAM outputs are <strong>unverified</strong> for real machines until you validate posts, units, and
@@ -154,6 +183,9 @@ export function CommandCatalogPanel({ onStatus }: Props) {
             ))}
           </select>
         </label>
+        <button type="button" className="secondary command-catalog-open-palette" onClick={openCommandPalette}>
+          Open command palette (Ctrl+K / ⌘K)
+        </button>
       </div>
 
       <h3 className="subh util-section-heading" id="command-catalog-results-heading">
@@ -174,7 +206,7 @@ export function CommandCatalogPanel({ onStatus }: Props) {
         ) : (
           grouped.map(([group, items]) => (
             <details key={group} className="command-catalog-group" open>
-              <summary>
+              <summary aria-label={`${group} command group`}>
                 {COMMAND_CATALOG_RIBBON_FILTER_OPTIONS.find((r) => r.id === group)?.label ?? group}{' '}
                 <span className="msg">({items.length})</span>
               </summary>

@@ -12,6 +12,7 @@ describe('meshImportRouteFromPath', () => {
     expect(meshImportRouteFromPath('c.3mf')).toBe('mesh_python')
     expect(meshImportRouteFromPath('m.off')).toBe('mesh_python')
     expect(meshImportRouteFromPath('collada.dae')).toBe('mesh_python')
+    expect(meshImportRouteFromPath('cad.fbx')).toBe('mesh_python')
   })
 
   it('returns null for unknown extensions', () => {
@@ -27,5 +28,6 @@ describe('MESH_IMPORT_DIALOG_EXTENSIONS', () => {
     expect(MESH_IMPORT_DIALOG_EXTENSIONS).toContain('glb')
     expect(MESH_IMPORT_DIALOG_EXTENSIONS).toContain('off')
     expect(MESH_IMPORT_DIALOG_EXTENSIONS).toContain('dae')
+    expect(MESH_IMPORT_DIALOG_EXTENSIONS).toContain('fbx')
   })
 })

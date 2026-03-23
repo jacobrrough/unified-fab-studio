@@ -42,6 +42,49 @@ export const assemblyKinematicAxisFrameEnum = z.enum(['world', 'parent'])
 
 export type AssemblyKinematicAxisFrame = z.infer<typeof assemblyKinematicAxisFrameEnum>
 
+export const assemblyJointStateSchema = z
+  .object({
+    scalarDeg: z.number().finite().optional(),
+    scalarMm: z.number().finite().optional(),
+    uMm: z.number().finite().optional(),
+    vMm: z.number().finite().optional(),
+    angle1Deg: z.number().finite().optional(),
+    angle2Deg: z.number().finite().optional(),
+    slideMm: z.number().finite().optional(),
+    spinDeg: z.number().finite().optional(),
+    rxDeg: z.number().finite().optional(),
+    ryDeg: z.number().finite().optional(),
+    rzDeg: z.number().finite().optional()
+  })
+  .optional()
+
+export const assemblyJointLimitsSchema = z
+  .object({
+    scalarMinDeg: z.number().finite().optional(),
+    scalarMaxDeg: z.number().finite().optional(),
+    scalarMinMm: z.number().finite().optional(),
+    scalarMaxMm: z.number().finite().optional(),
+    uMinMm: z.number().finite().optional(),
+    uMaxMm: z.number().finite().optional(),
+    vMinMm: z.number().finite().optional(),
+    vMaxMm: z.number().finite().optional(),
+    angle1MinDeg: z.number().finite().optional(),
+    angle1MaxDeg: z.number().finite().optional(),
+    angle2MinDeg: z.number().finite().optional(),
+    angle2MaxDeg: z.number().finite().optional(),
+    slideMinMm: z.number().finite().optional(),
+    slideMaxMm: z.number().finite().optional(),
+    spinMinDeg: z.number().finite().optional(),
+    spinMaxDeg: z.number().finite().optional(),
+    rxMinDeg: z.number().finite().optional(),
+    rxMaxDeg: z.number().finite().optional(),
+    ryMinDeg: z.number().finite().optional(),
+    ryMaxDeg: z.number().finite().optional(),
+    rzMinDeg: z.number().finite().optional(),
+    rzMaxDeg: z.number().finite().optional()
+  })
+  .optional()
+
 export const assemblyComponentSchema = z.object({
   id: z.string().trim().min(1),
   /** Display name */
@@ -84,6 +127,13 @@ export const assemblyComponentSchema = z.object({
   linkedInstanceId: z.string().trim().min(1).optional(),
   /** When set with `linkedInstanceId`, classifies the stub link (no solver). */
   motionLinkKind: assemblyMotionLinkKindEnum.optional(),
+  /**
+   * Solver-oriented joint state. Optional so legacy files continue to load.
+   * `parseAssemblyFile()` migrates from legacy preview fields when absent.
+   */
+  jointState: assemblyJointStateSchema,
+  /** Solver-oriented hard limits; migrated from legacy preview min/max fields when absent. */
+  jointLimits: assemblyJointLimitsSchema,
   /**
    * Preview-only revolute angle (degrees) for 3D viewport — rotates this row and `parentId` descendants about a **world**
    * axis (`revolutePreviewAxis`, default **z**) at this instance’s pivot. Ignored when `joint` is not `revolute`.
@@ -212,6 +262,8 @@ export const assemblyFileSchema = z.object({
 
 export type AssemblyFile = z.infer<typeof assemblyFileSchema>
 export type AssemblyComponent = z.infer<typeof assemblyComponentSchema>
+export type AssemblyJointState = z.infer<NonNullable<typeof assemblyJointStateSchema>>
+export type AssemblyJointLimits = z.infer<NonNullable<typeof assemblyJointLimitsSchema>>
 
 /** Quick joint picks for assembly UI (sets `joint` only). */
 export const assemblyJointPresets: { id: string; label: string; joint: AssemblyComponent['joint'] }[] = [
@@ -233,17 +285,17 @@ export function assemblyJointDofHint(joint: AssemblyComponent['joint'] | undefin
   const map: Record<NonNullable<AssemblyComponent['joint']>, string> = {
     rigid: '0 DOF — fixed relative to parent.',
     slider:
-      '1 DOF — prismatic slide; optional preview mm along world or **parent local** X/Y/Z (viewport only).',
+      '1 DOF — prismatic slide; state/limits drive motion along world or **parent local** X/Y/Z.',
     revolute:
-      '1 DOF — hinge; set preview axis (world or **parent local** X/Y/Z) and angle on this row (viewport only).',
+      '1 DOF — hinge; state/limits drive axis angle (world or **parent local** X/Y/Z).',
     planar:
-      '2 DOF — translation in a plane; optional preview mm along in-plane U/V (normal from +X/+Y/+Z, world or parent local — viewport only).',
+      '2 DOF — translation in a plane; state/limits drive in-plane U/V (normal from +X/+Y/+Z, world or parent local).',
     cylindrical:
-      '2 DOF — slide + spin about a shared axis; optional preview slide mm + spin ° (same axis, viewport only).',
+      '2 DOF — slide + spin about a shared axis; state/limits drive slide mm + spin °.',
     ball:
-      '3 DOF — spherical orientation; optional preview ° about world X→Y→Z through pivot (viewport only).',
+      '3 DOF — spherical orientation; state/limits drive X→Y→Z orientation through pivot.',
     universal:
-      '2 DOF — Cardan; optional two-axis preview angles (axis1 then axis2, viewport only — not a solver).'
+      '2 DOF — Cardan; state/limits drive axis1 then axis2 angles.'
   }
   return map[joint]
 }
@@ -522,7 +574,8 @@ export const ASSEMBLY_BOM_CSV_HEADER =
   'name,partPath,meshPath,grounded,joint,parentId,referenceTag,partNumber,externalComponentRef,bomNotes,bomQuantity,bomUnit,bomVendor,bomCostEach,suppressed,motionIsolated,linkedInstanceId,motionLinkKind,instanceId'
 
 export function escapeAssemblyBomCsvField(value: string): string {
-  return `"${String(value).replace(/"/g, '""')}"`
+  const normalized = String(value).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  return `"${normalized.replace(/"/g, '""')}"`
 }
 
 /** One line per component + header row; used by main process BOM export. */
@@ -735,12 +788,110 @@ export function buildAssemblySummaryReport(asm: AssemblyFile): AssemblySummaryRe
 /** Accept legacy `assembly.json` (version 1 or missing version) and normalize to v2. */
 export function parseAssemblyFile(input: unknown): AssemblyFile {
   const p = assemblyIncomingSchema.parse(input)
+  const migratedComponents = p.components.map((c) => {
+    const jointState = c.jointState ?? inferJointStateFromLegacy(c)
+    const jointLimits = c.jointLimits ?? inferJointLimitsFromLegacy(c)
+    return {
+      ...c,
+      ...(jointState != null ? { jointState } : {}),
+      ...(jointLimits != null ? { jointLimits } : {})
+    }
+  })
   return {
     version: 2,
     name: p.name,
-    components: p.components,
+    components: migratedComponents,
     explodeView: p.explodeView,
     motionStudy: p.motionStudy
+  }
+}
+
+function inferJointStateFromLegacy(c: AssemblyComponent): AssemblyJointState | undefined {
+  switch (c.joint) {
+    case 'revolute':
+      return c.revolutePreviewAngleDeg == null ? undefined : { scalarDeg: c.revolutePreviewAngleDeg }
+    case 'slider':
+      return c.sliderPreviewMm == null ? undefined : { scalarMm: c.sliderPreviewMm }
+    case 'planar': {
+      const next: AssemblyJointState = {}
+      if (c.planarPreviewUMm != null) next.uMm = c.planarPreviewUMm
+      if (c.planarPreviewVMm != null) next.vMm = c.planarPreviewVMm
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'universal': {
+      const next: AssemblyJointState = {}
+      if (c.universalPreviewAngle1Deg != null) next.angle1Deg = c.universalPreviewAngle1Deg
+      if (c.universalPreviewAngle2Deg != null) next.angle2Deg = c.universalPreviewAngle2Deg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'cylindrical': {
+      const next: AssemblyJointState = {}
+      if (c.cylindricalPreviewSlideMm != null) next.slideMm = c.cylindricalPreviewSlideMm
+      if (c.cylindricalPreviewSpinDeg != null) next.spinDeg = c.cylindricalPreviewSpinDeg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'ball': {
+      const next: AssemblyJointState = {}
+      if (c.ballPreviewRxDeg != null) next.rxDeg = c.ballPreviewRxDeg
+      if (c.ballPreviewRyDeg != null) next.ryDeg = c.ballPreviewRyDeg
+      if (c.ballPreviewRzDeg != null) next.rzDeg = c.ballPreviewRzDeg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    default:
+      return undefined
+  }
+}
+
+function inferJointLimitsFromLegacy(c: AssemblyComponent): AssemblyJointLimits | undefined {
+  switch (c.joint) {
+    case 'revolute': {
+      const next: AssemblyJointLimits = {}
+      if (c.revolutePreviewMinDeg != null) next.scalarMinDeg = c.revolutePreviewMinDeg
+      if (c.revolutePreviewMaxDeg != null) next.scalarMaxDeg = c.revolutePreviewMaxDeg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'slider': {
+      const next: AssemblyJointLimits = {}
+      if (c.sliderPreviewMinMm != null) next.scalarMinMm = c.sliderPreviewMinMm
+      if (c.sliderPreviewMaxMm != null) next.scalarMaxMm = c.sliderPreviewMaxMm
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'planar': {
+      const next: AssemblyJointLimits = {}
+      if (c.planarPreviewUMinMm != null) next.uMinMm = c.planarPreviewUMinMm
+      if (c.planarPreviewUMaxMm != null) next.uMaxMm = c.planarPreviewUMaxMm
+      if (c.planarPreviewVMinMm != null) next.vMinMm = c.planarPreviewVMinMm
+      if (c.planarPreviewVMaxMm != null) next.vMaxMm = c.planarPreviewVMaxMm
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'universal': {
+      const next: AssemblyJointLimits = {}
+      if (c.universalPreviewAngle1MinDeg != null) next.angle1MinDeg = c.universalPreviewAngle1MinDeg
+      if (c.universalPreviewAngle1MaxDeg != null) next.angle1MaxDeg = c.universalPreviewAngle1MaxDeg
+      if (c.universalPreviewAngle2MinDeg != null) next.angle2MinDeg = c.universalPreviewAngle2MinDeg
+      if (c.universalPreviewAngle2MaxDeg != null) next.angle2MaxDeg = c.universalPreviewAngle2MaxDeg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'cylindrical': {
+      const next: AssemblyJointLimits = {}
+      if (c.cylindricalPreviewSlideMinMm != null) next.slideMinMm = c.cylindricalPreviewSlideMinMm
+      if (c.cylindricalPreviewSlideMaxMm != null) next.slideMaxMm = c.cylindricalPreviewSlideMaxMm
+      if (c.cylindricalPreviewSpinMinDeg != null) next.spinMinDeg = c.cylindricalPreviewSpinMinDeg
+      if (c.cylindricalPreviewSpinMaxDeg != null) next.spinMaxDeg = c.cylindricalPreviewSpinMaxDeg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    case 'ball': {
+      const next: AssemblyJointLimits = {}
+      if (c.ballPreviewRxMinDeg != null) next.rxMinDeg = c.ballPreviewRxMinDeg
+      if (c.ballPreviewRxMaxDeg != null) next.rxMaxDeg = c.ballPreviewRxMaxDeg
+      if (c.ballPreviewRyMinDeg != null) next.ryMinDeg = c.ballPreviewRyMinDeg
+      if (c.ballPreviewRyMaxDeg != null) next.ryMaxDeg = c.ballPreviewRyMaxDeg
+      if (c.ballPreviewRzMinDeg != null) next.rzMinDeg = c.ballPreviewRzMinDeg
+      if (c.ballPreviewRzMaxDeg != null) next.rzMaxDeg = c.ballPreviewRzMaxDeg
+      return Object.keys(next).length > 0 ? next : undefined
+    }
+    default:
+      return undefined
   }
 }
 

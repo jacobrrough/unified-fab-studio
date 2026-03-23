@@ -35,7 +35,7 @@ const PALETTE_WORKSPACES: { id: CommandShellWorkspace | 'all'; label: string }[]
   { id: 'design', label: 'Design' },
   { id: 'assemble', label: 'Assemble' },
   { id: 'manufacture', label: 'Manufacture' },
-  { id: 'utilities', label: 'Utilities' }
+  { id: 'utilities', label: 'File' }
 ]
 
 export type CommandPaletteProps = {
@@ -60,6 +60,15 @@ export function CommandPalette({ open, onClose, onPick }: CommandPaletteProps) {
   )
   const [recentIds, setRecentIds] = useState<string[]>(() => readRecentCommandIds())
   const [active, setActive] = useState(0)
+  const hasNonDefaultFilters = implementedOnly !== true || workspaceFilter !== 'all' || ribbonFilter !== 'all'
+
+  const resetPaletteFilters = useCallback(() => {
+    setImplementedOnly(true)
+    setWorkspaceFilter('all')
+    setRibbonFilter('all')
+    setQ('')
+  }, [])
+
   const inputRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
 
@@ -74,6 +83,7 @@ export function CommandPalette({ open, onClose, onPick }: CommandPaletteProps) {
     const qEmpty = q.trim() === ''
     return orderRowsByRecent(filtered, recentIds, qEmpty)
   }, [q, implementedOnly, workspaceFilter, ribbonFilter, recentIds])
+  const qEmpty = q.trim() === ''
 
   useEffect(() => {
     if (!open) return
@@ -250,8 +260,18 @@ export function CommandPalette({ open, onClose, onPick }: CommandPaletteProps) {
               />
               Implemented only
             </label>
+            {hasNonDefaultFilters ? (
+              <button type="button" className="secondary command-palette-reset-filters" onClick={resetPaletteFilters}>
+                Reset filters
+              </button>
+            ) : null}
           </div>
         </div>
+        <p className="command-palette-hint" role="status" aria-live="polite">
+          {qEmpty
+            ? USER_VISIBLE.commandPaletteEmptyQueryHint
+            : `${rows.length} match${rows.length === 1 ? '' : 'es'} in current filters.`}
+        </p>
         <ul id="command-palette-list" className="command-palette-list" role="listbox" aria-multiselectable={false}>
           {rows.length === 0 ? (
             <li className="command-palette-empty" role="presentation">
@@ -260,6 +280,13 @@ export function CommandPalette({ open, onClose, onPick }: CommandPaletteProps) {
                 Try a different search, set workspace or ribbon to <strong>All</strong> / <strong>Any ribbon</strong>, or
                 turn off “Implemented only” to include planned and partial commands.
               </span>
+              <button
+                type="button"
+                className="secondary command-palette-reset-filters"
+                onClick={resetPaletteFilters}
+              >
+                Reset palette filters
+              </button>
             </li>
           ) : (
             rows.map((row, i) => (

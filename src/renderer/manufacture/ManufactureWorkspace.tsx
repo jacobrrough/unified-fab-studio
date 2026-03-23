@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { AppSettings, ProjectFile } from '../../shared/project-schema'
 import type { MachineProfile } from '../../shared/machine-schema'
 import {
   deriveContourPointsFromDesign,
@@ -6,7 +7,8 @@ import {
   listContourCandidatesFromDesign,
   type DerivedContourCandidate
 } from '../../shared/cam-2d-derive'
-import { CAM_CUT_DEFAULTS } from '../../shared/cam-cut-params'
+import { CAM_CUT_DEFAULTS, resolveManufactureSetupForCam } from '../../shared/cam-cut-params'
+import { mergeCuraSliceInvocationSettings } from '../../shared/cura-slice-defaults'
 import { isManufactureKindBlockedFromCam } from '../../shared/manufacture-cam-gate'
 import type { ManufactureFile, ManufactureOperation, ManufactureSetup } from '../../shared/manufacture-schema'
 import { emptyManufacture } from '../../shared/manufacture-schema'
@@ -14,10 +16,14 @@ import {
   readPersistedManufactureActionableOnly,
   readPersistedManufactureOpFilter,
   type ManufactureOpFilter,
+  type ManufacturePanelTab,
   writePersistedManufactureActionableOnly,
   writePersistedManufactureOpFilter
 } from '../shell/workspaceMemory'
 import type { ToolLibraryFile } from '../../shared/tool-schema'
+import { CamManufacturePanel, SliceManufacturePanel, ToolsManufacturePanel } from './ManufactureAuxPanels'
+import { ManufactureCamSimulationPanel } from './ManufactureCamSimulationPanel'
+import { ManufactureSubTabStrip } from './ManufactureSubTabStrip'
 
 function resolveManufactureCamMachine(mfg: ManufactureFile, machines: MachineProfile[]): MachineProfile | undefined {
   const cnc = machines.filter((m) => m.kind === 'cnc')
@@ -34,15 +40,75 @@ type Props = {
   machines: MachineProfile[]
   /** Used for optional per-op tool id + defaults for Generate CAM */
   tools?: ToolLibraryFile | null
+  /** Project active machine id — matches which manufacture setup Make → Generate CAM prefers */
+  activeMachineId?: string | null
   onStatus?: (msg: string) => void
   onAfterSave?: () => void
+  panelTab: ManufacturePanelTab
+  onPanelTabChange: (t: ManufacturePanelTab) => void
+  settings: AppSettings | null
+  project: ProjectFile | null
+  sliceOut: string
+  camOut: string
+  camLastHint: string
+  importText: string
+  onImportTextChange: (value: string) => void
+  onSaveSettingsField: (partial: Partial<AppSettings>) => void
+  onRunSlice: () => void
+  onRunCam: () => void
+  onImportTools: (kind: 'csv' | 'json' | 'fusion' | 'fusion_csv') => void
+  onImportToolLibraryFromFile: () => void | Promise<void>
 }
 
 function cncOp(kind: ManufactureOperation['kind']): boolean {
   return kind.startsWith('cnc_')
 }
 
-export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, onAfterSave }: Props) {
+/** Human-readable stats for valid contourPoints arrays (setup WCS, mm). */
+function contourPointsStats(raw: unknown): string | null {
+  if (!Array.isArray(raw) || raw.length < 3) return null
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  let n = 0
+  for (const pt of raw) {
+    if (!Array.isArray(pt) || pt.length < 2) continue
+    const x = Number(pt[0])
+    const y = Number(pt[1])
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    n++
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+  }
+  if (n < 3) return null
+  return `${n} vertices · XY bbox ${minX.toFixed(1)}–${maxX.toFixed(1)} × ${minY.toFixed(1)}–${maxY.toFixed(1)} mm`
+}
+
+export function ManufactureWorkspace({
+  projectDir,
+  machines,
+  tools,
+  activeMachineId = null,
+  onStatus,
+  onAfterSave,
+  panelTab,
+  onPanelTabChange,
+  settings,
+  project,
+  sliceOut,
+  camOut,
+  camLastHint,
+  importText,
+  onImportTextChange,
+  onSaveSettingsField,
+  onRunSlice,
+  onRunCam,
+  onImportTools,
+  onImportToolLibraryFromFile
+}: Props) {
   const [mfg, setMfg] = useState<ManufactureFile>(() => emptyManufacture())
   const [contourCandidates, setContourCandidates] = useState<DerivedContourCandidate[]>([])
   const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now())
@@ -107,6 +173,40 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
       onStatus?.(e instanceof Error ? e.message : String(e))
     }
   }, [fab, projectDir, mfg, onStatus, onAfterSave])
+
+  async function runFdmSliceFromOp(opIndex: number): Promise<void> {
+    if (!projectDir) return
+    const op = mfg.operations[opIndex]
+    if (!op || op.kind !== 'fdm_slice') return
+    const rel = op.sourceMesh?.trim()
+    if (!rel) {
+      onStatus?.('Set source mesh path (e.g. assets/model.stl) for this FDM operation.')
+      return
+    }
+    const settings = await fab.settingsGet()
+    if (!settings.curaEnginePath?.trim()) {
+      onStatus?.('Configure CuraEngine path under File → Settings.')
+      return
+    }
+    const sep = projectDir.includes('\\') ? '\\' : '/'
+    const stlPath = `${projectDir}${sep}${rel.replace(/\//g, sep)}`
+    const out = `${projectDir}${sep}output${sep}fdm_slice_${op.id}.gcode`
+    const curaEngineSettings = Object.fromEntries(mergeCuraSliceInvocationSettings(settings))
+    const r = await fab.sliceCura({
+      stlPath,
+      outPath: out,
+      curaEnginePath: settings.curaEnginePath,
+      definitionsPath: settings.curaDefinitionsPath,
+      definitionPath: settings.curaMachineDefinitionPath?.trim() || undefined,
+      slicePreset: settings.curaSlicePreset ?? 'balanced',
+      curaEngineSettings
+    })
+    if (!r.ok) {
+      onStatus?.(`FDM slice failed: ${r.stderr ?? 'unknown error'}`)
+      return
+    }
+    onStatus?.(`FDM slice wrote ${out}`)
+  }
 
   function addSetup(): void {
     const id = crypto.randomUUID()
@@ -424,37 +524,100 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
     return `${d.toLocaleString()} (${age})`
   }
 
-  if (!projectDir) {
-    return <p className="msg panel">Open a project for manufacture setups and operations.</p>
-  }
-
   const camMachine = resolveManufactureCamMachine(mfg, machines)
 
-  return (
-    <div className="panel" tabIndex={0} onKeyDown={handlePanelKeydown}>
+  const camRunCncMachineId = useMemo(() => {
+    const cnc = machines.filter((m) => m.kind === 'cnc')
+    if (cnc.length === 0) return undefined
+    if (activeMachineId && cnc.some((m) => m.id === activeMachineId)) return activeMachineId
+    return cnc[0]?.id
+  }, [machines, activeMachineId])
+
+  const camResolvedSetup = useMemo(
+    () => resolveManufactureSetupForCam(mfg, camRunCncMachineId),
+    [mfg, camRunCncMachineId]
+  )
+
+  const camResolvedMachineName = useMemo(() => {
+    if (!camResolvedSetup) return undefined
+    return machines.find((m) => m.id === camResolvedSetup.machineId)?.name ?? camResolvedSetup.machineId
+  }, [machines, camResolvedSetup])
+
+  const activeMachine = useMemo(
+    () => machines.find((x) => x.id === project?.activeMachineId),
+    [machines, project?.activeMachineId]
+  )
+
+  const auxPanelProps = {
+    machines,
+    settings,
+    project,
+    projectDir,
+    tools: tools ?? null,
+    activeMachine,
+    sliceOut,
+    camOut,
+    camLastHint,
+    importText,
+    onImportTextChange,
+    onSaveSettingsField,
+    onRunSlice,
+    onRunCam,
+    onImportTools,
+    onImportToolLibraryFromFile
+  }
+
+  const planBody =
+    !projectDir ? (
+      <p className="msg panel">Open a project for manufacture setups and operations.</p>
+    ) : (
+      <div className="panel" tabIndex={0} onKeyDown={handlePanelKeydown}>
       <h2>Manufacture</h2>
       <p className="msg">
-        Setups (machine + stock) and an operation list. Run Slice/CAM from the other tabs using meshes in{' '}
-        <code>assets/</code>; this file tracks intent and links.
+        Setups (machine + stock) and an operation list. Use the <strong>Slice</strong> and <strong>CAM</strong> tabs here for
+        Cura / toolpath output; meshes live under <code>assets/</code>. This <strong>Plan</strong> view tracks intent and links.
       </p>
       <p className="msg manufacture-gcode-safety">
         Any generated G-code is <strong>unverified</strong> until you check posts, units, and clearances for your machine (
         <code>docs/MACHINES.md</code>).
       </p>
-      <section
-        id="manufacture-simulation-stub"
-        className="panel panel--nested"
-        style={{ marginBottom: '1rem' }}
-        aria-label="CAM simulation"
-      >
-        <h3 className="subh">Simulation (stub)</h3>
-        <p className="msg msg--muted">
-          There is <strong>no</strong> in-app stock-removal, animated toolpath, or spindle / axis kinematics preview. The
-          Utilities → <strong>CAM</strong> tab can show a <strong>non-physical</strong> G-code summary (“simulation cues”)
-          from text only — not collision or material removal. Use external CAM/simulation for real verification. Command
-          catalog: <code>mf_simulate</code> (<code>partial</code>). See <code>docs/VERIFICATION.md</code>.
-        </p>
-      </section>
+      {camResolvedSetup ? (
+        <section className="panel panel--nested" aria-label="CAM setup context for Make Generate CAM">
+          <h3 className="subh">Setup for Make → Generate CAM</h3>
+          <p className="msg msg--muted">
+            Uses the manufacture setup whose machine matches the project&apos;s active CNC machine (or the first CNC
+            machine). Current row: <strong>{camResolvedSetup.label}</strong>
+            {camResolvedMachineName ? (
+              <>
+                {' '}
+                — <strong>{camResolvedMachineName}</strong>
+              </>
+            ) : null}
+            , work offset <strong>G{53 + (camResolvedSetup.workCoordinateIndex ?? 1)}</strong>
+            {camResolvedSetup.wcsNote ? (
+              <>
+                . WCS: {camResolvedSetup.wcsNote}
+              </>
+            ) : null}
+            {camResolvedSetup.stock?.kind === 'box' &&
+            camResolvedSetup.stock.x != null &&
+            camResolvedSetup.stock.y != null &&
+            camResolvedSetup.stock.z != null ? (
+              <>
+                . Stock (box): {camResolvedSetup.stock.x}×{camResolvedSetup.stock.y}×{camResolvedSetup.stock.z} mm
+              </>
+            ) : camResolvedSetup.stock?.kind === 'cylinder' ? (
+              <>. Stock: cylinder (see dimensions on setup)</>
+            ) : null}
+            . <code>contourPoints</code> / <code>drillPoints</code> are in this WCS.
+          </p>
+        </section>
+      ) : mfg.setups.length === 0 ? (
+        <p className="msg msg--muted">Add a setup so work offset and stock context are defined for CAM.</p>
+      ) : null}
+      <div className="mb-block">
+        <ManufactureCamSimulationPanel projectDir={projectDir} mfg={mfg} tools={tools ?? null} />
+      </div>
       <div className="row">
         <button type="button" className="secondary" onClick={addSetup}>
           Add setup
@@ -468,9 +631,9 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
       </div>
 
       <h3 className="subh">Setups</h3>
-      <ul className="tools entity-list">
+      <ul className="tools entity-list entity-list--stack">
         {mfg.setups.map((s, si) => (
-          <li key={s.id} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+          <li key={s.id}>
             <div className="row">
               <label>
                 Label
@@ -592,12 +755,14 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
         <strong>Make → Generate CAM</strong> uses the <em>first non-suppressed operation</em> here for strategy (kind +
         <code>params</code>). <strong>Tool diameter</strong> and default <strong>feeds / Z / stepover</strong> still resolve
         from the first non-suppressed <code>cnc_*</code> row. <code>fdm_slice</code> and <code>export_stl</code> are not CNC
-        toolpaths — use Slice or Design/assets export, or put a <code>cnc_*</code> row first for Make. Run toolpaths from{' '}
-        <strong>Utilities → CAM</strong> (<strong>Generate toolpath…</strong>); then <strong>Preview G-code analysis</strong>{' '}
-        (text-only stats — not machine simulation) and optional <strong>Last run</strong> hints appear there.
+        toolpaths — use the <strong>Slice</strong> tab or Design/assets export, or put a <code>cnc_*</code> row first for Make. Run
+        toolpaths from <strong>Manufacture → CAM</strong> (<strong>Generate toolpath…</strong>); then{' '}
+        <strong>Preview G-code analysis</strong>{' '}
+        (text-only stats — not machine simulation) and optional <strong>Last run</strong> details show engine choice
+        (OpenCAMLib vs built-in fallback) plus reason.
       </p>
-      <div className="row" style={{ alignItems: 'center', gap: 8 }}>
-        <span className="msg" style={{ margin: 0 }}>
+      <div className="row row--align-center-8">
+        <span className="msg msg-row-flex">
           CAM readiness: {readinessCounts.ready} ready, {readinessCounts['non-cam']} not CAM,{' '}
           {readinessCounts['stale geometry']} stale, {readinessCounts['missing geometry']} missing,{' '}
           {readinessCounts.suppressed} suppressed (filter: {activeFilterLabel})
@@ -643,16 +808,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
         >
           Not CAM
         </button>
-        <label
-          className="chk"
-          style={{
-            marginLeft: 8,
-            padding: '0.2rem 0.45rem',
-            borderRadius: 6,
-            border: actionableOnly ? '1px solid #9333ea' : '1px solid transparent',
-            background: actionableOnly ? '#1f2937' : 'transparent'
-          }}
-        >
+        <label className={`chk mfg-actionable-toggle${actionableOnly ? ' mfg-actionable-toggle--on' : ''}`}>
           <input type="checkbox" checked={actionableOnly} onChange={(e) => setActionableOnly(e.target.checked)} />
           Show actionable only
         </label>
@@ -671,11 +827,11 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
         Shortcuts (panel focused): <code>A</code> all, <code>M</code> missing, <code>S</code> stale, <code>U</code>{' '}
         suppressed, <code>N</code> not CAM, <code>F</code> actionable toggle, <code>C</code> clear.
       </p>
-      <ul className="tools entity-list">
+      <ul className="tools entity-list entity-list--stack">
         {filteredOps.map((op) => {
           const i = mfg.operations.findIndex((x) => x.id === op.id)
           return (
-          <li key={op.id} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+          <li key={op.id}>
             <div className="row">
               <label>
                 Label
@@ -688,15 +844,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                     ? 'FDM slice / export STL — not generated by Make → Generate CAM'
                     : 'Operation CAM readiness'
                 }
-                style={{
-                  alignSelf: 'end',
-                  background: opReadiness(op).bg,
-                  color: '#fff',
-                  borderRadius: 999,
-                  padding: '0.2rem 0.55rem',
-                  fontSize: '0.75rem',
-                  lineHeight: 1.2
-                }}
+                style={{ background: opReadiness(op).bg }}
               >
                 {opReadiness(op).label === 'non-cam' ? 'Not CAM' : opReadiness(op).label}
               </span>
@@ -705,18 +853,12 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                   className="status-chip"
                   title="Sketch profile drift status"
                   style={{
-                    alignSelf: 'end',
                     background:
                       contourDriftState(op) === 'changed' || contourDriftState(op) === 'missing'
                         ? '#7f1d1d'
                         : contourDriftState(op) === 'ok'
                           ? '#14532d'
-                          : '#1f2937',
-                    color: '#fff',
-                    borderRadius: 999,
-                    padding: '0.2rem 0.55rem',
-                    fontSize: '0.75rem',
-                    lineHeight: 1.2
+                          : '#1f2937'
                   }}
                 >
                   {contourDriftState(op) === 'changed'
@@ -742,6 +884,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                   <option value="cnc_adaptive">CNC adaptive (OCL AdaptiveWaterline or fallback)</option>
                   <option value="cnc_waterline">CNC waterline (OCL Z-level or fallback)</option>
                   <option value="cnc_raster">CNC raster (OCL or mesh / bounds)</option>
+                  <option value="cnc_pencil">CNC pencil (tight OCL raster / rest cleanup)</option>
                   <option value="export_stl">Export STL</option>
                 </select>
               </label>
@@ -797,62 +940,91 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
               </div>
             ) : null}
             {cncOp(op.kind) ? (
-              <div className="row">
-                <label title="Parallel: G1 work Z. Waterline/OCL: slice spacing (mm).">
-                  Z pass / slice step (mm)
-                  <input
-                    type="number"
-                    step={0.1}
-                    value={cutParamFieldValue(op, 'zPassMm')}
-                    onChange={(e) => setCutParam(i, 'zPassMm', e.target.value, 'nonzero')}
-                    placeholder={String(CAM_CUT_DEFAULTS.zPassMm)}
-                  />
-                </label>
-                <label>
-                  Stepover (mm)
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={0.1}
-                    value={cutParamFieldValue(op, 'stepoverMm')}
-                    onChange={(e) => setCutParam(i, 'stepoverMm', e.target.value, 'positive')}
-                    placeholder={String(CAM_CUT_DEFAULTS.stepoverMm)}
-                  />
-                </label>
-                <label>
-                  Feed (mm/min)
-                  <input
-                    type="number"
-                    min={1}
-                    step={10}
-                    value={cutParamFieldValue(op, 'feedMmMin')}
-                    onChange={(e) => setCutParam(i, 'feedMmMin', e.target.value, 'positive')}
-                    placeholder={String(CAM_CUT_DEFAULTS.feedMmMin)}
-                  />
-                </label>
-                <label>
-                  Plunge (mm/min)
-                  <input
-                    type="number"
-                    min={1}
-                    step={10}
-                    value={cutParamFieldValue(op, 'plungeMmMin')}
-                    onChange={(e) => setCutParam(i, 'plungeMmMin', e.target.value, 'positive')}
-                    placeholder={String(CAM_CUT_DEFAULTS.plungeMmMin)}
-                  />
-                </label>
-                <label>
-                  Safe Z (mm)
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={0.5}
-                    value={cutParamFieldValue(op, 'safeZMm')}
-                    onChange={(e) => setCutParam(i, 'safeZMm', e.target.value, 'positive')}
-                    placeholder={String(CAM_CUT_DEFAULTS.safeZMm)}
-                  />
-                </label>
-              </div>
+              <>
+                <div className="row">
+                  <label title="Parallel: G1 work Z. Waterline/OCL: slice spacing (mm).">
+                    Z pass / slice step (mm)
+                    <input
+                      type="number"
+                      step={0.1}
+                      value={cutParamFieldValue(op, 'zPassMm')}
+                      onChange={(e) => setCutParam(i, 'zPassMm', e.target.value, 'nonzero')}
+                      placeholder={String(CAM_CUT_DEFAULTS.zPassMm)}
+                    />
+                  </label>
+                  <label>
+                    Stepover (mm)
+                    <input
+                      type="number"
+                      min={0.01}
+                      step={0.1}
+                      value={cutParamFieldValue(op, 'stepoverMm')}
+                      onChange={(e) => setCutParam(i, 'stepoverMm', e.target.value, 'positive')}
+                      placeholder={String(CAM_CUT_DEFAULTS.stepoverMm)}
+                    />
+                  </label>
+                  <label>
+                    Feed (mm/min)
+                    <input
+                      type="number"
+                      min={1}
+                      step={10}
+                      value={cutParamFieldValue(op, 'feedMmMin')}
+                      onChange={(e) => setCutParam(i, 'feedMmMin', e.target.value, 'positive')}
+                      placeholder={String(CAM_CUT_DEFAULTS.feedMmMin)}
+                    />
+                  </label>
+                  <label>
+                    Plunge (mm/min)
+                    <input
+                      type="number"
+                      min={1}
+                      step={10}
+                      value={cutParamFieldValue(op, 'plungeMmMin')}
+                      onChange={(e) => setCutParam(i, 'plungeMmMin', e.target.value, 'positive')}
+                      placeholder={String(CAM_CUT_DEFAULTS.plungeMmMin)}
+                    />
+                  </label>
+                  <label>
+                    Safe Z (mm)
+                    <input
+                      type="number"
+                      min={0.01}
+                      step={0.5}
+                      value={cutParamFieldValue(op, 'safeZMm')}
+                      onChange={(e) => setCutParam(i, 'safeZMm', e.target.value, 'positive')}
+                      placeholder={String(CAM_CUT_DEFAULTS.safeZMm)}
+                    />
+                  </label>
+                </div>
+                {op.kind === 'cnc_pencil' ? (
+                  <div className="row row--mt-xs">
+                    <label title="Multiplies resolved stepover before the tight raster pass (default 0.22). Ignored if pencil stepover mm is set.">
+                      Pencil stepover factor
+                      <input
+                        type="number"
+                        min={0.05}
+                        max={1}
+                        step={0.01}
+                        value={cutParamFieldValue(op, 'pencilStepoverFactor')}
+                        onChange={(e) => setCutParam(i, 'pencilStepoverFactor', e.target.value, 'positive')}
+                        placeholder="0.22"
+                      />
+                    </label>
+                    <label title="Optional fixed pencil stepover in mm (overrides factor).">
+                      Pencil stepover (mm)
+                      <input
+                        type="number"
+                        min={0.05}
+                        step={0.05}
+                        value={cutParamFieldValue(op, 'pencilStepoverMm')}
+                        onChange={(e) => setCutParam(i, 'pencilStepoverMm', e.target.value, 'positive')}
+                        placeholder="(optional)"
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </>
             ) : null}
             {op.kind === 'cnc_adaptive' ? (
               <p className="msg manufacture-op-hint">
@@ -878,6 +1050,15 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                 until post/machine checks (<code>docs/MACHINES.md</code>).
               </p>
             ) : null}
+            {op.kind === 'cnc_pencil' ? (
+              <p className="msg manufacture-op-hint">
+                <strong>Pencil / rest cleanup:</strong> same OpenCAMLib <strong>raster</strong> path as CNC raster, but the CAM
+                runner applies a <strong>tighter stepover</strong> (default <code>pencilStepoverFactor</code> 0.22 × your
+                stepover, or set <code>pencilStepoverMm</code>). This is <strong>not</strong> automatic leftover-material
+                detection — tune tool and stepover for your prior roughing. G-code is <strong>unverified</strong> (
+                <code>docs/MACHINES.md</code>).
+              </p>
+            ) : null}
             {op.kind === 'cnc_parallel' ? (
               <p className="msg manufacture-op-hint">
                 <strong>Generate CAM</strong> uses the built-in <strong>parallel finish</strong> from STL mesh bounds (no
@@ -893,10 +1074,17 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
               </p>
             ) : null}
             {op.kind === 'fdm_slice' ? (
-              <p className="msg manufacture-op-hint">
-                Not generated by <strong>Generate CAM</strong>. Use <strong>Utilities → Slice</strong> (CuraEngine) for FDM
-                G-code. If this row is first in the list, move a <code>cnc_*</code> operation above it to run CAM from Make.
-              </p>
+              <div className="msg manufacture-op-hint">
+                <p>
+                  Not generated by <strong>Generate CAM</strong>. Run Cura from the <strong>Slice</strong> tab here or use{' '}
+                  <strong>Slice with CuraEngine</strong> below (uses <strong>source mesh</strong>, merged slice preset /
+                  profiles, and optional machine <code>.def.json</code> (-j) from Settings). G-code is unverified until you
+                  match printer profiles — <code>docs/MACHINES.md</code>.
+                </p>
+                <button type="button" className="secondary" onClick={() => void runFdmSliceFromOp(i)}>
+                  Slice with CuraEngine…
+                </button>
+              </div>
             ) : null}
             {op.kind === 'export_stl' ? (
               <p className="msg manufacture-op-hint">
@@ -940,6 +1128,17 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                     value={cutParamFieldValue(op, 'leadOutMm')}
                     onChange={(e) => setCutParam(i, 'leadOutMm', e.target.value, 'nonnegative')}
                     placeholder="0"
+                  />
+                </label>
+                <label title="When Z pass / slice step is negative, optional step-down between full contour passes (mm).">
+                  Z step-down (mm, optional)
+                  <input
+                    type="number"
+                    min={0.01}
+                    step={0.1}
+                    value={cutParamFieldValue(op, 'zStepMm')}
+                    onChange={(e) => setCutParam(i, 'zStepMm', e.target.value, 'positive')}
+                    placeholder="single pass if empty"
                   />
                 </label>
               </div>
@@ -1072,7 +1271,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
             ) : null}
             {op.kind === 'cnc_contour' || op.kind === 'cnc_pocket' ? (
               <div className="row">
-                <label style={{ minWidth: 420 }}>
+                <label className="label--wide-420">
                   contourPoints JSON (Array of [x,y] mm)
                   <input
                     value={geometryJsonFieldValue(op, 'contourPoints')}
@@ -1109,6 +1308,12 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
             ) : null}
             {op.kind === 'cnc_contour' || op.kind === 'cnc_pocket' ? (
               (() => {
+                const s = contourPointsStats(op.params?.['contourPoints'])
+                return s ? <p className="msg msg--muted">{s}</p> : null
+              })()
+            ) : null}
+            {op.kind === 'cnc_contour' || op.kind === 'cnc_pocket' ? (
+              (() => {
                 const sourceId = typeof op.params?.['contourSourceId'] === 'string' ? op.params['contourSourceId'] : ''
                 const sig = typeof op.params?.['contourSourceSignature'] === 'string' ? op.params['contourSourceSignature'] : ''
                 if (!sourceId || !sig) return null
@@ -1117,7 +1322,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                   return (
                     <p className="msg manufacture-op-hint">
                       Selected contour source is not present in current sketch; derive again or choose a different profile.
-                      <button type="button" className="secondary" onClick={() => void deriveOpGeometryFromSketch(i)} style={{ marginLeft: 8 }}>
+                      <button type="button" className="secondary ml-2" onClick={() => void deriveOpGeometryFromSketch(i)}>
                         Re-derive now
                       </button>
                     </p>
@@ -1127,7 +1332,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
                   return (
                     <p className="msg manufacture-op-hint">
                       Selected contour profile changed since last derive ({cur.label}). Re-derive to keep CAM geometry in sync.
-                      <button type="button" className="secondary" onClick={() => void deriveOpGeometryFromSketch(i)} style={{ marginLeft: 8 }}>
+                      <button type="button" className="secondary ml-2" onClick={() => void deriveOpGeometryFromSketch(i)}>
                         Re-derive now
                       </button>
                     </p>
@@ -1184,7 +1389,7 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
             ) : null}
             {op.kind === 'cnc_drill' ? (
               <div className="row">
-                <label style={{ minWidth: 420 }}>
+                <label className="label--wide-420">
                   drillPoints JSON (Array of [x,y] mm)
                   <input
                     value={geometryJsonFieldValue(op, 'drillPoints')}
@@ -1267,6 +1472,27 @@ export function ManufactureWorkspace({ projectDir, machines, tools, onStatus, on
           )
         })}
       </ul>
+    </div>
+    )
+
+  return (
+    <div className="manufacture-workspace-wrap">
+      <ManufactureSubTabStrip tab={panelTab} onChange={onPanelTabChange} />
+      <div
+        id="manufacture-workspace-panel"
+        role="tabpanel"
+        aria-labelledby={`mfg-subtab-${panelTab}`}
+      >
+        {panelTab === 'plan' ? (
+          planBody
+        ) : panelTab === 'slice' ? (
+          <SliceManufacturePanel {...auxPanelProps} />
+        ) : panelTab === 'cam' ? (
+          <CamManufacturePanel {...auxPanelProps} />
+        ) : (
+          <ToolsManufacturePanel {...auxPanelProps} />
+        )}
+      </div>
     </div>
   )
 }

@@ -19,8 +19,8 @@ export function PropertiesPanel({ workspace, asm, mfg, shellSelection }: Props) 
       <div className="properties-panel">
         <h2 className="properties-head">Properties</h2>
         <p className="properties-empty">
-          In Utilities, the main column holds project, paths, slice, CAM, and tools. This side panel stays empty — there is
-          no selection-driven inspector here.
+          In <strong>File</strong>, the main column is project data and app settings. Slice, CAM, and tools live under{' '}
+          <strong>Manufacture</strong>. This side panel stays empty — there is no selection-driven inspector here.
         </p>
       </div>
     )

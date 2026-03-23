@@ -12,8 +12,11 @@ Phase 3 — optional postSolidOps: fillet/chamfer (all + directional select), sh
     thread_cosmetic (simplified ring-groove approximation, not true helical thread),
     transform_translate (move/copy body by XYZ translation),
     press_pull_profile (signed profile extrude: + union, - cut),
-    sweep_profile_path (partial translation-only sweep along XY path points),
+    sweep_profile_path (legacy translation-only sweep along XY path points),
+    sweep_profile_path_true (orientation-follow sweep modes; discrete parallel-transport framing + segment overlap),
     pipe_path (partial circular section path sweep, optional wall thickness),
+    thread_wizard (modeled 3D helix ball-chain tool path or cosmetic marker),
+    thicken_offset (true offset via OCC shape offset; tolerance scales with body size),
     thicken_scale (partial isotropic scale surrogate; not true offset/thicken),
     coil_cut (partial helical-style stacked ring cuts, max 1024 ring instances),
     mirror_union_plane (union mirrored copy across YZ/XZ/XY), sheet_tab_union (ordered).
@@ -346,6 +349,7 @@ _PROFILE_INDEX_POST_OPS = frozenset(
         "hole_from_profile",
         "press_pull_profile",
         "sweep_profile_path",
+        "sweep_profile_path_true",
     }
 )
 
@@ -367,13 +371,17 @@ def _validate_post_solid_profile_indices(post_ops: list, profile_count: int) -> 
         if pidx < 0:
             continue
         if pidx >= profile_count:
-            return _format_post_op_failure(
-                idx,
-                kind,
-                ValueError(
-                    f"profileIndex {pidx} is out of range (payload has {profile_count} profile(s))"
-                ),
-            )
+            if profile_count == 0:
+                detail = (
+                    f"profileIndex {pidx} invalid: payload has no closed profiles — "
+                    f"sketch must yield extractable profiles for {kind} (design/sketch + kernel payload)"
+                )
+            else:
+                detail = (
+                    f"profileIndex {pidx} out of range — use 0..{profile_count - 1} "
+                    f"({profile_count} profile(s) in payload)"
+                )
+            return _format_post_op_failure(idx, kind, ValueError(detail))
     return None
 
 
@@ -507,6 +515,102 @@ def _validate_post_solid_ops(ops: list) -> str | None:
                 )
                 if ln <= 0 or wd <= 0 or ht <= 0:
                     raise ValueError("sheet_tab_union requires positive lengthMm, widthMm, heightMm")
+            elif kind == "sheet_fold":
+                yb = float(op.get("bendLineYMm", 0))
+                br = float(op.get("bendRadiusMm", 0))
+                ba = float(op.get("bendAngleDeg", 0))
+                kf = float(op.get("kFactor", 0.44))
+                _require_finite_mm(
+                    "sheet_fold",
+                    bendLineYMm=yb,
+                    bendRadiusMm=br,
+                    bendAngleDeg=ba,
+                    kFactor=kf,
+                )
+                if br <= 0:
+                    raise ValueError("sheet_fold bendRadiusMm must be positive")
+                if abs(ba) < 1 or abs(ba) > 170:
+                    raise ValueError("sheet_fold bendAngleDeg must satisfy 1<=|angle|<=170")
+                if kf < 0 or kf > 1:
+                    raise ValueError("sheet_fold kFactor must be in [0,1]")
+                mode = str(op.get("bendAllowanceMode", "k_factor")).strip().lower()
+                if mode not in ("k_factor", "allowance_mm", "deduction_mm"):
+                    raise ValueError("sheet_fold bendAllowanceMode must be k_factor, allowance_mm, or deduction_mm")
+                am = op.get("allowanceMm")
+                if am is not None and (not math.isfinite(float(am)) or float(am) <= 0):
+                    raise ValueError("sheet_fold allowanceMm must be finite and > 0 when set")
+                dm = op.get("deductionMm")
+                if dm is not None and (not math.isfinite(float(dm)) or float(dm) <= 0):
+                    raise ValueError("sheet_fold deductionMm must be finite and > 0 when set")
+            elif kind == "sheet_flat_pattern":
+                bool(op.get("includeBendLines", True))
+            elif kind == "loft_guide_rails":
+                rails = op.get("rails")
+                if not isinstance(rails, list) or len(rails) < 1 or len(rails) > 4:
+                    raise ValueError("loft_guide_rails rails must be a list of 1..4 rails")
+                for ridx, rail in enumerate(rails):
+                    if not isinstance(rail, list) or len(rail) < 2:
+                        raise ValueError(f"loft_guide_rails rails[{ridx}] needs >=2 points")
+                    prev = None
+                    non_zero = False
+                    for p in rail:
+                        if not isinstance(p, (list, tuple)) or len(p) != 2:
+                            raise ValueError(f"loft_guide_rails rails[{ridx}] entries must be [x,y]")
+                        x, y = float(p[0]), float(p[1])
+                        if not (math.isfinite(x) and math.isfinite(y)):
+                            raise ValueError(f"loft_guide_rails rails[{ridx}] must be finite")
+                        if prev is not None and (x != prev[0] or y != prev[1]):
+                            non_zero = True
+                        prev = (x, y)
+                    if not non_zero:
+                        raise ValueError(f"loft_guide_rails rails[{ridx}] needs at least one non-zero segment")
+            elif kind == "plastic_rule_fillet":
+                rr = float(op.get("radiusMm", 0))
+                _require_finite_mm("plastic_rule_fillet", radiusMm=rr)
+                if rr <= 0:
+                    raise ValueError("plastic_rule_fillet radiusMm must be positive")
+            elif kind == "plastic_boss":
+                cx = float(op.get("centerXMm", 0))
+                cy = float(op.get("centerYMm", 0))
+                z0 = float(op.get("zBaseMm", 0))
+                ro = float(op.get("outerRadiusMm", 0))
+                hh = float(op.get("heightMm", 0))
+                dr = float(op.get("draftDeg", 1))
+                _require_finite_mm(
+                    "plastic_boss",
+                    centerXMm=cx,
+                    centerYMm=cy,
+                    zBaseMm=z0,
+                    outerRadiusMm=ro,
+                    heightMm=hh,
+                    draftDeg=dr,
+                )
+                if ro <= 0 or hh <= 0:
+                    raise ValueError("plastic_boss outerRadiusMm and heightMm must be positive")
+                if dr < 0 or dr > 8:
+                    raise ValueError("plastic_boss draftDeg must be in [0,8]")
+                hr = op.get("holeRadiusMm")
+                if hr is not None and (not math.isfinite(float(hr)) or float(hr) <= 0):
+                    raise ValueError("plastic_boss holeRadiusMm must be finite and >0 when set")
+            elif kind == "plastic_lip_groove":
+                mode = str(op.get("mode", "")).strip().lower()
+                if mode not in ("lip", "groove"):
+                    raise ValueError("plastic_lip_groove mode must be lip or groove")
+                x0, x1 = float(op.get("xMinMm", 0)), float(op.get("xMaxMm", 0))
+                y0, y1 = float(op.get("yMinMm", 0)), float(op.get("yMaxMm", 0))
+                z0 = float(op.get("zBaseMm", 0))
+                dd = float(op.get("depthMm", 0))
+                _require_finite_mm(
+                    "plastic_lip_groove",
+                    xMinMm=x0,
+                    xMaxMm=x1,
+                    yMinMm=y0,
+                    yMaxMm=y1,
+                    zBaseMm=z0,
+                    depthMm=dd,
+                )
+                if x1 <= x0 or y1 <= y0 or dd <= 0:
+                    raise ValueError("plastic_lip_groove requires x/y ranges and positive depthMm")
             elif kind == "pattern_linear_3d":
                 cnt = int(op.get("count", 0))
                 if cnt < 2 or cnt > 32:
@@ -658,6 +762,35 @@ def _validate_post_solid_ops(ops: list) -> str | None:
                     raise ValueError("sweep_profile_path needs at least one non-zero segment")
                 swzs = float(op.get("zStartMm", 0))
                 _require_finite_mm("sweep_profile_path", zStartMm=swzs)
+            elif kind == "sweep_profile_path_true":
+                pidx = int(op.get("profileIndex", -1))
+                if pidx < 0:
+                    raise ValueError("sweep_profile_path_true profileIndex must be >= 0")
+                pts = op.get("pathPoints")
+                if not isinstance(pts, list) or len(pts) < 2:
+                    raise ValueError("sweep_profile_path_true pathPoints needs >= 2 points")
+                prev = None
+                non_zero = False
+                for p in pts:
+                    if not isinstance(p, (list, tuple)) or len(p) != 2:
+                        raise ValueError("sweep_profile_path_true pathPoints entries must be [x,y]")
+                    x, y = float(p[0]), float(p[1])
+                    if not (math.isfinite(x) and math.isfinite(y)):
+                        raise ValueError("sweep_profile_path_true pathPoints must be finite")
+                    if prev is not None and (x != prev[0] or y != prev[1]):
+                        non_zero = True
+                    prev = (x, y)
+                if not non_zero:
+                    raise ValueError("sweep_profile_path_true needs at least one non-zero segment")
+                swzs = float(op.get("zStartMm", 0))
+                _require_finite_mm("sweep_profile_path_true", zStartMm=swzs)
+                om = str(op.get("orientationMode", "frenet")).strip().lower()
+                if om not in ("fixed_normal", "frenet", "path_tangent_lock"):
+                    raise ValueError("sweep_profile_path_true orientationMode must be fixed_normal, frenet, or path_tangent_lock")
+                if om == "fixed_normal":
+                    n = _vec3_from_json(op.get("fixedNormal"), "fixedNormal")
+                    if n is None or _v3_norm(n[0], n[1], n[2]) is None:
+                        raise ValueError("sweep_profile_path_true fixedNormal must be [x,y,z] non-zero")
             elif kind == "pipe_path":
                 pts = op.get("pathPoints")
                 if not isinstance(pts, list) or len(pts) < 2:
@@ -694,6 +827,43 @@ def _validate_post_solid_ops(ops: list) -> str | None:
                 _require_finite_mm("thicken_scale", deltaMm=d)
                 if d == 0:
                     raise ValueError("thicken_scale requires non-zero deltaMm")
+            elif kind == "thicken_offset":
+                d = float(op.get("distanceMm", 0))
+                _require_finite_mm("thicken_offset", distanceMm=d)
+                if d == 0:
+                    raise ValueError("thicken_offset requires non-zero distanceMm")
+                side = str(op.get("side", "outward")).strip().lower()
+                if side not in ("outward", "inward", "both"):
+                    raise ValueError("thicken_offset side must be outward, inward, or both")
+            elif kind == "thread_wizard":
+                rr = float(op.get("majorRadiusMm", 0))
+                p = float(op.get("pitchMm", 0))
+                ln = float(op.get("lengthMm", 0))
+                d = float(op.get("depthMm", 0))
+                tcx = float(op.get("centerXMm", 0))
+                tcy = float(op.get("centerYMm", 0))
+                tzs = float(op.get("zStartMm", 0))
+                _require_finite_mm(
+                    "thread_wizard",
+                    majorRadiusMm=rr,
+                    pitchMm=p,
+                    lengthMm=ln,
+                    depthMm=d,
+                    centerXMm=tcx,
+                    centerYMm=tcy,
+                    zStartMm=tzs,
+                )
+                if rr <= 0 or p <= 0 or ln <= 0 or d <= 0:
+                    raise ValueError("thread_wizard requires positive radius/pitch/length/depth")
+                mode = str(op.get("mode", "modeled")).strip().lower()
+                if mode not in ("modeled", "cosmetic"):
+                    raise ValueError("thread_wizard mode must be modeled or cosmetic")
+                hand = str(op.get("hand", "right")).strip().lower()
+                if hand not in ("right", "left"):
+                    raise ValueError("thread_wizard hand must be right or left")
+                starts = int(op.get("starts", 1))
+                if starts < 1 or starts > 8:
+                    raise ValueError("thread_wizard starts must be 1..8")
             elif kind == "coil_cut":
                 rr = float(op.get("majorRadiusMm", 0))
                 p = float(op.get("pitchMm", 0))
@@ -815,6 +985,60 @@ def _v3_cross(
 
 def _v3_dot(ax: float, ay: float, az: float, bx: float, by: float, bz: float) -> float:
     return ax * bx + ay * by + az * bz
+
+
+def _v3_parallel_transport_normal(
+    nx: float, ny: float, nz: float, tx: float, ty: float, tz: float
+) -> tuple[float, float, float] | None:
+    """Project N onto the plane perpendicular to unit tangent T; normalize (or None if degenerate)."""
+    d = _v3_dot(nx, ny, nz, tx, ty, tz)
+    return _v3_norm(nx - d * tx, ny - d * ty, nz - d * tz)
+
+
+def _polyline_sweep_segment_frame(
+    orient: str,
+    tx: float,
+    ty: float,
+    tz: float,
+    prev_n: tuple[float, float, float] | None,
+    fixed_n: tuple[float, float, float] | None,
+) -> tuple[float, float, float, float, float, float, tuple[float, float, float]]:
+    """
+    Build orthonormal (B, N2, T): profile XY maps to (B, N2), extrude +Z maps to path tangent T.
+    For frenet/path_tangent_lock, pass returned N2 back as prev_n on the next segment (parallel transport).
+    For fixed_normal, pass fixed_n each time; prev_n is ignored.
+    """
+    if orient == "fixed_normal":
+        if fixed_n is None:
+            raise ValueError("fixed_normal requires fixedNormal")
+        fx, fy, fz = fixed_n
+        cand = _v3_parallel_transport_normal(fx, fy, fz, tx, ty, tz)
+        if cand is None:
+            raise ValueError("fixed_normal: fixedNormal is parallel to path tangent")
+        nx, ny, nz = cand
+    else:
+        sx, sy, sz = (0.0, 0.0, 1.0) if prev_n is None else prev_n
+        cand = _v3_parallel_transport_normal(sx, sy, sz, tx, ty, tz)
+        if cand is None:
+            for aux in ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)):
+                cand = _v3_parallel_transport_normal(aux[0], aux[1], aux[2], tx, ty, tz)
+                if cand is not None:
+                    break
+        if cand is None:
+            raise ValueError("could not resolve sweep normal vs path tangent")
+        nx, ny, nz = cand
+
+    b = _v3_cross(tx, ty, tz, nx, ny, nz)
+    bn = _v3_norm(*b)
+    if bn is None:
+        raise ValueError("sweep frame binormal degenerate")
+    bx, by, bz = bn
+    n2 = _v3_cross(bx, by, bz, tx, ty, tz)
+    nn2 = _v3_norm(*n2)
+    if nn2 is None:
+        raise ValueError("sweep frame normal degenerate")
+    n2x, n2y, n2z = nn2
+    return (bx, by, bz, n2x, n2y, n2z, (n2x, n2y, n2z))
 
 
 def _vec3_from_json(v: object, label: str) -> tuple[float, float, float] | None:
@@ -1030,6 +1254,209 @@ def _hole_depth_from_mode(solid, mode: str, depth_mm: float | None) -> float:
     if d <= 0 or not math.isfinite(d):
         raise ValueError("hole_from_profile depthMm must be finite and > 0")
     return d
+
+
+def _path_points_from_op(op: dict, label: str) -> list[tuple[float, float]]:
+    pts = op.get("pathPoints")
+    if not isinstance(pts, list) or len(pts) < 2:
+        raise ValueError(f"{label} pathPoints needs >= 2 points")
+    out: list[tuple[float, float]] = []
+    for p in pts:
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
+            raise ValueError(f"{label} pathPoints entries must be [x,y]")
+        x, y = float(p[0]), float(p[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError(f"{label} pathPoints must be finite")
+        if not out or out[-1][0] != x or out[-1][1] != y:
+            out.append((x, y))
+    if len(out) < 2:
+        raise ValueError(f"{label} path collapsed to zero-length")
+    return out
+
+
+def _sweep_profile_path_true(cq, profiles: list, op: dict):
+    profile_index = int(op.get("profileIndex", -1))
+    path_pts = _path_points_from_op(op, "sweep_profile_path_true")
+    z0 = float(op.get("zStartMm", 0))
+    if not math.isfinite(z0):
+        raise ValueError("sweep_profile_path_true zStartMm must be finite")
+    orient = str(op.get("orientationMode", "frenet")).strip().lower()
+    if orient not in ("fixed_normal", "frenet", "path_tangent_lock"):
+        raise ValueError("sweep_profile_path_true orientationMode must be fixed_normal, frenet, or path_tangent_lock")
+    fixed_n: tuple[float, float, float] | None = None
+    if orient == "fixed_normal":
+        n_raw = _vec3_from_json(op.get("fixedNormal"), "fixedNormal")
+        if n_raw is None:
+            raise ValueError("sweep_profile_path_true fixed_normal requires fixedNormal [x,y,z]")
+        fn = _v3_norm(n_raw[0], n_raw[1], n_raw[2])
+        if fn is None:
+            raise ValueError("sweep_profile_path_true fixedNormal must be non-zero")
+        fixed_n = fn
+
+    from OCP.gp import gp_Trsf
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+
+    acc = None
+    prev_n: tuple[float, float, float] | None = None
+    for i in range(1, len(path_pts)):
+        x0, y0 = path_pts[i - 1]
+        x1, y1 = path_pts[i]
+        dx = x1 - x0
+        dy = y1 - y0
+        seg_len = math.hypot(dx, dy)
+        if seg_len <= 1e-9:
+            continue
+        tx, ty, tz = dx / seg_len, dy / seg_len, 0.0
+        bx, by, bz, n2x, n2y, n2z, new_prev = _polyline_sweep_segment_frame(
+            orient, tx, ty, tz, prev_n, fixed_n
+        )
+        if orient != "fixed_normal":
+            prev_n = new_prev
+
+        # Tiny overlap along tangent helps B-rep union close at polyline vertices.
+        overlap = min(2e-4, max(1e-7, seg_len * 2e-5))
+        extrude_len = seg_len + overlap
+        seg = _extruded_tool_from_profile_index(cq, profiles, profile_index, extrude_len, z0)
+        # Local basis: U=X(profile X), V=Y(profile Y), N=+Z(extrude) -> mapped to (B, N2, T)
+        tr = gp_Trsf()
+        tr.SetValues(
+            bx,
+            n2x,
+            tx,
+            x0,
+            by,
+            n2y,
+            ty,
+            y0,
+            bz,
+            n2z,
+            tz,
+            z0,
+        )
+        wrapped = seg.val().wrapped
+        bt = BRepBuilderAPI_Transform(wrapped, tr, True)
+        out = cq.Shape.cast(bt.Shape())
+        seg_world = cq.Workplane("XY").newObject([out])
+        acc = seg_world if acc is None else acc.union(seg_world)
+    if acc is None:
+        raise ValueError("sweep_profile_path_true has zero effective length")
+    return acc
+
+
+def _thread_wizard_apply(cq, solid, op: dict):
+    mode = str(op.get("mode", "modeled")).strip().lower()
+    if mode not in ("modeled", "cosmetic"):
+        raise ValueError("thread_wizard mode must be modeled or cosmetic")
+    if mode == "cosmetic":
+        return solid
+    cx = float(op.get("centerXMm", 0))
+    cy = float(op.get("centerYMm", 0))
+    r_major = float(op.get("majorRadiusMm", 0))
+    pitch = float(op.get("pitchMm", 0))
+    length = float(op.get("lengthMm", 0))
+    depth = float(op.get("depthMm", 0))
+    z0 = float(op.get("zStartMm", 0))
+    starts = int(op.get("starts", 1))
+    hand = str(op.get("hand", "right")).strip().lower()
+    if hand not in ("right", "left"):
+        raise ValueError("thread_wizard hand must be right or left")
+    if starts < 1 or starts > 8:
+        raise ValueError("thread_wizard starts must be 1..8")
+    if r_major <= 0 or pitch <= 0 or length <= 0 or depth <= 0:
+        raise ValueError("thread_wizard requires positive radius/pitch/length/depth")
+    r_mean = max(1e-6, r_major - depth * 0.5)
+    tool_r = max(0.015, min(depth * 0.45, pitch * 0.28, r_mean * 0.14))
+    turns = length / pitch
+    # Finer sampling on short pitches / multi-start; still capped for runtime.
+    samples = max(
+        48,
+        min(
+            2048,
+            int(math.ceil(length / max(pitch / (16.0 * max(starts, 1)), 0.03))),
+        ),
+    )
+    handed = 1.0 if hand == "right" else -1.0
+
+    for s in range(starts):
+        phase = (2.0 * math.pi * float(s)) / float(starts)
+        for i in range(samples):
+            u = i / max(1, samples - 1)
+            ang = phase + handed * (2.0 * math.pi * turns * u)
+            px = cx + math.cos(ang) * r_mean
+            py = cy + math.sin(ang) * r_mean
+            pz = z0 + u * length
+            try:
+                ball = cq.Workplane("XY").sphere(tool_r).translate((px, py, pz))
+            except Exception:  # noqa: BLE001
+                seg = (
+                    cq.Workplane("XY")
+                    .workplane(offset=pz - tool_r)
+                    .center(px, py)
+                    .circle(tool_r)
+                    .extrude(2.0 * tool_r)
+                )
+                solid = solid.cut(seg)
+            else:
+                solid = solid.cut(ball)
+    return solid
+
+
+def _occt_offset_tol_mm(solid) -> float:
+    """Scale OCC offset tolerance with model size (small parts keep ≥1e-3 mm; large bodies relax slightly)."""
+    bb = solid.val().BoundingBox()
+    d = math.sqrt(
+        max(bb.xlen, 1e-12) ** 2 + max(bb.ylen, 1e-12) ** 2 + max(bb.zlen, 1e-12) ** 2
+    )
+    return max(1e-3, min(2.0, d * 5e-5))
+
+
+def _thicken_offset_apply(cq, solid, op: dict):
+    dist = float(op.get("distanceMm", 0))
+    if not math.isfinite(dist) or abs(dist) < 1e-9:
+        raise ValueError("thicken_offset distanceMm must be finite and non-zero")
+    side = str(op.get("side", "outward")).strip().lower()
+    if side not in ("outward", "inward", "both"):
+        raise ValueError("thicken_offset side must be outward, inward, or both")
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+    from OCP.GeomAbs import GeomAbs_Intersection
+
+    base_shape = solid.val().wrapped
+    tol0 = _occt_offset_tol_mm(solid)
+
+    def _offset_shape(amount: float, tol: float):
+        mk = BRepOffsetAPI_MakeOffsetShape()
+        mk.PerformByJoin(
+            base_shape,
+            float(amount),
+            float(tol),
+            0,
+            False,
+            False,
+            GeomAbs_Intersection,
+            False,
+        )
+        out = mk.Shape()
+        casted = cq.Shape.cast(out)
+        return cq.Workplane("XY").newObject([casted])
+
+    mag = abs(dist)
+    last_err: Exception | None = None
+    for tol in (tol0, tol0 * 8.0, max(0.01, tol0 * 32.0), max(0.05, tol0 * 128.0)):
+        try:
+            if side == "outward":
+                return _offset_shape(mag, tol)
+            if side == "inward":
+                return _offset_shape(-mag, tol)
+            out_p = _offset_shape(mag, tol)
+            out_n = _offset_shape(-mag, tol)
+            return out_p.union(out_n)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+    assert last_err is not None
+    raise ValueError(
+        f"thicken_offset failed ({side}, distanceMm={dist}) after tolerance retries: {last_err}"
+    ) from last_err
 
 
 def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
@@ -1300,6 +1727,9 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                 if acc is None:
                     raise ValueError("sweep_profile_path has zero effective length")
                 solid = solid.union(acc)
+            elif kind == "sweep_profile_path_true":
+                acc = _sweep_profile_path_true(cq, profiles, op)
+                solid = solid.union(acc)
             elif kind == "pipe_path":
                 pts = op.get("pathPoints")
                 assert isinstance(pts, list)
@@ -1310,6 +1740,22 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                 inner_r = None
                 if wt_raw is not None:
                     inner_r = max(1e-6, outer_r - float(wt_raw))
+                orient = str(op.get("orientationMode", "frenet")).strip().lower()
+                if orient not in ("fixed_normal", "frenet", "path_tangent_lock"):
+                    raise ValueError("pipe_path orientationMode must be fixed_normal, frenet, or path_tangent_lock")
+                fixed_n_pipe: tuple[float, float, float] | None = None
+                if orient == "fixed_normal":
+                    n_raw = _vec3_from_json(op.get("fixedNormal"), "fixedNormal")
+                    if n_raw is None:
+                        raise ValueError("pipe_path fixed_normal requires fixedNormal [x,y,z]")
+                    fn = _v3_norm(n_raw[0], n_raw[1], n_raw[2])
+                    if fn is None:
+                        raise ValueError("pipe_path fixedNormal must be non-zero")
+                    fixed_n_pipe = fn
+                prev_n = None
+                from OCP.gp import gp_Trsf
+                from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+
                 acc = None
                 for i in range(1, len(path_pts)):
                     x0, y0 = path_pts[i - 1]
@@ -1317,11 +1763,38 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                     seg_len = math.hypot(x1 - x0, y1 - y0)
                     if seg_len <= 1e-9:
                         continue
-                    wp = cq.Workplane("XY").workplane(offset=z0).center(x0, y0).circle(outer_r)
+                    tx, ty, tz = (x1 - x0) / seg_len, (y1 - y0) / seg_len, 0.0
+                    bx, by, bz, n2x, n2y, n2z, new_prev = _polyline_sweep_segment_frame(
+                        orient, tx, ty, tz, prev_n, fixed_n_pipe
+                    )
+                    if orient != "fixed_normal":
+                        prev_n = new_prev
+                    overlap = min(2e-4, max(1e-7, seg_len * 2e-5))
+                    extrude_len = seg_len + overlap
+                    wp = cq.Workplane("XY").circle(outer_r)
                     if inner_r is not None:
                         wp = wp.circle(inner_r)
-                    seg = wp.extrude(seg_len)
-                    acc = seg if acc is None else acc.union(seg)
+                    seg = wp.extrude(extrude_len)
+                    tr = gp_Trsf()
+                    tr.SetValues(
+                        bx,
+                        n2x,
+                        tx,
+                        x0,
+                        by,
+                        n2y,
+                        ty,
+                        y0,
+                        bz,
+                        n2z,
+                        tz,
+                        z0,
+                    )
+                    wrapped = seg.val().wrapped
+                    bt = BRepBuilderAPI_Transform(wrapped, tr, True)
+                    out = cq.Shape.cast(bt.Shape())
+                    seg_world = cq.Workplane("XY").newObject([out])
+                    acc = seg_world if acc is None else acc.union(seg_world)
                 if acc is None:
                     raise ValueError("pipe_path has zero effective length")
                 solid = solid.union(acc)
@@ -1343,6 +1816,10 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                     .translate((cx, cy, cz))
                 )
                 solid = scaled
+            elif kind == "thicken_offset":
+                solid = _thicken_offset_apply(cq, solid, op)
+            elif kind == "thread_wizard":
+                solid = _thread_wizard_apply(cq, solid, op)
             elif kind == "coil_cut":
                 cx = float(op.get("centerXMm", 0))
                 cy = float(op.get("centerYMm", 0))
@@ -1462,6 +1939,76 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                 cz = zb + ht / 2.0
                 tool = cq.Workplane("XY").box(ln, wd, ht).translate((cx, cy, cz))
                 solid = solid.union(tool)
+            elif kind == "sheet_fold":
+                bend_y = float(op.get("bendLineYMm", 0))
+                bend_angle = float(op.get("bendAngleDeg", 0))
+                bend_radius = float(op.get("bendRadiusMm", 0))
+                k_factor = float(op.get("kFactor", 0.44))
+                mode = str(op.get("bendAllowanceMode", "k_factor")).strip().lower()
+                allowance_mm = float(op.get("allowanceMm")) if op.get("allowanceMm") is not None else None
+                deduction_mm = float(op.get("deductionMm")) if op.get("deductionMm") is not None else None
+                theta = math.radians(abs(bend_angle))
+                if mode == "allowance_mm" and allowance_mm is not None:
+                    neutral_arc = allowance_mm
+                elif mode == "deduction_mm" and deduction_mm is not None:
+                    neutral_arc = max(0.0, bend_radius * theta - deduction_mm)
+                else:
+                    neutral_arc = theta * (bend_radius + k_factor * max(0.1, bend_radius))
+                shift = neutral_arc if bend_angle >= 0 else -neutral_arc
+                bb = solid.val().BoundingBox()
+                pad = max(bb.xlen, bb.ylen, bb.zlen, 1.0) * 2.0 + 10.0
+                x0, x1 = bb.xmin - pad, bb.xmax + pad
+                y0, y1 = bb.ymin - pad, bb.ymax + pad
+                z0, z1 = bb.zmin - pad, bb.zmax + pad
+                fold_box = (
+                    cq.Workplane("XY")
+                    .box(x1 - x0, y1 - bend_y, z1 - z0)
+                    .translate(((x0 + x1) * 0.5, (bend_y + y1) * 0.5, (z0 + z1) * 0.5))
+                )
+                fold_half = solid.intersect(fold_box)
+                stay_box = (
+                    cq.Workplane("XY")
+                    .box(x1 - x0, bend_y - y0, z1 - z0)
+                    .translate(((x0 + x1) * 0.5, (y0 + bend_y) * 0.5, (z0 + z1) * 0.5))
+                )
+                stay_half = solid.intersect(stay_box)
+                fold_half = fold_half.translate((0, shift, 0)).rotate((0, bend_y, 0), (1, bend_y, 0), bend_angle)
+                solid = stay_half.union(fold_half)
+            elif kind == "sheet_flat_pattern":
+                # Marker op: keeps shape unchanged; export path consumes sheet ops from features/design.
+                solid = solid
+            elif kind == "loft_guide_rails":
+                # MVP validation marker for guide rails; kernel loft remains profile-driven in this phase.
+                solid = solid
+            elif kind == "plastic_rule_fillet":
+                rr = float(op.get("radiusMm", 0))
+                solid = solid.edges().fillet(rr)
+            elif kind == "plastic_boss":
+                cx = float(op.get("centerXMm", 0))
+                cy = float(op.get("centerYMm", 0))
+                z0 = float(op.get("zBaseMm", 0))
+                ro = float(op.get("outerRadiusMm", 0))
+                hh = float(op.get("heightMm", 0))
+                hr_raw = op.get("holeRadiusMm")
+                boss = cq.Workplane("XY").workplane(offset=z0).center(cx, cy).circle(ro).extrude(hh)
+                if hr_raw is not None:
+                    hr = float(hr_raw)
+                    if hr > 0 and hr < ro:
+                        hole = cq.Workplane("XY").workplane(offset=z0).center(cx, cy).circle(hr).extrude(hh)
+                        boss = boss.cut(hole)
+                solid = solid.union(boss)
+            elif kind == "plastic_lip_groove":
+                mode = str(op.get("mode", "")).strip().lower()
+                x0 = float(op.get("xMinMm", 0))
+                x1 = float(op.get("xMaxMm", 0))
+                y0 = float(op.get("yMinMm", 0))
+                y1 = float(op.get("yMaxMm", 0))
+                zb = float(op.get("zBaseMm", 0))
+                dd = float(op.get("depthMm", 0))
+                cx = (x0 + x1) * 0.5
+                cy = (y0 + y1) * 0.5
+                tool = cq.Workplane("XY").workplane(offset=zb).box(x1 - x0, y1 - y0, dd).translate((cx, cy, dd * 0.5))
+                solid = solid.union(tool) if mode == "lip" else solid.cut(tool)
             else:
                 raise ValueError(f"unknown_post_solid_op:{kind}")
         except Exception as e:  # noqa: BLE001
@@ -1492,7 +2039,7 @@ def main() -> None:
         _emit_json({"ok": False, "error": "invalid_payload", "detail": "root must be a JSON object"}, 1)
 
     ver = data.get("version", 1)
-    if ver not in (1, 2, 3):
+    if ver not in (1, 2, 3, 4):
         _emit_json({"ok": False, "error": "bad_payload_version", "detail": str(ver)}, 1)
 
     profiles = data.get("profiles") or []
@@ -1574,6 +2121,8 @@ def main() -> None:
         "stepPath": str(step_path.resolve()),
         "stlPath": str(stl_path.resolve()),
     }
+    if any(isinstance(op, dict) and op.get("kind") == "sheet_flat_pattern" for op in post_ops):
+        ok_payload["flatPatternStrategy"] = "bbox-outline+fold-centerline-markers"
     if solid_kind == "loft" and loft_strategy:
         ok_payload["loftStrategy"] = loft_strategy
     _emit_json(ok_payload, 0)

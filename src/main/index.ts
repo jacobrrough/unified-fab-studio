@@ -35,6 +35,7 @@ import {
   parseAssemblyFile,
   type AssemblySummaryReport
 } from '../shared/assembly-schema'
+import { solveAssemblyKinematics } from '../shared/assembly-kinematics-core'
 import {
   designFileSchemaV2,
   designParametersExportSchema,
@@ -45,9 +46,10 @@ import {
 } from '../shared/design-schema'
 import { formatZodError, isENOENT, parseJsonText } from '../shared/file-parse-errors'
 import { manufactureFileSchema, emptyManufacture } from '../shared/manufacture-schema'
+import { kernelManifestSchema, type KernelManifest } from '../shared/kernel-manifest-schema'
 import { defaultPartFeatures, partFeaturesFileSchema } from '../shared/part-features-schema'
 import { parseDrawingFile } from '../shared/drawing-sheet-schema'
-import { projectSchema } from '../shared/project-schema'
+import { appSettingsSchema, projectSchema } from '../shared/project-schema'
 import { toolLibraryFileSchema, type ToolLibraryFile } from '../shared/tool-schema'
 import { ZodError } from 'zod'
 
@@ -90,7 +92,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:get', async () => loadSettings())
   ipcMain.handle('settings:set', async (_e, partial: Record<string, unknown>) => {
     const cur = await loadSettings()
-    const next = { ...cur, ...partial }
+    const merged: Record<string, unknown> = { ...cur }
+    for (const [k, v] of Object.entries(partial)) {
+      if (v === undefined) delete merged[k]
+      else merged[k] = v
+    }
+    const next = appSettingsSchema.parse(merged)
     await saveSettings(next)
     return next
   })
@@ -133,14 +140,20 @@ app.whenReady().then(async () => {
     }
   )
 
-  ipcMain.handle('dialog:openFiles', async (_e, filters: { name: string; extensions: string[] }[]) => {
-    const r = await dialog.showOpenDialog(mainWindow!, {
-      properties: ['openFile', 'multiSelections'],
-      filters: filters.length ? filters : [{ name: 'All', extensions: ['*'] }]
-    })
-    if (r.canceled || r.filePaths.length === 0) return []
-    return r.filePaths
-  })
+  ipcMain.handle(
+    'dialog:openFiles',
+    async (_e, filters: { name: string; extensions: string[] }[], defaultPath?: string) => {
+      const r = await dialog.showOpenDialog(mainWindow!, {
+        properties: ['openFile', 'multiSelections'],
+        filters: filters.length ? filters : [{ name: 'All', extensions: ['*'] }],
+        ...(defaultPath != null && String(defaultPath).trim() !== ''
+          ? { defaultPath: String(defaultPath).trim() }
+          : {})
+      })
+      if (r.canceled || r.filePaths.length === 0) return []
+      return r.filePaths
+    }
+  )
 
   ipcMain.handle('drawing:export', async (_e, payload: DrawingExportPayload) => {
     const win = mainWindow ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -174,6 +187,7 @@ app.whenReady().then(async () => {
         definitionsPath?: string
         definitionPath?: string
         slicePreset?: string | null
+        curaEngineSettings?: Record<string, string>
       }
     ) => {
       return sliceWithCuraEngine({
@@ -182,7 +196,8 @@ app.whenReady().then(async () => {
         outputGcodePath: payload.outPath,
         definitionPath: payload.definitionPath,
         curaDefinitionsPath: payload.definitionsPath,
-        slicePreset: payload.slicePreset
+        slicePreset: payload.slicePreset,
+        curaEngineSettings: payload.curaEngineSettings
       })
     }
   )
@@ -415,6 +430,39 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle(
+    'design:readKernelManifest',
+    async (_e, projectDir: string): Promise<KernelManifest | null> => {
+      const p = join(projectDir, 'part', 'kernel-manifest.json')
+      try {
+        const raw = await readFile(p, 'utf-8')
+        const data = parseJsonText(raw, 'part/kernel-manifest.json')
+        const parsed = kernelManifestSchema.safeParse(data)
+        return parsed.success ? parsed.data : null
+      } catch (e) {
+        if (isENOENT(e)) return null
+        return null
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'design:readKernelStlBase64',
+    async (
+      _e,
+      projectDir: string
+    ): Promise<{ ok: true; base64: string } | { ok: false; error: string }> => {
+      const p = join(projectDir, 'output', 'kernel-part.stl')
+      try {
+        const buf = await readFile(p)
+        if (isLikelyAsciiStl(buf)) return { ok: false, error: 'ascii_stl_not_supported_in_viewport' }
+        return { ok: true, base64: buf.toString('base64') }
+      } catch {
+        return { ok: false, error: 'read_failed' }
+      }
+    }
+  )
+
   ipcMain.handle('design:save', async (_e, projectDir: string, json: string) => {
     const p = join(projectDir, 'design', 'sketch.json')
     await mkdir(dirname(p), { recursive: true })
@@ -579,6 +627,13 @@ app.whenReady().then(async () => {
     return buildAssemblyInterferenceReport(projectDir, asm)
   })
 
+  ipcMain.handle('assembly:interferenceCheckSimulated', async (_e, projectDir: string, assemblyInput: unknown) => {
+    const asm = parseAssemblyFile(assemblyInput)
+    const active = asm.components.filter((c) => !c.suppressed)
+    const solved = solveAssemblyKinematics(active)
+    return buildAssemblyInterferenceReport(projectDir, asm, solved.transforms)
+  })
+
   ipcMain.handle('assembly:summary', async (_e, projectDir: string): Promise<AssemblySummaryReport> => {
     let asm = emptyAssembly()
     try {
@@ -588,6 +643,31 @@ app.whenReady().then(async () => {
       /* default */
     }
     return buildAssemblySummaryReport(asm)
+  })
+
+  ipcMain.handle('assembly:solve', async (_e, assemblyInput: unknown) => {
+    const asm = parseAssemblyFile(assemblyInput)
+    const active = asm.components.filter((c) => !c.suppressed)
+    const solved = solveAssemblyKinematics(active)
+    return {
+      ok: true as const,
+      transforms: [...solved.transforms.entries()].map(([id, t]) => ({ id, transform: t })),
+      diagnostics: solved.diagnostics
+    }
+  })
+
+  ipcMain.handle('assembly:simulate', async (_e, assemblyInput: unknown, sampleCountRaw?: number) => {
+    const asm = parseAssemblyFile(assemblyInput)
+    const active = asm.components.filter((c) => !c.suppressed)
+    const solved = solveAssemblyKinematics(active)
+    const sampleCount = Math.max(1, Math.min(200, Math.floor(sampleCountRaw ?? 12)))
+    const pose = [...solved.transforms.entries()].map(([id, t]) => ({ id, transform: t }))
+    return {
+      ok: true as const,
+      sampleCount,
+      poses: Array.from({ length: sampleCount }, (_, i) => ({ sample: i, transforms: pose })),
+      diagnostics: solved.diagnostics
+    }
   })
 
   ipcMain.handle(

@@ -52,6 +52,18 @@ export async function buildKernelPartFromProject(params: {
   const sketchPlaneKind = parsed.sketchPlane.kind
   const sketchPlaneDatum = parsed.sketchPlane.kind === 'datum' ? parsed.sketchPlane.datum : undefined
 
+  let featuresParsed: PartFeaturesFile | null = null
+  try {
+    const fraw = await readFile(featuresPath, 'utf-8')
+    featuresParsed = partFeaturesFileSchema.parse(JSON.parse(fraw) as unknown)
+  } catch {
+    featuresParsed = null
+  }
+  const featuresHash = createHash('sha256')
+    .update(featuresParsed ? JSON.stringify(featuresParsed) : '')
+    .digest('hex')
+  const kernelOpsFromFeatures = featuresParsed?.kernelOps
+
   const payloadResult = buildKernelBuildPayload(parsed)
   if (!payloadResult.ok) {
     const manifest: KernelManifest = {
@@ -60,6 +72,7 @@ export async function buildKernelPartFromProject(params: {
       ok: false,
       error: payloadResult.error,
       designHash,
+      featuresHash,
       solidKind: parsed.solidKind,
       profileCount: 0,
       payloadVersion: 1,
@@ -69,14 +82,6 @@ export async function buildKernelPartFromProject(params: {
     }
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8')
     return { ok: false, error: payloadResult.error, manifest }
-  }
-
-  let kernelOpsFromFeatures: PartFeaturesFile['kernelOps']
-  try {
-    const fraw = await readFile(featuresPath, 'utf-8')
-    kernelOpsFromFeatures = partFeaturesFileSchema.parse(JSON.parse(fraw) as unknown).kernelOps
-  } catch {
-    kernelOpsFromFeatures = undefined
   }
 
   const payload = attachKernelPostOpsToPayload(payloadResult.payload, kernelOpsFromFeatures)
@@ -93,13 +98,15 @@ export async function buildKernelPartFromProject(params: {
       error: (json?.error as string) ?? 'kernel_build_failed',
       detail: json?.detail as string | undefined,
       designHash,
+      featuresHash,
       solidKind: parsed.solidKind,
       profileCount: payloadResult.payload.profiles.length,
       payloadVersion: payload.version,
       postSolidOpCount: payload.postSolidOps?.length ?? 0,
       sketchPlaneKind,
       sketchPlaneDatum,
-      loftStrategy: typeof json?.loftStrategy === 'string' ? json.loftStrategy : undefined
+      loftStrategy: typeof json?.loftStrategy === 'string' ? json.loftStrategy : undefined,
+      flatPatternStrategy: typeof json?.flatPatternStrategy === 'string' ? json.flatPatternStrategy : undefined
     }
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8')
     return {
@@ -119,13 +126,15 @@ export async function buildKernelPartFromProject(params: {
     stepPath,
     stlPath,
     designHash,
+    featuresHash,
     solidKind: parsed.solidKind,
     profileCount: payloadResult.payload.profiles.length,
     payloadVersion: payload.version,
     postSolidOpCount: payload.postSolidOps?.length ?? 0,
     sketchPlaneKind,
     sketchPlaneDatum,
-    loftStrategy: typeof json.loftStrategy === 'string' ? json.loftStrategy : undefined
+    loftStrategy: typeof json.loftStrategy === 'string' ? json.loftStrategy : undefined,
+    flatPatternStrategy: typeof json.flatPatternStrategy === 'string' ? json.flatPatternStrategy : undefined
   }
   kernelManifestSchema.parse(manifest)
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8')

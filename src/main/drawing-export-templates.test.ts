@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildFlatPatternDxf,
   buildPlaceholderDxf,
   buildTitleBlockHtml,
   escapeHtml,
@@ -43,7 +44,7 @@ describe('drawing-export-templates', () => {
     })
     expect(html).toContain('base')
     expect(html).toContain('Front')
-    expect(html).toContain('placeholder')
+    expect(html).toContain('metadata')
   })
 
   it('buildTitleBlockHtml includes detail lines when provided', () => {
@@ -82,5 +83,22 @@ describe('drawing-export-templates', () => {
     })
     expect(dxf).toContain('projected')
     expect(dxf).toContain('Right')
+  })
+
+  it('buildFlatPatternDxf includes bend layer geometry', () => {
+    const dxf = buildFlatPatternDxf({
+      projectTitle: 'FlatP',
+      generatedAtIso: 'day',
+      outlinePoints: [
+        [0, 0],
+        [20, 0],
+        [20, 10],
+        [0, 10]
+      ],
+      bendLines: [[0, 5, 20, 5]]
+    })
+    expect(dxf).toContain('BEND')
+    expect(dxf).toContain('FlatP')
+    expect(dxf).toContain('EOF')
   })
 })

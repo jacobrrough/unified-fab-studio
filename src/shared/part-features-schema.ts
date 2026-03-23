@@ -8,6 +8,7 @@ const mm = z.number().finite()
 const mmPos = z.number().finite().positive()
 
 const pathPoint2d = z.tuple([mm, mm])
+const vec3 = z.tuple([mm, mm, mm])
 
 const patternRectangularSchema = z
   .object({
@@ -89,6 +90,30 @@ const sheetTabUnionSchema = z.object({
   lengthMm: mmPos,
   widthMm: mmPos,
   heightMm: mmPos,
+  ...suppressKernel
+})
+
+const bendAllowanceModeSchema = z.enum(['k_factor', 'allowance_mm', 'deduction_mm'])
+
+/** Sheet fold bend around a world-space X line at y=bendLineYMm. */
+const sheetFoldSchema = z.object({
+  kind: z.literal('sheet_fold'),
+  bendLineYMm: mm,
+  bendRadiusMm: mmPos,
+  bendAngleDeg: z.number().finite().min(-170).max(170).refine((v) => Math.abs(v) >= 1, {
+    message: 'sheet_fold bendAngleDeg must have |angle| >= 1 and <= 170'
+  }),
+  kFactor: z.number().finite().min(0).max(1).default(0.44),
+  bendAllowanceMode: bendAllowanceModeSchema.default('k_factor'),
+  allowanceMm: mmPos.optional(),
+  deductionMm: mmPos.optional(),
+  ...suppressKernel
+})
+
+/** Flat-pattern export marker with optional include of bend center lines. */
+const sheetFlatPatternSchema = z.object({
+  kind: z.literal('sheet_flat_pattern'),
+  includeBendLines: z.boolean().default(true),
   ...suppressKernel
 })
 
@@ -252,6 +277,33 @@ const sweepProfilePathSchema = z
     { message: 'sweep_profile_path needs at least one non-zero segment' }
   )
 
+const sweepOrientationModeSchema = z.enum(['fixed_normal', 'frenet', 'path_tangent_lock'])
+
+/** True sweep with orientation-follow modes; path points are world XY and optional z-axis lift per row. */
+const sweepProfilePathTrueSchema = z
+  .object({
+    kind: z.literal('sweep_profile_path_true'),
+    profileIndex: z.number().int().min(0).max(255),
+    pathPoints: z.array(pathPoint2d).min(2).max(256),
+    zStartMm: mm.default(0),
+    orientationMode: sweepOrientationModeSchema.default('frenet'),
+    fixedNormal: vec3.optional(),
+    ...suppressKernel
+  })
+  .refine(
+    (o) =>
+      o.pathPoints.some(([x, y], i) => {
+        if (i === 0) return false
+        const [px, py] = o.pathPoints[i - 1]!
+        return x !== px || y !== py
+      }),
+    { message: 'sweep_profile_path_true needs at least one non-zero segment' }
+  )
+  .refine(
+    (o) => o.orientationMode !== 'fixed_normal' || o.fixedNormal !== undefined,
+    { message: 'sweep_profile_path_true fixed_normal mode requires fixedNormal [x,y,z]' }
+  )
+
 /** Partial pipe along path points using circular section; optional wall thickness for hollow pipe. */
 const pipePathSchema = z
   .object({
@@ -260,6 +312,8 @@ const pipePathSchema = z
     outerRadiusMm: mmPos,
     wallThicknessMm: mmPos.optional(),
     zStartMm: mm.default(0),
+    orientationMode: sweepOrientationModeSchema.default('frenet'),
+    fixedNormal: vec3.optional(),
     ...suppressKernel
   })
   .refine(
@@ -274,8 +328,96 @@ const pipePathSchema = z
   .refine((o) => o.wallThicknessMm == null || o.wallThicknessMm < o.outerRadiusMm, {
     message: 'pipe_path wallThicknessMm must be less than outerRadiusMm'
   })
+  .refine((o) => o.orientationMode !== 'fixed_normal' || o.fixedNormal !== undefined, {
+    message: 'pipe_path fixed_normal mode requires fixedNormal [x,y,z]'
+  })
 
-/** Partial thicken surrogate: isotropic scale about body center (not true face offset). */
+/** Guide-rail hint op for loft validation and manifest strategy tags. */
+const loftGuideRailsSchema = z
+  .object({
+    kind: z.literal('loft_guide_rails'),
+    rails: z.array(z.array(pathPoint2d).min(2).max(256)).min(1).max(4),
+    ...suppressKernel
+  })
+  .refine(
+    (o) =>
+      o.rails.every((rail) =>
+        rail.some(([x, y], i) => {
+          if (i === 0) return false
+          const [px, py] = rail[i - 1]!
+          return x !== px || y !== py
+        })
+      ),
+    { message: 'loft_guide_rails rails must each contain at least one non-zero segment' }
+  )
+
+const plasticRuleFilletSchema = z.object({
+  kind: z.literal('plastic_rule_fillet'),
+  radiusMm: mmPos,
+  ...suppressKernel
+})
+
+const plasticBossSchema = z.object({
+  kind: z.literal('plastic_boss'),
+  centerXMm: mm,
+  centerYMm: mm,
+  zBaseMm: mm,
+  outerRadiusMm: mmPos,
+  holeRadiusMm: mmPos.optional(),
+  heightMm: mmPos,
+  draftDeg: z.number().finite().min(0).max(8).default(1),
+  ...suppressKernel
+})
+
+const plasticLipGrooveSchema = z.object({
+  kind: z.literal('plastic_lip_groove'),
+  mode: z.enum(['lip', 'groove']),
+  xMinMm: mm,
+  xMaxMm: mm,
+  yMinMm: mm,
+  yMaxMm: mm,
+  zBaseMm: mm,
+  depthMm: mmPos,
+  ...suppressKernel
+})
+
+const threadHandSchema = z.enum(['right', 'left'])
+const threadModeSchema = z.enum(['modeled', 'cosmetic'])
+
+/**
+ * Thread wizard op:
+ * - `modeled`: helical cut around +Z axis
+ * - `cosmetic`: emits a no-geometry marker row for UI/history parity
+ */
+const threadWizardSchema = z.object({
+  kind: z.literal('thread_wizard'),
+  centerXMm: mm,
+  centerYMm: mm,
+  majorRadiusMm: mmPos,
+  pitchMm: mmPos,
+  lengthMm: mmPos,
+  depthMm: mmPos,
+  zStartMm: mm.default(0),
+  hand: threadHandSchema.default('right'),
+  mode: threadModeSchema.default('modeled'),
+  standard: z.string().min(1).default('ISO'),
+  designation: z.string().min(1).default('M'),
+  class: z.string().min(1).default('6g'),
+  starts: z.number().int().min(1).max(8).default(1),
+  ...suppressKernel
+})
+
+/** True thicken/offset request (kernel attempts OCC offset; no UI face selection yet). */
+const thickenOffsetSchema = z
+  .object({
+    kind: z.literal('thicken_offset'),
+    distanceMm: mm,
+    side: z.enum(['outward', 'inward', 'both']).default('outward'),
+    ...suppressKernel
+  })
+  .refine((o) => o.distanceMm !== 0, { message: 'thicken_offset requires non-zero distanceMm' })
+
+/** Legacy thicken surrogate: isotropic scale about body center (not true face offset). */
 const thickenScaleSchema = z
   .object({
     kind: z.literal('thicken_scale'),
@@ -345,11 +487,20 @@ export const kernelPostSolidOpSchema = z.union([
   transformTranslateSchema,
   pressPullProfileSchema,
   sweepProfilePathSchema,
+  sweepProfilePathTrueSchema,
   pipePathSchema,
+  threadWizardSchema,
+  thickenOffsetSchema,
   thickenScaleSchema,
   coilCutSchema,
   mirrorUnionPlaneSchema,
-  sheetTabUnionSchema
+  sheetTabUnionSchema,
+  sheetFoldSchema,
+  sheetFlatPatternSchema,
+  loftGuideRailsSchema,
+  plasticRuleFilletSchema,
+  plasticBossSchema,
+  plasticLipGrooveSchema
 ])
 
 export type KernelPostSolidOp = z.infer<typeof kernelPostSolidOpSchema>
@@ -357,7 +508,19 @@ export type KernelPostSolidOp = z.infer<typeof kernelPostSolidOpSchema>
 /** Lightweight feature metadata (Fusion-style browser); geometry still driven by `design/sketch.json` until OCCT history lands. */
 export const partFeatureItemSchema = z.object({
   id: z.string(),
-  kind: z.enum(['sketch', 'extrude', 'revolve', 'loft', 'fillet', 'chamfer', 'boolean', 'pattern', 'mirror']),
+  kind: z.enum([
+    'sketch',
+    'extrude',
+    'revolve',
+    'loft',
+    'fillet',
+    'chamfer',
+    'boolean',
+    'pattern',
+    'mirror',
+    'sheet',
+    'plastic'
+  ]),
   label: z.string(),
   suppressed: z.boolean().optional(),
   /** Free-form params for UI / future regen */

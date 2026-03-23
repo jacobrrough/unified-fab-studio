@@ -30,6 +30,14 @@ export function derivePartFeatures(d: DesignFileV2, prev?: PartFeaturesFile | nu
   }
   const base: PartFeaturesFile = { version: 1, items }
   if (prev?.kernelOps !== undefined) {
+    const last = prev.kernelOps[prev.kernelOps.length - 1]
+    if (last) {
+      if (last.kind.startsWith('sheet_')) {
+        items.push({ id: `sm${prev.kernelOps.length}`, kind: 'sheet', label: `Sheet ${last.kind}` })
+      } else if (last.kind.startsWith('plastic_')) {
+        items.push({ id: `pl${prev.kernelOps.length}`, kind: 'plastic', label: `Plastic ${last.kind}` })
+      }
+    }
     return { ...base, kernelOps: prev.kernelOps }
   }
   return base

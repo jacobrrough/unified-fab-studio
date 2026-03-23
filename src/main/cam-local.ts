@@ -414,6 +414,22 @@ function horizontalSegmentsInsideInsetRing(ring: ReadonlyArray<CamPoint2d>, y: n
   return out
 }
 
+/**
+ * Z levels from surface toward {@link targetZ} when cutting negative Z (into material).
+ * If {@link targetZ} ≥ 0, returns a single pass at {@link targetZ}.
+ */
+export function computeNegativeZDepthPasses(targetZ: number, stepDownMm: number): number[] {
+  const stepDown = Math.max(0.01, Math.abs(stepDownMm))
+  const depths: number[] = []
+  if (targetZ < 0) {
+    for (let d = -stepDown; d > targetZ + 1e-9; d -= stepDown) depths.push(d)
+    depths.push(targetZ)
+  } else {
+    depths.push(targetZ)
+  }
+  return depths
+}
+
 export function generateContour2dLines(params: Contour2dParams): string[] {
   const rawRing = params.contourPoints
   let ring = [...rawRing]
@@ -467,13 +483,7 @@ export function generatePocket2dLines(params: Pocket2dParams): Pocket2dGenerateR
   const lines: string[] = []
   const targetZ = params.zPassMm
   const stepDown = Math.max(0.01, Math.abs(params.zStepMm ?? params.zPassMm))
-  const depths: number[] = []
-  if (targetZ < 0) {
-    for (let d = -stepDown; d > targetZ + 1e-9; d -= stepDown) depths.push(d)
-    depths.push(targetZ)
-  } else {
-    depths.push(targetZ)
-  }
+  const depths = computeNegativeZDepthPasses(targetZ, stepDown)
   const stock = Math.max(0, params.wallStockMm ?? 0)
   const finishEachDepth = params.finishEachDepth === true
   const entryMode = params.entryMode === 'ramp' ? 'ramp' : 'plunge'

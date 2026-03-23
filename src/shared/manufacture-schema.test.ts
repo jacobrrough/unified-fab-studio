@@ -109,6 +109,7 @@ describe('manufactureFileSchema', () => {
       'cnc_adaptive',
       'cnc_waterline',
       'cnc_raster',
+      'cnc_pencil',
       'export_stl'
     ] as const satisfies readonly ManufactureOperationKind[]
     const m = manufactureFileSchema.parse({
@@ -128,7 +129,8 @@ describe('isManufactureCncOperationKind', () => {
     'cnc_drill',
     'cnc_adaptive',
     'cnc_waterline',
-    'cnc_raster'
+    'cnc_raster',
+    'cnc_pencil'
   ]
 
   it('is true for every cnc_* manufacture kind', () => {

@@ -318,10 +318,10 @@ export function computeAssemblyKinematicPreviewTransforms(
     .sort((a, b) => depthFromRoot(a.id, byId) - depthFromRoot(b.id, byId))
 
   for (const s of sliderNodes) {
-    const mmRaw = s.sliderPreviewMm
+    const mmRaw = s.jointState?.scalarMm ?? s.sliderPreviewMm
     if (mmRaw == null || !Number.isFinite(mmRaw)) continue
-    const minM = s.sliderPreviewMinMm ?? -1e6
-    const maxM = s.sliderPreviewMaxMm ?? 1e6
+    const minM = s.jointLimits?.scalarMinMm ?? s.sliderPreviewMinMm ?? -1e6
+    const maxM = s.jointLimits?.scalarMaxMm ?? s.sliderPreviewMaxMm ?? 1e6
     const lo = Math.min(minM, maxM)
     const hi = Math.max(minM, maxM)
     const mm = Math.max(lo, Math.min(hi, mmRaw))
@@ -353,15 +353,15 @@ export function computeAssemblyKinematicPreviewTransforms(
     .sort((a, b) => depthFromRoot(a.id, byId) - depthFromRoot(b.id, byId))
 
   for (const pl of planarNodes) {
-    const uRaw = pl.planarPreviewUMm
-    const vRaw = pl.planarPreviewVMm
+    const uRaw = pl.jointState?.uMm ?? pl.planarPreviewUMm
+    const vRaw = pl.jointState?.vMm ?? pl.planarPreviewVMm
     if (uRaw == null && vRaw == null) continue
-    const minU = pl.planarPreviewUMinMm ?? -1e6
-    const maxU = pl.planarPreviewUMaxMm ?? 1e6
+    const minU = pl.jointLimits?.uMinMm ?? pl.planarPreviewUMinMm ?? -1e6
+    const maxU = pl.jointLimits?.uMaxMm ?? pl.planarPreviewUMaxMm ?? 1e6
     const loU = Math.min(minU, maxU)
     const hiU = Math.max(minU, maxU)
-    const minV = pl.planarPreviewVMinMm ?? -1e6
-    const maxV = pl.planarPreviewVMaxMm ?? 1e6
+    const minV = pl.jointLimits?.vMinMm ?? pl.planarPreviewVMinMm ?? -1e6
+    const maxV = pl.jointLimits?.vMaxMm ?? pl.planarPreviewVMaxMm ?? 1e6
     const loV = Math.min(minV, maxV)
     const hiV = Math.max(minV, maxV)
     const uMm =
@@ -399,10 +399,10 @@ export function computeAssemblyKinematicPreviewTransforms(
     .sort((a, b) => depthFromRoot(a.id, byId) - depthFromRoot(b.id, byId))
 
   for (const r of revoluteNodes) {
-    const degRaw = r.revolutePreviewAngleDeg
+    const degRaw = r.jointState?.scalarDeg ?? r.revolutePreviewAngleDeg
     if (degRaw == null || !Number.isFinite(degRaw)) continue
-    const minD = r.revolutePreviewMinDeg ?? -180
-    const maxD = r.revolutePreviewMaxDeg ?? 180
+    const minD = r.jointLimits?.scalarMinDeg ?? r.revolutePreviewMinDeg ?? -180
+    const maxD = r.jointLimits?.scalarMaxDeg ?? r.revolutePreviewMaxDeg ?? 180
     const lo = Math.min(minD, maxD)
     const hi = Math.max(minD, maxD)
     const deg = Math.max(lo, Math.min(hi, degRaw))
@@ -440,16 +440,16 @@ export function computeAssemblyKinematicPreviewTransforms(
     .sort((a, b) => depthFromRoot(a.id, byId) - depthFromRoot(b.id, byId))
 
   for (const u of universalNodes) {
-    const raw1 = u.universalPreviewAngle1Deg
-    const raw2 = u.universalPreviewAngle2Deg
+    const raw1 = u.jointState?.angle1Deg ?? u.universalPreviewAngle1Deg
+    const raw2 = u.jointState?.angle2Deg ?? u.universalPreviewAngle2Deg
     if (raw1 == null && raw2 == null) continue
-    const min1 = u.universalPreviewAngle1MinDeg ?? -180
-    const max1 = u.universalPreviewAngle1MaxDeg ?? 180
+    const min1 = u.jointLimits?.angle1MinDeg ?? u.universalPreviewAngle1MinDeg ?? -180
+    const max1 = u.jointLimits?.angle1MaxDeg ?? u.universalPreviewAngle1MaxDeg ?? 180
     const lo1 = Math.min(min1, max1)
     const hi1 = Math.max(min1, max1)
     const deg1 = raw1 != null && Number.isFinite(raw1) ? Math.max(lo1, Math.min(hi1, raw1)) : 0
-    const min2 = u.universalPreviewAngle2MinDeg ?? -180
-    const max2 = u.universalPreviewAngle2MaxDeg ?? 180
+    const min2 = u.jointLimits?.angle2MinDeg ?? u.universalPreviewAngle2MinDeg ?? -180
+    const max2 = u.jointLimits?.angle2MaxDeg ?? u.universalPreviewAngle2MaxDeg ?? 180
     const lo2 = Math.min(min2, max2)
     const hi2 = Math.max(min2, max2)
     const deg2 = raw2 != null && Number.isFinite(raw2) ? Math.max(lo2, Math.min(hi2, raw2)) : 0
@@ -495,21 +495,21 @@ export function computeAssemblyKinematicPreviewTransforms(
     .sort((a, b) => depthFromRoot(a.id, byId) - depthFromRoot(b.id, byId))
 
   for (const cy of cylindricalNodes) {
-    const mmRaw = cy.cylindricalPreviewSlideMm
-    const spinRaw = cy.cylindricalPreviewSpinDeg
+    const mmRaw = cy.jointState?.slideMm ?? cy.cylindricalPreviewSlideMm
+    const spinRaw = cy.jointState?.spinDeg ?? cy.cylindricalPreviewSpinDeg
     if (
       (mmRaw == null || !Number.isFinite(mmRaw)) &&
       (spinRaw == null || !Number.isFinite(spinRaw))
     ) {
       continue
     }
-    const minM = cy.cylindricalPreviewSlideMinMm ?? -1e6
-    const maxM = cy.cylindricalPreviewSlideMaxMm ?? 1e6
+    const minM = cy.jointLimits?.slideMinMm ?? cy.cylindricalPreviewSlideMinMm ?? -1e6
+    const maxM = cy.jointLimits?.slideMaxMm ?? cy.cylindricalPreviewSlideMaxMm ?? 1e6
     const loM = Math.min(minM, maxM)
     const hiM = Math.max(minM, maxM)
     const mm = mmRaw != null && Number.isFinite(mmRaw) ? Math.max(loM, Math.min(hiM, mmRaw)) : 0
-    const minS = cy.cylindricalPreviewSpinMinDeg ?? -180
-    const maxS = cy.cylindricalPreviewSpinMaxDeg ?? 180
+    const minS = cy.jointLimits?.spinMinDeg ?? cy.cylindricalPreviewSpinMinDeg ?? -180
+    const maxS = cy.jointLimits?.spinMaxDeg ?? cy.cylindricalPreviewSpinMaxDeg ?? 180
     const loS = Math.min(minS, maxS)
     const hiS = Math.max(minS, maxS)
     const spinDeg =
@@ -566,9 +566,9 @@ export function computeAssemblyKinematicPreviewTransforms(
     .sort((a, b) => depthFromRoot(a.id, byId) - depthFromRoot(b.id, byId))
 
   for (const bl of ballNodes) {
-    const rawX = bl.ballPreviewRxDeg
-    const rawY = bl.ballPreviewRyDeg
-    const rawZ = bl.ballPreviewRzDeg
+    const rawX = bl.jointState?.rxDeg ?? bl.ballPreviewRxDeg
+    const rawY = bl.jointState?.ryDeg ?? bl.ballPreviewRyDeg
+    const rawZ = bl.jointState?.rzDeg ?? bl.ballPreviewRzDeg
     if (rawX == null && rawY == null && rawZ == null) continue
 
     const clampAxis = (
@@ -582,9 +582,9 @@ export function computeAssemblyKinematicPreviewTransforms(
       return Math.max(lo, Math.min(hi, raw))
     }
 
-    const rx = clampAxis(rawX, bl.ballPreviewRxMinDeg, bl.ballPreviewRxMaxDeg)
-    const ry = clampAxis(rawY, bl.ballPreviewRyMinDeg, bl.ballPreviewRyMaxDeg)
-    const rz = clampAxis(rawZ, bl.ballPreviewRzMinDeg, bl.ballPreviewRzMaxDeg)
+    const rx = clampAxis(rawX, bl.jointLimits?.rxMinDeg ?? bl.ballPreviewRxMinDeg, bl.jointLimits?.rxMaxDeg ?? bl.ballPreviewRxMaxDeg)
+    const ry = clampAxis(rawY, bl.jointLimits?.ryMinDeg ?? bl.ballPreviewRyMinDeg, bl.jointLimits?.ryMaxDeg ?? bl.ballPreviewRyMaxDeg)
+    const rz = clampAxis(rawZ, bl.jointLimits?.rzMinDeg ?? bl.ballPreviewRzMinDeg, bl.jointLimits?.rzMaxDeg ?? bl.ballPreviewRzMaxDeg)
 
     if (rx === 0 && ry === 0 && rz === 0) continue
 

@@ -32,12 +32,17 @@ export const manufactureOperationSchema = z.object({
     'cnc_contour',
     'cnc_pocket',
     'cnc_drill',
-    /** Adaptive clearing — OpenCAMLib `AdaptiveWaterline` when available; else built-in parallel finish from STL bounds. */
+    /** Adaptive clearing — OpenCAMLib `AdaptiveWaterline` when available; else built-in parallel finish from STL bounds (CAM run reports fallback reason). */
     'cnc_adaptive',
-    /** Z-level waterline — OpenCAMLib `Waterline` when `pip install opencamlib` works for your Python; else built-in parallel finish. */
+    /** Z-level waterline — OpenCAMLib `Waterline` when `pip install opencamlib` works for your Python; else built-in parallel finish (CAM run reports fallback reason). */
     'cnc_waterline',
-    /** XY raster — OpenCAMLib `PathDropCutter` in `engines/cam/ocl_toolpath.py` when available; else built-in 2.5D mesh height-field, then orthogonal bounds zigzag. */
+    /** XY raster — OpenCAMLib `PathDropCutter` in `engines/cam/ocl_toolpath.py` when available; else built-in 2.5D mesh height-field, then orthogonal bounds zigzag (reason shown in CAM output). */
     'cnc_raster',
+    /**
+     * Pencil / rest cleanup — same OpenCAMLib **raster** path as `cnc_raster` with a **tighter effective stepover**
+     * (`resolvePencilStepoverMm`: optional `pencilStepoverMm` or `pencilStepoverFactor` × op stepover, default factor 0.22).
+     */
+    'cnc_pencil',
     'export_stl'
   ]),
   label: z.string().trim().min(1),
@@ -50,6 +55,7 @@ export const manufactureOperationSchema = z.object({
    * - contour/pocket: `contourPoints: Array<[xMm, yMm]>`, optional `contourSourceId`,
    *   `contourSourceLabel`, `contourSourceSignature` (for sketch drift checks), `contourDerivedAt` (ISO timestamp),
    *   and contour options `contourSide` ('climb'|'conventional'), `leadInMm`, `leadOutMm`.
+   *   Contour: optional `zStepMm` when `zPassMm` is negative — multiple full contour passes stepped into material down to `zPassMm`.
    *   Pocket can also set `zStepMm` (optional step-down increment), `entryMode` ('plunge'|'ramp'),
    *   `rampMm`, optional `rampMaxAngleDeg` (default 45: max ramp angle from horizontal; XY run may grow),
    *   `wallStockMm` (rough stock to leave), `finishPass` (boolean, default true), and
@@ -57,6 +63,8 @@ export const manufactureOperationSchema = z.object({
    * - drill: `drillPoints: Array<[xMm, yMm]>`, optional `retractMm`, `peckMm`, `dwellMs`,
    *   `drillCycle` ('expanded'|'g81'|'g82'|'g83')
    *   and `drillDerivedAt` (ISO timestamp)
+   * - pencil (`cnc_pencil`): optional `pencilStepoverMm` (mm, clamped to tool Ø) or `pencilStepoverFactor` (0.05–1, default 0.22)
+   *   applied to resolved `stepoverMm` for the tight raster pass.
    * See `resolveCamCutParams` / `resolveCamToolDiameterMm` for defaults.
    */
   params: z.record(z.string(), z.unknown()).optional()

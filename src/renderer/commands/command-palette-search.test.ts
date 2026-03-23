@@ -15,4 +15,14 @@ describe('command-palette-search', () => {
     const ordered = orderRowsByRecent([a, b, c], ['ut_section', 'ut_measure'], true)
     expect(ordered.map((x) => x.id)).toEqual(['ut_section', 'ut_measure', 'ut_command_palette'])
   })
+
+  it('rowMatchesPaletteQuery supports multi-token matching', () => {
+    const row = FUSION_STYLE_COMMAND_CATALOG.find((c) => c.id === 'ut_command_palette')!
+    expect(rowMatchesPaletteQuery(row, 'command palette')).toBe(true)
+  })
+
+  it('rowMatchesPaletteQuery supports tokenized aliases', () => {
+    const row = FUSION_STYLE_COMMAND_CATALOG.find((c) => c.id === 'ut_open')!
+    expect(rowMatchesPaletteQuery(row, 'open project')).toBe(true)
+  })
 })

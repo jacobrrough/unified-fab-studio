@@ -37,11 +37,54 @@ function TreeRow({
   itemLabel?: string
 }) {
   return (
-    <div className="browser-tree-row" style={{ paddingLeft: `${8 + depth * 12}px` }}>
+    <div className="browser-tree-row browser-tree-row--dense" style={{ paddingLeft: `${6 + depth * 10}px` }}>
       <button
         type="button"
         className={`browser-tree-label ${active ? 'active' : ''}`}
         onClick={onClick}
+        aria-label={itemLabel ?? label}
+      >
+        {label}
+      </button>
+    </div>
+  )
+}
+
+function FeatureTreeRow({
+  depth,
+  label,
+  active,
+  suppressed,
+  onSelect,
+  onToggleSuppress,
+  itemLabel
+}: {
+  depth: number
+  label: string
+  active?: boolean
+  suppressed?: boolean
+  onSelect?: () => void
+  onToggleSuppress: () => void
+  itemLabel?: string
+}) {
+  return (
+    <div className="browser-tree-row browser-tree-row--dense browser-tree-row--with-vis" style={{ paddingLeft: `${6 + depth * 10}px` }}>
+      <button
+        type="button"
+        className={`browser-eye ${suppressed ? 'browser-eye--off' : ''}`}
+        title={suppressed ? 'Unsuppress feature' : 'Suppress feature'}
+        aria-label={suppressed ? 'Unsuppress feature' : 'Suppress feature'}
+        onClick={(e) => {
+          e.stopPropagation()
+          onToggleSuppress()
+        }}
+      >
+        {suppressed ? '◌' : '●'}
+      </button>
+      <button
+        type="button"
+        className={`browser-tree-label ${active ? 'active' : ''}`}
+        onClick={onSelect}
         aria-label={itemLabel ?? label}
       >
         {label}
@@ -72,6 +115,7 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
   const features = designCtx?.features
   const setDesignSel = designCtx?.setSelection
   const setKernelOpSuppressedAt = designCtx?.setKernelOpSuppressedAt
+  const updateFeatureSuppressed = designCtx?.updateFeatureSuppressed
 
   const designBody = useMemo(() => {
     if (!designCtx || !design) {
@@ -85,7 +129,7 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
 
     return (
       <>
-        <div className="browser-tree-node">
+        <div className="browser-tree-node browser-tree-node--dense">
           <button
             type="button"
             className="browser-tree-caret"
@@ -204,12 +248,14 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
             </div>
             {open.features &&
               features?.items.map((it) => (
-                <TreeRow
+                <FeatureTreeRow
                   key={it.id}
                   depth={1}
                   label={`${it.label} (${it.kind})${it.suppressed ? ' · off' : ''}`}
+                  suppressed={!!it.suppressed}
                   active={designCtx.selection?.scope === 'feature' && designCtx.selection.id === it.id}
-                  onClick={() => setDesignSel?.({ scope: 'feature', id: it.id })}
+                  onSelect={() => setDesignSel?.({ scope: 'feature', id: it.id })}
+                  onToggleSuppress={() => void updateFeatureSuppressed?.(it.id, !it.suppressed)}
                 />
               ))}
             <div className="browser-tree-node">
@@ -257,7 +303,7 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
         )}
       </>
     )
-  }, [design, designCtx, features, open, setDesignSel, setKernelOpSuppressedAt, toggle])
+  }, [design, designCtx, features, open, setDesignSel, setKernelOpSuppressedAt, toggle, updateFeatureSuppressed])
 
   const assembleBody = useMemo(() => {
     if (!projectDir)
@@ -295,7 +341,7 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
               <TreeRow
                 key={c.id}
                 depth={1}
-                label={`${c.name}${qty}${pn}${iso}`}
+                label={`${c.name}${qty}${pn}${iso}${c.suppressed ? ' · off' : ''}`}
                 active={shellSelection?.kind === 'assemble' && shellSelection.componentId === c.id}
                 onClick={() => onShellSelection({ kind: 'assemble', componentId: c.id })}
               />
@@ -365,7 +411,13 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
   }, [mfg, onShellSelection, open.mfgRoot, projectDir, shellSelection, toggle])
 
   const title =
-    workspace === 'design' ? 'Design' : workspace === 'assemble' ? 'Assemble' : workspace === 'manufacture' ? 'Manufacture' : 'Outline'
+    workspace === 'design'
+      ? 'Design'
+      : workspace === 'assemble'
+        ? 'Assemble'
+        : workspace === 'manufacture'
+          ? 'Manufacture'
+          : 'File'
 
   return (
     <div className="browser-panel">
@@ -378,7 +430,7 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
         {workspace === 'manufacture' && manufactureBody}
         {workspace === 'utilities' && (
           <p className="browser-empty" role="status">
-            Switch to Design, Assemble, or Manufacture for the model browser.
+            Switch to Design, Assemble, or Manufacture for the model browser. File is for project + settings only.
           </p>
         )}
       </div>

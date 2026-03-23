@@ -308,9 +308,52 @@ describe('sketch-profile / kernel payload', () => {
       kernelPayloadVersionForOps(1, [{ kind: 'sweep_profile_path', profileIndex: 0, pathPoints: [[0, 0], [1, 0]], zStartMm: 0 }])
     ).toBe(3)
     expect(
-      kernelPayloadVersionForOps(1, [{ kind: 'pipe_path', pathPoints: [[0, 0], [1, 0]], outerRadiusMm: 2, zStartMm: 0 }])
+      kernelPayloadVersionForOps(1, [
+        {
+          kind: 'pipe_path',
+          pathPoints: [
+            [0, 0],
+            [1, 0]
+          ],
+          outerRadiusMm: 2,
+          zStartMm: 0,
+          orientationMode: 'frenet'
+        }
+      ])
     ).toBe(3)
     expect(kernelPayloadVersionForOps(1, [{ kind: 'thicken_scale', deltaMm: 1 }])).toBe(3)
+    expect(
+      kernelPayloadVersionForOps(1, [
+        {
+          kind: 'thread_wizard',
+          centerXMm: 0,
+          centerYMm: 0,
+          majorRadiusMm: 4,
+          pitchMm: 1.25,
+          lengthMm: 12,
+          depthMm: 0.6,
+          zStartMm: 0,
+          mode: 'modeled',
+          hand: 'right',
+          standard: 'ISO',
+          designation: 'M8x1.25',
+          class: '6g',
+          starts: 1
+        }
+      ])
+    ).toBe(4)
+    expect(
+      kernelPayloadVersionForOps(1, [
+        {
+          kind: 'sweep_profile_path_true',
+          profileIndex: 0,
+          pathPoints: [[0, 0], [10, 0]],
+          zStartMm: 0,
+          orientationMode: 'frenet'
+        }
+      ])
+    ).toBe(4)
+    expect(kernelPayloadVersionForOps(1, [{ kind: 'thicken_offset', distanceMm: 1, side: 'both' }])).toBe(4)
     expect(
       kernelPayloadVersionForOps(1, [
         {
@@ -500,6 +543,57 @@ describe('sketch-profile / kernel payload', () => {
     expect(extractKernelProfiles(res.design)).not.toBeNull()
   })
 
+  it('applySketchCornerFillet supports arc-arc when arcs share an endpoint', () => {
+    const s = crypto.randomUUID()
+    const av = crypto.randomUUID()
+    const ae = crypto.randomUUID()
+    const bv = crypto.randomUUID()
+    const be = crypto.randomUUID()
+    const d = emptyDesign()
+    d.points = {
+      [s]: { x: 10, y: 0 },
+      [av]: { x: 7, y: 7 },
+      [ae]: { x: 0, y: 10 },
+      [bv]: { x: 13, y: -7 },
+      [be]: { x: 20, y: -10 }
+    }
+    d.entities = [
+      { id: 'a1', kind: 'arc', startId: s, viaId: av, endId: ae },
+      { id: 'a2', kind: 'arc', startId: s, viaId: bv, endId: be }
+    ]
+    const res = applySketchCornerFillet(d, { entityId: 'a1', edgeIndex: 0 }, { entityId: 'a2', edgeIndex: 0 }, 1)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.design.points[s]).toBeUndefined()
+    expect(res.design.entities.filter((e) => e.kind === 'arc').length).toBe(3)
+  })
+
+  it('applySketchCornerFillet supports arc-arc with near-coincident endpoints', () => {
+    const s1 = crypto.randomUUID()
+    const s2 = crypto.randomUUID()
+    const av = crypto.randomUUID()
+    const ae = crypto.randomUUID()
+    const bv = crypto.randomUUID()
+    const be = crypto.randomUUID()
+    const d = emptyDesign()
+    d.points = {
+      [s1]: { x: 10, y: 0 },
+      [s2]: { x: 10.0005, y: 0.0003 },
+      [av]: { x: 7, y: 7 },
+      [ae]: { x: 0, y: 10 },
+      [bv]: { x: 13, y: -7 },
+      [be]: { x: 20, y: -10 }
+    }
+    d.entities = [
+      { id: 'a1', kind: 'arc', startId: s1, viaId: av, endId: ae },
+      { id: 'a2', kind: 'arc', startId: s2, viaId: bv, endId: be }
+    ]
+    const res = applySketchCornerFillet(d, { entityId: 'a1', edgeIndex: 0 }, { entityId: 'a2', edgeIndex: 0 }, 1)
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.design.entities.filter((e) => e.kind === 'arc').length).toBe(3)
+  })
+
   it('applySketchCornerChamfer replaces corner with one chamfer segment on closed polyline', () => {
     const p0 = crypto.randomUUID()
     const p1 = crypto.randomUUID()
@@ -560,6 +654,27 @@ describe('sketch-profile / kernel payload', () => {
     const p0 = res.design.points[poly.pointIds[0]!]!
     const p1 = res.design.points[poly.pointIds[1]!]!
     expect(Math.hypot(p1.x - p0.x, p1.y - p0.y)).toBeCloseTo(10, 0)
+  })
+
+  it('extractKernelProfiles keeps closed spline loops with robust point count', () => {
+    const p0 = crypto.randomUUID()
+    const p1 = crypto.randomUUID()
+    const p2 = crypto.randomUUID()
+    const p3 = crypto.randomUUID()
+    const d = emptyDesign()
+    d.points = {
+      [p0]: { x: 0, y: 0 },
+      [p1]: { x: 8, y: 8 },
+      [p2]: { x: 16, y: 0 },
+      [p3]: { x: 8, y: -8 }
+    }
+    d.entities = [{ id: 's1', kind: 'spline_fit', pointIds: [p0, p1, p2, p3], closed: true }]
+    const prof = extractKernelProfiles(d)
+    expect(prof).not.toBeNull()
+    const loop = prof![0]
+    expect(loop?.type).toBe('loop')
+    if (loop?.type !== 'loop') return
+    expect(loop.points.length).toBeGreaterThanOrEqual(12)
   })
 
   it('buildKernelBuildPayload loft requires two profiles', () => {
