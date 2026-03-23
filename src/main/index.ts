@@ -8,6 +8,7 @@ import { comparePlacementParityFromBounds } from './cad/kernel-placement-parity'
 import { runDrawingExport, type DrawingExportPayload } from './drawing-export-service'
 import { loadDrawingFile, saveDrawingFile } from './drawing-file-store'
 import { importMeshViaRegistry } from './mesh-import-registry'
+import { parseMeshImportPlacementPayload } from '../shared/mesh-import-placement'
 import { describeCamOperationKind } from './cam-operation-policy'
 import { runCamPipeline } from './cam-runner'
 import { loadAllMachines, getMachineById } from './machines'
@@ -301,12 +302,18 @@ app.whenReady().then(async () => {
 
   ipcMain.handle(
     'assets:importMesh',
-    async (_e, projectDir: string, sourcePath: string, pythonPath: string) => {
+    async (_e, projectDir: string, sourcePath: string, pythonPath: string, placementPayload?: unknown) => {
+      const parsed = parseMeshImportPlacementPayload(placementPayload)
+      const placementOpts =
+        parsed.placement !== undefined || parsed.upAxis !== undefined
+          ? { placement: parsed.placement, upAxis: parsed.upAxis }
+          : undefined
       return importMeshViaRegistry({
         projectDir,
         sourcePath,
         pythonPath: pythonPath || 'python',
-        appRoot: app.getAppPath()
+        appRoot: app.getAppPath(),
+        placementOpts
       })
     }
   )

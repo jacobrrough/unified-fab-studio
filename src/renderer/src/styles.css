@@ -138,6 +138,21 @@ a {
   margin-bottom: 1.25rem;
 }
 
+.splash-section-label {
+  margin: 0 0 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.splash-import-actions {
+  margin-bottom: 1.15rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+
 .splash-btn-large {
   width: 100%;
   min-height: 2.85rem;
@@ -172,6 +187,98 @@ a {
 .splash-status {
   margin: 1rem 0 0;
   font-size: 0.85rem;
+}
+
+.import-placement-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10003;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 1rem 1rem;
+  background: rgba(5, 2, 10, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.import-placement-dialog {
+  width: min(480px, 100%);
+  max-height: min(88vh, 640px);
+  overflow: auto;
+  padding: 1rem 1.15rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+}
+
+.import-placement-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.import-placement-lead {
+  margin: 0 0 1rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.import-placement-fieldset {
+  margin: 0 0 1rem;
+  padding: 0;
+  border: none;
+}
+
+.import-placement-legend {
+  padding: 0;
+  margin: 0 0 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.import-placement-radio {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-bottom: 0.55rem;
+  cursor: pointer;
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.import-placement-radio input {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}
+
+.import-placement-radio-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.import-placement-radio-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.import-placement-radio-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.import-placement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
 }
 
 .splash-settings-backdrop {
@@ -239,6 +346,232 @@ main {
   flex: 1;
   min-height: 0;
   min-height: 100dvh;
+}
+
+.app-shell[data-ui-shell='freecad'] {
+  --shell-menubar-bg: #100818;
+  --shell-menubar-fg: var(--text);
+}
+
+.app-shell-menubar-outer {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--shell-menubar-bg, var(--panel));
+}
+
+.app-menubar {
+  padding: 0 0.15rem;
+}
+
+.app-menubar__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0;
+  min-height: 1.7rem;
+}
+
+.app-menubar__cell {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.app-menubar__trigger {
+  padding: 0.3rem 0.65rem;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--shell-menubar-fg, var(--text));
+  font-size: 0.8125rem;
+  font-family: inherit;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.app-menubar__trigger:hover {
+  background: rgba(147, 51, 234, 0.12);
+}
+
+.app-menubar__trigger--open,
+.app-menubar__trigger:focus-visible {
+  background: rgba(147, 51, 234, 0.18);
+  outline: none;
+}
+
+.app-menubar__trigger:focus-visible {
+  box-shadow: 0 0 0 2px rgba(147, 51, 234, 0.45);
+}
+
+.app-menubar__dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 228px;
+  z-index: 200;
+  padding: 0.3rem 0;
+  margin: 2px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.app-menubar__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.38rem 0.85rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.app-menubar__item:hover:not(:disabled) {
+  background: rgba(147, 51, 234, 0.16);
+}
+
+.app-menubar__item:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.app-menubar__sep {
+  height: 1px;
+  margin: 0.3rem 0.45rem;
+  background: var(--border);
+  border: 0;
+  padding: 0;
+}
+
+.combo-view-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.combo-view-tabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.combo-view-tabs button {
+  flex: 1;
+  padding: 0.32rem 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.combo-view-tabs button:hover {
+  color: var(--text);
+  background: rgba(147, 51, 234, 0.06);
+}
+
+.combo-view-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--primary);
+  background: rgba(147, 51, 234, 0.1);
+}
+
+.combo-view-tabs button:focus-visible {
+  outline: 2px solid rgba(147, 51, 234, 0.55);
+  outline-offset: -2px;
+}
+
+.combo-view-panel__panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.combo-view-panel__panel[hidden] {
+  display: none !important;
+}
+
+.workbench-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.workbench-selector__label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.workbench-selector__select {
+  min-width: 9.75rem;
+  padding: 0.32rem 0.45rem;
+  font-size: 0.78rem;
+  font-family: inherit;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.workbench-selector__select:focus-visible {
+  outline: 2px solid rgba(147, 51, 234, 0.5);
+  outline-offset: 1px;
+}
+
+.app-shell-layout-switch {
+  font-size: 0.7rem;
+  padding: 0.32rem 0.55rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tasks-panel {
+  padding: 0.65rem 0.75rem;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.tasks-panel__lead {
+  margin: 0 0 0.65rem;
+}
+
+.tasks-panel__hint {
+  margin: 0 0 0.65rem;
+}
+
+.tasks-panel__cta {
+  margin-top: 0.35rem;
+}
+
+.tasks-panel__kbd {
+  margin: 0.5rem 0 0;
+  font-size: 0.72rem;
+}
+
+.app-shell[data-ui-shell='freecad'] .app-shell-header {
+  min-height: 44px;
 }
 
 .app-shell-header {

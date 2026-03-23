@@ -10,7 +10,10 @@ export type SplashScreenProps = {
   onOpenRecent: (path: string) => void | Promise<void>
   onRemoveRecent: (path: string) => void | Promise<void>
   onNewProject: () => void | Promise<void>
-  onNewFromImport: () => void | Promise<void>
+  /** Pick 3D files, placement dialog, then create a new project and import into assets/. */
+  onImport3DNewProject: () => void | Promise<void>
+  /** When last project exists: pick files and import into that project, then open it. */
+  onImport3DIntoLastProject?: () => void | Promise<void>
   onResumeLast: () => void | Promise<void>
 }
 
@@ -24,7 +27,8 @@ export function SplashScreen({
   onOpenRecent,
   onRemoveRecent,
   onNewProject,
-  onNewFromImport,
+  onImport3DNewProject,
+  onImport3DIntoLastProject,
   onResumeLast
 }: SplashScreenProps): ReactNode {
   const showResume = Boolean(lastProjectPath?.trim())
@@ -48,7 +52,7 @@ export function SplashScreen({
             Welcome
           </h1>
           <p className="splash-card-lead">
-            Open an existing project folder or start a new one. Everything stays on your machine.
+            Open a project, start fresh, or import STL / STEP / mesh files — everything stays on your machine.
           </p>
 
           {showResume ? (
@@ -62,20 +66,43 @@ export function SplashScreen({
             </div>
           ) : null}
 
-          <div className={`splash-actions${showResume ? ' splash-actions--secondary' : ''}`} role="group" aria-label="Start">
-            <button type="button" className="primary splash-btn-large" onClick={() => void onOpenProject()}>
+          <h2 className="splash-section-label" id="splash-import-heading">
+            Import 3D
+          </h2>
+          <div
+            className="splash-actions splash-import-actions"
+            role="group"
+            aria-labelledby="splash-import-heading"
+          >
+            <button
+              type="button"
+              className="primary splash-btn-large"
+              title="Create a project folder and import STL / STEP / mesh into assets/"
+              onClick={() => void onImport3DNewProject()}
+            >
+              Import 3D files (new project)…
+            </button>
+            {onImport3DIntoLastProject ? (
+              <button
+                type="button"
+                className="secondary splash-btn-large"
+                title="Add files to your last-opened project folder"
+                onClick={() => void onImport3DIntoLastProject()}
+              >
+                Import 3D files into last project…
+              </button>
+            ) : null}
+          </div>
+
+          <h2 className="splash-section-label" id="splash-project-heading">
+            Project
+          </h2>
+          <div className="splash-actions splash-actions--secondary" role="group" aria-labelledby="splash-project-heading">
+            <button type="button" className="secondary splash-btn-large" onClick={() => void onOpenProject()}>
               Open project folder…
             </button>
             <button type="button" className="secondary splash-btn-large" onClick={() => void onNewProject()}>
               New project
-            </button>
-            <button
-              type="button"
-              className="secondary splash-btn-large"
-              title="Create a project folder and import STL / STEP / mesh into assets/"
-              onClick={() => void onNewFromImport()}
-            >
-              New project from 3D file…
             </button>
           </div>
 

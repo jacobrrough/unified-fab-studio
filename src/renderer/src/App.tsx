@@ -3,6 +3,7 @@ import { emptyAssembly, type AssemblyFile } from '../../shared/assembly-schema'
 import type { MachineProfile } from '../../shared/machine-schema'
 import { emptyManufacture, type ManufactureFile } from '../../shared/manufacture-schema'
 import { MESH_IMPORT_FILE_EXTENSIONS, MESH_PYTHON_EXTENSIONS } from '../../shared/mesh-import-formats'
+import type { MeshImportPlacement, MeshImportUpAxis } from '../../shared/mesh-import-placement'
 import type { AppSettings, ImportHistoryEntry, ProjectFile } from '../../shared/project-schema'
 import {
   emptyDrawingFile,
@@ -27,14 +28,22 @@ import { DesignWorkspace } from '../design/DesignWorkspace'
 import { ManufactureWorkspace } from '../manufacture/ManufactureWorkspace'
 import { AppShell, type UtilityTab } from '../shell/AppShell'
 import {
+  readPersistedComboViewTab,
   readPersistedManufacturePanelTab,
+  readPersistedUiShell,
   readPersistedUtilityTab,
   readPersistedWorkspace,
+  writePersistedComboViewTab,
   writePersistedManufacturePanelTab,
+  writePersistedUiShell,
   writePersistedUtilityTab,
-  writePersistedWorkspace
+  writePersistedWorkspace,
+  type UiShellLayout
 } from '../shell/workspaceMemory'
+import { AppMenuBar } from '../shell/AppMenuBar'
 import { BrowserPanel } from '../shell/BrowserPanel'
+import { ComboViewPanel, type ComboViewTab } from '../shell/ComboViewPanel'
+import { TasksPanel } from '../shell/TasksPanel'
 import { PropertiesPanel } from '../shell/PropertiesPanel'
 import { TimelineBar } from '../shell/TimelineBar'
 import type { ShellBrowserSelection } from '../shell/browser-selection'
@@ -43,8 +52,29 @@ import { joinPath } from '../lib/path-join'
 import { UtilitiesWorkspacePanels } from '../utilities/UtilitiesWorkspacePanels'
 import { SplashScreen } from '../shell/SplashScreen'
 import { SplashSettingsModal } from '../shell/SplashSettingsModal'
+import { ImportMeshPlacementModal } from '../shell/ImportMeshPlacementModal'
 
 const SHOW_PROPS_KEY = 'ufs_show_properties'
+
+type PendingMeshImport =
+  | {
+      kind: 'existing'
+      files: string[]
+      py: string
+      /** Splash: import into this folder before `projectDir` React state is set */
+      targetProjectDir?: string
+      targetProject?: ProjectFile
+    }
+  | {
+      kind: 'new_project'
+      files: string[]
+      py: string
+      safeFolderName: string
+      stamp: string
+      projectsRoot: string | undefined
+      machineId: string
+      firstLabel: string
+    }
 
 function sanitizeProjectFolderName(stem: string): string {
   const s = stem.trim() || 'import'
@@ -110,6 +140,9 @@ export function App() {
   const [designDiskRevision, setDesignDiskRevision] = useState(0)
   const [splashSettingsOpen, setSplashSettingsOpen] = useState(false)
   const [splashAppVersion, setSplashAppVersion] = useState<string | null>(null)
+  const [uiShell, setUiShell] = useState<UiShellLayout>(() => readPersistedUiShell('freecad'))
+  const [comboViewTab, setComboViewTab] = useState<ComboViewTab>(() => readPersistedComboViewTab('model'))
+  const [pendingMeshImport, setPendingMeshImport] = useState<PendingMeshImport | null>(null)
 
   const fab = window.fab
 
@@ -239,6 +272,14 @@ export function App() {
   useEffect(() => {
     writePersistedManufacturePanelTab(manufacturePanelTab)
   }, [manufacturePanelTab])
+
+  useEffect(() => {
+    writePersistedUiShell(uiShell)
+  }, [uiShell])
+
+  useEffect(() => {
+    writePersistedComboViewTab(comboViewTab)
+  }, [comboViewTab])
 
   useEffect(() => {
     if (!projectDir) {
@@ -392,66 +433,17 @@ export function App() {
     const safe = sanitizeProjectFolderName(stem)
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
     const root = settings?.projectsRoot?.trim()
-    let dir: string | null = null
-    if (root) {
-      dir = joinPath(root, `${safe}-${stamp}`)
-    } else {
-      dir = await fab.projectOpenDir()
-    }
-    if (!dir) return
     const machineId = machines[0]?.id ?? 'creality-k2-plus'
-    const projectName = `Imported: ${firstLabel}`
-    try {
-      const p = await fab.projectCreate({ dir, name: projectName, machineId })
-      const reports: ImportHistoryEntry[] = []
-      const meshRelPaths: string[] = []
-      const errors: string[] = []
-      for (const f of files) {
-        const r = await fab.assetsImportMesh(dir, f, py)
-        if (!r.ok) {
-          errors.push(`${meshImportFileLabel(f)}: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
-          continue
-        }
-        meshRelPaths.push(r.relativePath)
-        reports.push(r.report)
-      }
-      if (errors.length && reports.length === 0) {
-        setProjectDir(dir)
-        setProject(p)
-        setWorkspace('design')
-        await recordProjectOpened(dir)
-        setStatus(
-          `Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}. Empty project created at ${dir}.`
-        )
-        return
-      }
-      if (reports.length === 0) return
-      const next: ProjectFile = {
-        ...p,
-        meshes: [...new Set([...p.meshes, ...meshRelPaths])],
-        importHistory: [...(p.importHistory ?? []), ...reports],
-        updatedAt: new Date().toISOString()
-      }
-      await fab.projectSave(dir, next)
-      setProjectDir(dir)
-      setProject(next)
-      await recordProjectOpened(dir)
-      setWorkspace('design')
-      const okMsg =
-        reports.length === 1
-          ? (() => {
-              const rep = reports[0]!
-              const w = rep.warnings?.length ? ` ${rep.warnings.join(' ')}` : ''
-              return `Created project and imported ${rep.sourceFileName} → ${rep.assetRelativePath}.${w}`
-            })()
-          : `Created project and imported ${reports.length} file(s)${reports.length < files.length ? ` (${files.length - reports.length} failed)` : ''}.`
-      const errTail = errors.length
-        ? ` — failed: ${errors.slice(0, 2).join(' · ')}${errors.length > 2 ? '…' : ''}`
-        : ''
-      setStatus(`${okMsg}${errTail} Project saved.`)
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e))
-    }
+    setPendingMeshImport({
+      kind: 'new_project',
+      files,
+      py,
+      safeFolderName: safe,
+      stamp,
+      projectsRoot: root,
+      machineId,
+      firstLabel
+    })
   }
 
   async function saveProject(): Promise<void> {
@@ -571,6 +563,129 @@ export function App() {
     return s.split('/').pop() ?? filePath
   }
 
+  async function executeMeshImport(
+    pending: PendingMeshImport,
+    placement: MeshImportPlacement,
+    upAxis: MeshImportUpAxis
+  ): Promise<void> {
+    const opts = { placement, upAxis }
+    if (pending.kind === 'existing') {
+      const dir = pending.targetProjectDir ?? projectDir
+      const baseProject = pending.targetProject ?? project
+      const openedFromSplash = Boolean(pending.targetProjectDir && pending.targetProject)
+      if (!dir || !baseProject) {
+        setStatus('Open a project first (File → Open project folder).')
+        return
+      }
+      const reports: ImportHistoryEntry[] = []
+      const meshRelPaths: string[] = []
+      const errors: string[] = []
+      for (const f of pending.files) {
+        const r = await fab.assetsImportMesh(dir, f, pending.py, opts)
+        if (!r.ok) {
+          errors.push(`${meshImportFileLabel(f)}: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
+          continue
+        }
+        meshRelPaths.push(r.relativePath)
+        reports.push(r.report)
+      }
+      if (errors.length && reports.length === 0) {
+        setStatus(`Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}`)
+        return
+      }
+      if (!reports.length) return
+      const next: ProjectFile = {
+        ...baseProject,
+        meshes: [...new Set([...baseProject.meshes, ...meshRelPaths])],
+        importHistory: [...(baseProject.importHistory ?? []), ...reports],
+        updatedAt: new Date().toISOString()
+      }
+      setProject(next)
+      try {
+        await fab.projectSave(dir, next)
+      } catch (e) {
+        setStatus(e instanceof Error ? e.message : String(e))
+        return
+      }
+      if (openedFromSplash) {
+        setProjectDir(dir)
+        setWorkspace('design')
+        await recordProjectOpened(dir)
+      }
+      const okMsg =
+        reports.length === 1
+          ? (() => {
+              const rep = reports[0]!
+              const w = rep.warnings?.length ? ` ${rep.warnings.join(' ')}` : ''
+              return `Imported ${rep.sourceFileName} → ${rep.assetRelativePath}.${w}`
+            })()
+          : `Imported ${reports.length} file(s)${reports.length < pending.files.length ? ` (${pending.files.length - reports.length} failed)` : ''}.`
+      const errTail = errors.length
+        ? ` — failed: ${errors.slice(0, 2).join(' · ')}${errors.length > 2 ? '…' : ''}`
+        : ''
+      setStatus(`${okMsg}${errTail} Project saved.`)
+      return
+    }
+
+    const { files, py, safeFolderName, stamp, projectsRoot, machineId, firstLabel } = pending
+    const dir: string | null = projectsRoot
+      ? joinPath(projectsRoot, `${safeFolderName}-${stamp}`)
+      : await fab.projectOpenDir()
+    if (!dir) return
+    const projectName = `Imported: ${firstLabel}`
+    try {
+      const p = await fab.projectCreate({ dir, name: projectName, machineId })
+      const reports: ImportHistoryEntry[] = []
+      const meshRelPaths: string[] = []
+      const errors: string[] = []
+      for (const f of files) {
+        const r = await fab.assetsImportMesh(dir, f, py, opts)
+        if (!r.ok) {
+          errors.push(`${meshImportFileLabel(f)}: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
+          continue
+        }
+        meshRelPaths.push(r.relativePath)
+        reports.push(r.report)
+      }
+      if (errors.length && reports.length === 0) {
+        setProjectDir(dir)
+        setProject(p)
+        setWorkspace('design')
+        await recordProjectOpened(dir)
+        setStatus(
+          `Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}. Empty project created at ${dir}.`
+        )
+        return
+      }
+      if (reports.length === 0) return
+      const next: ProjectFile = {
+        ...p,
+        meshes: [...new Set([...p.meshes, ...meshRelPaths])],
+        importHistory: [...(p.importHistory ?? []), ...reports],
+        updatedAt: new Date().toISOString()
+      }
+      await fab.projectSave(dir, next)
+      setProjectDir(dir)
+      setProject(next)
+      await recordProjectOpened(dir)
+      setWorkspace('design')
+      const okMsg =
+        reports.length === 1
+          ? (() => {
+              const rep = reports[0]!
+              const w = rep.warnings?.length ? ` ${rep.warnings.join(' ')}` : ''
+              return `Created project and imported ${rep.sourceFileName} → ${rep.assetRelativePath}.${w}`
+            })()
+          : `Created project and imported ${reports.length} file(s)${reports.length < files.length ? ` (${files.length - reports.length} failed)` : ''}.`
+      const errTail = errors.length
+        ? ` — failed: ${errors.slice(0, 2).join(' · ')}${errors.length > 2 ? '…' : ''}`
+        : ''
+      setStatus(`${okMsg}${errTail} Project saved.`)
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function importModel3D(): Promise<void> {
     if (!projectDir) {
       setStatus('Open a project first (File → Open project folder).')
@@ -600,48 +715,45 @@ export function App() {
       )
       return
     }
-    const reports: ImportHistoryEntry[] = []
-    const meshRelPaths: string[] = []
-    const errors: string[] = []
-    for (const f of files) {
-      const r = await fab.assetsImportMesh(projectDir, f, py)
-      if (!r.ok) {
-        errors.push(`${meshImportFileLabel(f)}: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
-        continue
-      }
-      meshRelPaths.push(r.relativePath)
-      reports.push(r.report)
-    }
-    if (errors.length && reports.length === 0) {
-      setStatus(`Import failed — ${errors.slice(0, 3).join(' · ')}${errors.length > 3 ? '…' : ''}`)
-      return
-    }
-    if (!reports.length) return
-    const next: ProjectFile = {
-      ...project,
-      meshes: [...new Set([...project.meshes, ...meshRelPaths])],
-      importHistory: [...(project.importHistory ?? []), ...reports],
-      updatedAt: new Date().toISOString()
-    }
-    setProject(next)
+    setPendingMeshImport({ kind: 'existing', files, py })
+  }
+
+  /** Splash: pick mesh files and add them to a project folder (opens that project after import). */
+  async function importMeshIntoProjectAtPath(resolvedProjectDir: string): Promise<void> {
+    let p: ProjectFile
     try {
-      await fab.projectSave(projectDir, next)
+      p = await fab.projectRead(resolvedProjectDir)
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e))
       return
     }
-    const okMsg =
-      reports.length === 1
-        ? (() => {
-            const rep = reports[0]!
-            const w = rep.warnings?.length ? ` ${rep.warnings.join(' ')}` : ''
-            return `Imported ${rep.sourceFileName} → ${rep.assetRelativePath}.${w}`
-          })()
-        : `Imported ${reports.length} file(s)${reports.length < files.length ? ` (${files.length - reports.length} failed)` : ''}.`
-    const errTail = errors.length
-      ? ` — failed: ${errors.slice(0, 2).join(' · ')}${errors.length > 2 ? '…' : ''}`
-      : ''
-    setStatus(`${okMsg}${errTail} Project saved.`)
+    const defaultPath =
+      resolvedProjectDir.trim().length > 0 ? resolvedProjectDir : settings?.projectsRoot?.trim() || undefined
+    const files = await fab.dialogOpenFiles(
+      [
+        {
+          name: '3D models (STL, STEP, OBJ, PLY, GLTF, GLB, 3MF, OFF, DAE)',
+          extensions: [...MESH_IMPORT_FILE_EXTENSIONS]
+        }
+      ],
+      defaultPath
+    )
+    if (!files.length) return
+    const py = settings?.pythonPath?.trim() ?? 'python'
+    const needsPy = files.some((f) => pathNeedsPythonForMeshImport(f))
+    if (needsPy && !settings?.pythonPath?.trim()) {
+      setStatus(
+        'Set Python path (File → Settings) for STEP (CadQuery) and mesh formats OBJ / PLY / GLTF / GLB / 3MF / OFF / DAE (pip install trimesh).'
+      )
+      return
+    }
+    setPendingMeshImport({
+      kind: 'existing',
+      files,
+      py,
+      targetProjectDir: resolvedProjectDir,
+      targetProject: p
+    })
   }
 
   async function importTools(kind: 'csv' | 'json' | 'fusion' | 'fusion_csv'): Promise<void> {
@@ -813,6 +925,8 @@ export function App() {
     )
   }
 
+  const splashLastProjectDir = settings?.lastProjectPath?.trim() ?? ''
+
   return (
     <div className="app">
       <ShortcutsReferenceDialog open={shortcutsDialogOpen} onClose={() => setShortcutsDialogOpen(false)} />
@@ -820,6 +934,17 @@ export function App() {
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onPick={handleCommandPick}
+      />
+      <ImportMeshPlacementModal
+        open={pendingMeshImport != null}
+        fileCount={pendingMeshImport?.files.length ?? 0}
+        onCancel={() => setPendingMeshImport(null)}
+        onConfirm={(placement, upAxis) => {
+          const p = pendingMeshImport
+          setPendingMeshImport(null)
+          if (!p) return
+          void executeMeshImport(p, placement, upAxis)
+        }}
       />
       {!projectDir ? (
         <>
@@ -833,7 +958,10 @@ export function App() {
             onOpenRecent={openRecentProject}
             onRemoveRecent={removeRecentProject}
             onNewProject={createProject}
-            onNewFromImport={createProjectFromImport}
+            onImport3DNewProject={createProjectFromImport}
+            onImport3DIntoLastProject={
+              splashLastProjectDir ? () => void importMeshIntoProjectAtPath(splashLastProjectDir) : undefined
+            }
             onResumeLast={() => {
               const p = settings?.lastProjectPath?.trim()
               if (p) void openRecentProject(p)
@@ -881,15 +1009,67 @@ export function App() {
             onWorkspaceChange={setWorkspace}
             utilityTab={utilityTab}
             onUtilityTabChange={setUtilityTab}
+            uiShell={uiShell}
+            onUiShellChange={setUiShell}
+            menuBar={
+              uiShell === 'freecad' ? (
+                <AppMenuBar
+                  canSave={!!project}
+                  onOpenProject={() => void openProjectFolder()}
+                  onNewProject={() => void createProject()}
+                  onNewFrom3D={() => void createProjectFromImport()}
+                  onSave={() => void saveProject()}
+                  onGoProjectTab={() => {
+                    setWorkspace('utilities')
+                    setUtilityTab('project')
+                  }}
+                  onGoSettingsTab={() => {
+                    setWorkspace('utilities')
+                    setUtilityTab('settings')
+                  }}
+                  onCommandPalette={() => setCommandPaletteOpen(true)}
+                  onWorkspaceChange={setWorkspace}
+                  showProperties={showProperties}
+                  onToggleProperties={() => setShowProperties((v) => !v)}
+                  onOpenShortcuts={openShortcutsReferenceHandler}
+                  uiShell={uiShell}
+                  onUiShellChange={setUiShell}
+                />
+              ) : null
+            }
             browser={
-              <BrowserPanel
-                workspace={workspace}
-                projectDir={projectDir}
-                asm={sideAsm}
-                mfg={sideMfg}
-                shellSelection={shellSelection}
-                onShellSelection={setShellSelection}
-              />
+              uiShell === 'freecad' ? (
+                <ComboViewPanel
+                  tab={comboViewTab}
+                  onTabChange={setComboViewTab}
+                  model={
+                    <BrowserPanel
+                      workspace={workspace}
+                      projectDir={projectDir}
+                      asm={sideAsm}
+                      mfg={sideMfg}
+                      shellSelection={shellSelection}
+                      onShellSelection={setShellSelection}
+                      embedInComboView
+                    />
+                  }
+                  tasks={
+                    <TasksPanel
+                      workspace={workspace}
+                      onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+                    />
+                  }
+                />
+              ) : (
+                <BrowserPanel
+                  workspace={workspace}
+                  projectDir={projectDir}
+                  asm={sideAsm}
+                  mfg={sideMfg}
+                  shellSelection={shellSelection}
+                  onShellSelection={setShellSelection}
+                />
+              )
             }
             timeline={workspace === 'design' ? <TimelineBar /> : null}
             properties={

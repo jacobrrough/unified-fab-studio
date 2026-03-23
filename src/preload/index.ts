@@ -13,6 +13,7 @@ import type { KernelManifest } from '../shared/kernel-manifest-schema'
 import type { PartFeaturesFile } from '../shared/part-features-schema'
 import type { ToolLibraryFile } from '../shared/tool-schema'
 import type { DrawingFile } from '../shared/drawing-sheet-schema'
+import type { MeshImportPlacement, MeshImportUpAxis } from '../shared/mesh-import-placement'
 
 export type Api = {
   appGetVersion: () => Promise<string>
@@ -105,7 +106,8 @@ export type Api = {
   assetsImportMesh: (
     projectDir: string,
     sourcePath: string,
-    pythonPath: string
+    pythonPath: string,
+    placement?: { placement?: MeshImportPlacement; upAxis?: MeshImportUpAxis }
   ) => Promise<
     | { ok: true; stlPath: string; relativePath: string; report: ImportHistoryEntry }
     | { ok: false; error: string; detail?: string }
@@ -202,8 +204,8 @@ const api: Api = {
   cadImportStl: (projectDir, stlPath) => ipcRenderer.invoke('cad:importStl', projectDir, stlPath),
   cadImportStep: (projectDir, stepPath, pythonPath) =>
     ipcRenderer.invoke('cad:importStep', projectDir, stepPath, pythonPath),
-  assetsImportMesh: (projectDir, sourcePath, pythonPath) =>
-    ipcRenderer.invoke('assets:importMesh', projectDir, sourcePath, pythonPath),
+  assetsImportMesh: (projectDir, sourcePath, pythonPath, placement) =>
+    ipcRenderer.invoke('assets:importMesh', projectDir, sourcePath, pythonPath, placement ?? {}),
   kernelBuildPart: (projectDir, pythonPath) => ipcRenderer.invoke('cad:kernelBuild', projectDir, pythonPath),
   comparePreviewKernelPlacement: (projectDir, kernelStlPath, previewStlBase64) =>
     ipcRenderer.invoke('cad:comparePreviewKernel', projectDir, kernelStlPath, previewStlBase64),

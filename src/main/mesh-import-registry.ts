@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join, relative } from 'node:path'
 import { MESH_IMPORT_FILE_EXTENSIONS, MESH_PYTHON_EXTENSIONS } from '../shared/mesh-import-formats'
+import type { MeshImportPlacement, MeshImportUpAxis } from '../shared/mesh-import-placement'
 import type { ImportHistoryEntry } from '../shared/project-schema'
 import { importStepToProjectStl, importStlToProjectAssets, runPythonJson } from './cad/occt-import'
 import { getEnginesRoot } from './paths'
@@ -54,6 +56,43 @@ function buildReport(params: {
   }
 }
 
+export type MeshImportPlacementParams = {
+  placement?: MeshImportPlacement
+  upAxis?: MeshImportUpAxis
+}
+
+async function finalizeImportedStlWithPlacement(
+  projectDir: string,
+  stlPath: string,
+  report: ImportHistoryEntry,
+  placementOpts?: MeshImportPlacementParams
+): Promise<MeshImportResult> {
+  const placement = placementOpts?.placement ?? 'as_is'
+  const upAxis = placementOpts?.upAxis ?? 'y_up'
+  if (placement === 'as_is' && upAxis === 'y_up') {
+    return {
+      ok: true,
+      stlPath,
+      relativePath: posixRel(projectDir, stlPath),
+      report
+    }
+  }
+  const { transformBinaryStlWithPlacement } = await import('./binary-stl-placement')
+  const buf = await readFile(stlPath)
+  const tr = transformBinaryStlWithPlacement(buf, placement, upAxis)
+  if (!tr.ok) {
+    return { ok: false, error: tr.error, detail: tr.detail }
+  }
+  await writeFile(stlPath, tr.buffer)
+  const warnings = [...(report.warnings ?? []), 'Import placement / up-axis applied to the binary STL under assets/.']
+  return {
+    ok: true,
+    stlPath,
+    relativePath: posixRel(projectDir, stlPath),
+    report: { ...report, warnings }
+  }
+}
+
 /**
  * Unified import: STL copy, STEP→STL (CadQuery), mesh formats→STL (trimesh).
  */
@@ -62,6 +101,7 @@ export async function importMeshViaRegistry(params: {
   sourcePath: string
   pythonPath: string
   appRoot: string
+  placementOpts?: MeshImportPlacementParams
 }): Promise<MeshImportResult> {
   const route = meshImportRouteFromPath(params.sourcePath)
   if (!route) {
@@ -80,12 +120,7 @@ export async function importMeshViaRegistry(params: {
       sourceFormat: ext,
       roundTripLevel: 'mesh_only'
     })
-    return {
-      ok: true,
-      stlPath: r.stlPath,
-      relativePath: posixRel(params.projectDir, r.stlPath),
-      report
-    }
+    return finalizeImportedStlWithPlacement(params.projectDir, r.stlPath, report, params.placementOpts)
   }
 
   if (route === 'step') {
@@ -106,12 +141,7 @@ export async function importMeshViaRegistry(params: {
       roundTripLevel: 'partial',
       warnings: ['STEP tessellated to STL; parametric history is not preserved in UFS.']
     })
-    return {
-      ok: true,
-      stlPath: r.stlPath,
-      relativePath: posixRel(params.projectDir, r.stlPath),
-      report
-    }
+    return finalizeImportedStlWithPlacement(params.projectDir, r.stlPath, report, params.placementOpts)
   }
 
   const base = basename(params.sourcePath).replace(/\.[^.]+$/, '') || 'import'
@@ -133,10 +163,5 @@ export async function importMeshViaRegistry(params: {
     roundTripLevel: 'mesh_only',
     warnings: ['Converted via trimesh → STL; verify units and orientation before CAM.']
   })
-  return {
-    ok: true,
-    stlPath: outStl,
-    relativePath: posixRel(params.projectDir, outStl),
-    report
-  }
+  return finalizeImportedStlWithPlacement(params.projectDir, outStl, report, params.placementOpts)
 }

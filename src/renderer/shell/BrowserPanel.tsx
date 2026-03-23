@@ -14,6 +14,8 @@ type Props = {
   mfg: ManufactureFile | null
   shellSelection: ShellBrowserSelection
   onShellSelection: (s: ShellBrowserSelection) => void
+  /** When true, hide the scope title row (used inside combo view Model tab). */
+  embedInComboView?: boolean
 }
 
 function polyPtCount(e: SketchEntity): number {
@@ -93,7 +95,15 @@ function FeatureTreeRow({
   )
 }
 
-export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, onShellSelection }: Props) {
+export function BrowserPanel({
+  workspace,
+  projectDir,
+  asm,
+  mfg,
+  shellSelection,
+  onShellSelection,
+  embedInComboView = false
+}: Props) {
   const designCtx = useDesignSessionOptional()
   const [open, setOpen] = useState<Record<string, boolean>>({
     designRoot: true,
@@ -419,12 +429,21 @@ export function BrowserPanel({ workspace, projectDir, asm, mfg, shellSelection, 
           ? 'Manufacture'
           : 'File'
 
+  const headId = 'browser-panel-scope-title'
+
   return (
     <div className="browser-panel">
-      <div className="browser-panel-head" id="browser-panel-scope-title">
-        {title}
-      </div>
-      <div className="browser-panel-body" role="region" aria-labelledby="browser-panel-scope-title">
+      {!embedInComboView && (
+        <div className="browser-panel-head" id={headId}>
+          {title}
+        </div>
+      )}
+      <div
+        className="browser-panel-body"
+        role="region"
+        aria-label={embedInComboView ? `${title} browser` : undefined}
+        aria-labelledby={embedInComboView ? undefined : headId}
+      >
         {workspace === 'design' && designBody}
         {workspace === 'assemble' && assembleBody}
         {workspace === 'manufacture' && manufactureBody}
