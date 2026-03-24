@@ -17,6 +17,8 @@ export type AppMenuBarProps = {
   onOpenShortcuts: () => void
   uiShell: UiShellLayout
   onUiShellChange: (s: UiShellLayout) => void
+  /** When set and non-empty, View → workbench items are limited to these workspaces. */
+  allowedWorkspaces?: Workspace[] | null
 }
 
 type MenuId = 'file' | 'edit' | 'view' | 'help' | null
@@ -35,8 +37,11 @@ export function AppMenuBar({
   onToggleProperties,
   onOpenShortcuts,
   uiShell,
-  onUiShellChange
+  onUiShellChange,
+  allowedWorkspaces
 }: AppMenuBarProps) {
+  const workspaceMenuAllowed =
+    allowedWorkspaces != null && allowedWorkspaces.length > 0 ? allowedWorkspaces : null
   const baseId = useId()
   const [open, setOpen] = useState<MenuId>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -195,50 +200,58 @@ export function AppMenuBar({
               {showProperties ? '✓ ' : ''}Properties panel
             </button>
             <div className="app-menubar__sep" role="separator" />
-            <button
-              type="button"
-              role="menuitem"
-              className="app-menubar__item"
-              onClick={() => {
-                close()
-                onWorkspaceChange('design')
-              }}
-            >
-              Design workbench
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="app-menubar__item"
-              onClick={() => {
-                close()
-                onWorkspaceChange('assemble')
-              }}
-            >
-              Assemble workbench
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="app-menubar__item"
-              onClick={() => {
-                close()
-                onWorkspaceChange('manufacture')
-              }}
-            >
-              Manufacture workbench
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="app-menubar__item"
-              onClick={() => {
-                close()
-                onWorkspaceChange('utilities')
-              }}
-            >
-              File workbench
-            </button>
+            {(!workspaceMenuAllowed || workspaceMenuAllowed.includes('design')) && (
+              <button
+                type="button"
+                role="menuitem"
+                className="app-menubar__item"
+                onClick={() => {
+                  close()
+                  onWorkspaceChange('design')
+                }}
+              >
+                Design workbench
+              </button>
+            )}
+            {(!workspaceMenuAllowed || workspaceMenuAllowed.includes('assemble')) && (
+              <button
+                type="button"
+                role="menuitem"
+                className="app-menubar__item"
+                onClick={() => {
+                  close()
+                  onWorkspaceChange('assemble')
+                }}
+              >
+                Assemble workbench
+              </button>
+            )}
+            {(!workspaceMenuAllowed || workspaceMenuAllowed.includes('manufacture')) && (
+              <button
+                type="button"
+                role="menuitem"
+                className="app-menubar__item"
+                onClick={() => {
+                  close()
+                  onWorkspaceChange('manufacture')
+                }}
+              >
+                Manufacture workbench
+              </button>
+            )}
+            {(!workspaceMenuAllowed || workspaceMenuAllowed.includes('utilities')) && (
+              <button
+                type="button"
+                role="menuitem"
+                className="app-menubar__item"
+                onClick={() => {
+                  close()
+                  onWorkspaceChange('utilities')
+                }}
+              >
+                File workbench
+              </button>
+            )}
             <div className="app-menubar__sep" role="separator" />
             <button
               type="button"

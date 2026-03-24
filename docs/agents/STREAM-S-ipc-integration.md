@@ -10,15 +10,16 @@
 
 Ship **additive** Electron IPC that:
 
-- **Matches end-to-end** — every `ipcRenderer.invoke('channel', …)` in preload has a matching `ipcMain.handle('channel', …)` in main (enforced by [`src/main/ipc-contract.test.ts`](../../src/main/ipc-contract.test.ts)).
-- **Stays thin at the boundary** — handler bodies live in `src/main/<module>.ts` (or existing helpers); `src/main/index.ts` wires imports and one-line registrations where possible.
+- **Matches end-to-end** — every `ipcRenderer.invoke('channel', …)` in preload has a matching `ipcMain.handle('channel', …)` in main (enforced by [`src/main/ipc-contract.test.ts`](../../src/main/ipc-contract.test.ts), which scans all non-test `src/main/**/*.ts` for registrations).
+- **Stays thin at the boundary** — handler bodies live in `src/main/<module>.ts` (or existing helpers); [`src/main/index.ts`](../../src/main/index.ts) bootstraps the window and calls `registerCoreIpc` / `registerModelingIpc` / `registerFabricationIpc` (see [`ipc-core.ts`](../../src/main/ipc-core.ts), [`ipc-modeling.ts`](../../src/main/ipc-modeling.ts), [`ipc-fabrication.ts`](../../src/main/ipc-fabrication.ts)).
 - **Types the renderer surface** — extend the preload `Api` type and `contextBridge.exposeInMainWorld` payload; [`src/renderer/src/vite-env.d.ts`](../../src/renderer/src/vite-env.d.ts) picks up `Api` via `window.fab` — no duplicate channel string literals in the renderer if you expose a typed method instead.
 
 ## Allowed paths (primary)
 
 | File / area | Notes |
 |-------------|--------|
-| `src/main/index.ts` | Register handlers; keep bulky logic out |
+| `src/main/index.ts` | Bootstrap + call `register*Ipc` functions; keep bulky logic out |
+| `src/main/ipc-core.ts`, `ipc-modeling.ts`, `ipc-fabrication.ts` | Primary `ipcMain.handle` registration modules (`ipc-contract.test.ts` scans every non-test `src/main/**/*.ts`) |
 | `src/preload/index.ts` | `invoke` wrappers, `Api` type, `exposeInMainWorld` |
 | `src/main/**/*.ts` | New or extended modules that handlers call — **preferred** place for logic |
 | `src/shared/**/*.ts` | Only when a stream agreed on payloads/schemas and you need a shared type imported by preload |
@@ -33,7 +34,7 @@ Ship **additive** Electron IPC that:
 | Delegating to existing main modules (`cam-local`, `slicer`, `cad/*`, …) | Registering handlers **without** a preload `invoke` (contract test assumes preload is source of truth for “used” channels) |
 | Small fixes inside `main/index.ts` / `preload` needed for wiring | Multiple parallel chats editing **`main/index.ts` + `preload/index.ts`** without coordination |
 
-**Contract test behavior:** [`ipc-contract.test.ts`](../../src/main/ipc-contract.test.ts) scans **`src/preload/index.ts`** for `ipcRenderer.invoke('…')` and requires each name in **`src/main/index.ts`** `ipcMain.handle('…')`. If you add a handler that is only for internal/main use, either expose it through preload for the contract test or coordinate **Stream H** to evolve the test — default path is **preload + main together**.
+**Contract test behavior:** [`ipc-contract.test.ts`](../../src/main/ipc-contract.test.ts) scans **`src/preload/index.ts`** for `ipcRenderer.invoke('…')` and requires each name to appear exactly once across `ipcMain.handle('…')` in **non-test** **`src/main/**/*.ts`**. If you add a handler that is only for internal/main use, either expose it through preload for the contract test or coordinate **Stream H** to evolve the test — default path is **preload + main together**.
 
 - **`npm test`** and **`npm run build`** from **`unified-fab-studio/`** before claiming done (same bar as **Aggressive — Stream S** in [`PARALLEL_PASTABLES.md`](PARALLEL_PASTABLES.md)).
 

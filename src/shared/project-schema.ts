@@ -78,7 +78,19 @@ export const appSettingsSchema = z.object({
   projectsRoot: z.string().optional(),
   /** Most recently opened project folders (absolute paths), newest first. */
   recentProjectPaths: z.array(z.string()).optional().default([]),
-  theme: z.enum(['dark', 'light']).default('dark')
+  theme: z.enum(['dark', 'light']).default('dark'),
+  /**
+   * WorkTrackCAM: default post template filename under `resources/posts` for **New machine draft**
+   * in File → Settings → Machine Manager. Empty/unset falls back to `grbl-mm.gcode.hbs`.
+   */
+  camDefaultPostTemplate: z.string().optional(),
+  /** WorkTrackCAM: default dialect for new machine drafts (matches machine profile `dialect`). */
+  camDefaultMachineDialect: z.enum(['grbl', 'mach3', 'generic_mm']).optional(),
+  /**
+   * WorkTrackCAM: user acknowledged that generated G-code is unverified until post, units, and
+   * machine clearances are checked (see docs/MACHINES.md).
+   */
+  camGcodeSafetyAcknowledged: z.boolean().optional()
 })
 
 export type AppSettings = z.infer<typeof appSettingsSchema>

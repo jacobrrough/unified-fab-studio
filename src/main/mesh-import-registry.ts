@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, extname, join, relative } from 'node:path'
 import { MESH_IMPORT_FILE_EXTENSIONS, MESH_PYTHON_EXTENSIONS } from '../shared/mesh-import-formats'
-import type { MeshImportPlacement, MeshImportUpAxis } from '../shared/mesh-import-placement'
+import type { MeshImportPlacement, MeshImportTransform, MeshImportUpAxis } from '../shared/mesh-import-placement'
 import type { ImportHistoryEntry } from '../shared/project-schema'
 import { importStepToProjectStl, importStlToProjectAssets, runPythonJson } from './cad/occt-import'
 import { getEnginesRoot } from './paths'
@@ -59,6 +59,7 @@ function buildReport(params: {
 export type MeshImportPlacementParams = {
   placement?: MeshImportPlacement
   upAxis?: MeshImportUpAxis
+  transform?: MeshImportTransform
 }
 
 async function finalizeImportedStlWithPlacement(
@@ -79,7 +80,7 @@ async function finalizeImportedStlWithPlacement(
   }
   const { transformBinaryStlWithPlacement } = await import('./binary-stl-placement')
   const buf = await readFile(stlPath)
-  const tr = transformBinaryStlWithPlacement(buf, placement, upAxis)
+  const tr = transformBinaryStlWithPlacement(buf, placement, upAxis, placementOpts?.transform)
   if (!tr.ok) {
     return { ok: false, error: tr.error, detail: tr.detail }
   }

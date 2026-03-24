@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  define: {
+    __APP_PRODUCT__: JSON.stringify('unified')
+  },
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],

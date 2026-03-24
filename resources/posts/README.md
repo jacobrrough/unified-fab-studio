@@ -6,7 +6,7 @@ Handlebars (`.hbs`) files rendered by [`src/main/post-process.ts`](../../src/mai
 
 | File | Used by | Role |
 |------|---------|------|
-| **`cnc_generic_mm.hbs`** | All shipped [`machines/*.json`](../machines/README.md) today | Minimal header (safety + WCS/units reminders), `{{units}}`, spindle snippets, `{{#each toolpathLines}}`. |
+| **`cnc_generic_mm.hbs`** | All shipped [`machines/*.json`](../machines/README.md) today | Minimal header (safety + WCS/units + **tool-change** reminders), `{{units}}`, spindle snippets, `{{#each toolpathLines}}`. |
 
 ## Template context (`PostContext`)
 
@@ -24,6 +24,7 @@ Populated in **`renderPost()`** — keep variable names stable if you add templa
 
 - **`{{!-- … --}}`** — Handlebars block comments: **not** written to the generated G-code. Use for maintainer notes (conventions, context keys, parsing pitfalls).
 - **Lines starting with `;`** — emitted as **G-code comments** in the output file for the operator. These are intentional; keep the same **unverified-output** tone as [`cnc_generic_mm.hbs`](cnc_generic_mm.hbs).
+- **Tool change / ATC** — Unless `PostContext` gains explicit multi-tool data (coordinate **Stream D**), operator-visible `;` lines should state that the template does **not** emit M6/ATC sequences by default and that multi-tool jobs need manual or custom blocks.
 
 ## Adding a template
 

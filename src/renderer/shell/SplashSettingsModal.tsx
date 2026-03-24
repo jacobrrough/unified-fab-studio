@@ -1,5 +1,8 @@
 import { useEffect } from 'react'
+import { getAppDisplayName, getAppProductFromBuild } from '../../shared/app-product'
 import type { AppSettings } from '../../shared/project-schema'
+
+const SPLASH_APP_DISPLAY_NAME = getAppDisplayName(getAppProductFromBuild())
 
 type Props = {
   open: boolean
@@ -62,7 +65,7 @@ export function SplashSettingsModal({
         <div className="splash-settings-body">
           {appVersion ? (
             <p className="msg util-panel-intro" role="status">
-              Unified Fab Studio v{appVersion}
+              {SPLASH_APP_DISPLAY_NAME} v{appVersion}
             </p>
           ) : (
             <p className="msg util-panel-intro" role="status" aria-busy="true">

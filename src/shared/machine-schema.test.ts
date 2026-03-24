@@ -32,4 +32,12 @@ describe('machineProfileSchema', () => {
     expect(() => machineProfileSchema.parse({ ...minimalCnc, name: '   ' })).toThrow()
     expect(() => machineProfileSchema.parse({ ...minimalCnc, postTemplate: '' })).toThrow()
   })
+
+  it('allows optional CPS import meta', () => {
+    const m = machineProfileSchema.parse({
+      ...minimalCnc,
+      meta: { source: 'user', importedFromCps: true, cpsOriginalBasename: 'foo.cps' }
+    })
+    expect(m.meta).toMatchObject({ importedFromCps: true, cpsOriginalBasename: 'foo.cps' })
+  })
 })

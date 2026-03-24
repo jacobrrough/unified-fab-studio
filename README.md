@@ -47,12 +47,22 @@ npm run build
 
 | Symptom | What to try |
 |---------|-------------|
-| `ipc-contract` test fails | Every preload `invoke` channel needs a matching `ipcMain.handle` in main — update [`src/preload/index.ts`](src/preload/index.ts) and [`src/main/index.ts`](src/main/index.ts) together (one owner per batch: [`docs/agents/STREAM-S-ipc-integration.md`](docs/agents/STREAM-S-ipc-integration.md)). |
+| `ipc-contract` test fails | Every preload `invoke` channel needs a matching `ipcMain.handle` in non-test `src/main/**/*.ts` — update [`src/preload/index.ts`](src/preload/index.ts) and the relevant registrar (e.g. [`src/main/ipc-core.ts`](src/main/ipc-core.ts), [`ipc-modeling.ts`](src/main/ipc-modeling.ts), [`ipc-fabrication.ts`](src/main/ipc-fabrication.ts)) together (one owner per batch: [`docs/agents/STREAM-S-ipc-integration.md`](docs/agents/STREAM-S-ipc-integration.md)). |
 | **Build STEP (kernel)** errors | Set the **Python** path in Design settings; install **`cadquery`** in that environment (`pip install cadquery`). Save the project before building. |
 | CAM shows fallback / hint copy | **`opencamlib`** is optional — `pip install opencamlib` in the Python env the app uses for CAM; without it, built-in mesh strategies apply (see [`docs/PARITY_PHASES.md`](docs/PARITY_PHASES.md)). |
 | Dev server / window issues | Run commands from **`unified-fab-studio/`**; `npm install` after clone; **Node.js 20+**. |
 | **FDM slice** fails (missing definition / CuraEngine) | Set **CuraEngine.exe** and the **definitions** folder (must contain `fdmprinter.def.json`) under **Utilities → Settings → Paths**. See [`resources/slicer/README.md`](resources/slicer/README.md) for Windows path examples. |
 | **Mesh formats** (OBJ, PLY, GLTF, …) fail to import | App **Python** path must have **`pip install trimesh`** (see [`engines/mesh/README.md`](engines/mesh/README.md)). |
+
+## Streamlined make + machines
+
+- **Manufacture preflight/readiness** now surfaces blockers before running Slice/CAM (project, machine, operation kind, Cura path, mesh presence).
+- **Run defaults**: Slice/CAM prefer operation `sourceMesh` and remember last used STL path before falling back to a picker.
+- **Machine onboarding** in Utilities → Settings includes a **Machine Manager** for:
+  - user profile create/edit/save/delete,
+  - JSON import/export,
+  - catalog diagnostics for invalid machine files.
+- Machine catalog merges bundled profiles (`resources/machines`) with user profiles (app-data `machines/`), where user IDs override bundled IDs.
 
 ## Design + build + manufacture (Fusion-like, local)
 

@@ -17,6 +17,11 @@
 ; Spindle/coolant: profile dialect inserts snippets below — Grbl, Mach3, and others
 ; differ on M3/M4/M5, S-word RPM, and coolant (M7/M8/M9). Confirm on your control.
 ; ---------------------------------------------------------------------------
+; Tool change: this template does not emit M6, ATC macros, or tool-length comp.
+; It assumes a single-tool program unless you add tool-change blocks yourself.
+; Verify the full sequence (spindle stop, safe Z, M6/T/H if used) on your control
+; before running multi-tool jobs.
+; ---------------------------------------------------------------------------
 ; Work area (mm): {{machine.workAreaMm.x}} x {{machine.workAreaMm.y}} x {{machine.workAreaMm.z}}
 {{units}}        ; G21=mm / G20=inch — must match controller defaults at power-on
 G90              ; absolute distance mode

@@ -13,11 +13,17 @@ import type { KernelManifest } from '../shared/kernel-manifest-schema'
 import type { PartFeaturesFile } from '../shared/part-features-schema'
 import type { ToolLibraryFile } from '../shared/tool-schema'
 import type { DrawingFile } from '../shared/drawing-sheet-schema'
-import type { MeshImportPlacement, MeshImportUpAxis } from '../shared/mesh-import-placement'
+import type { MeshImportPlacement, MeshImportTransform, MeshImportUpAxis } from '../shared/mesh-import-placement'
 
 export type Api = {
   appGetVersion: () => Promise<string>
   machinesList: () => Promise<MachineProfile[]>
+  machinesCatalog: () => Promise<{ machines: MachineProfile[]; diagnostics: Array<{ source: string; file: string; error: string }> }>
+  machinesSaveUser: (profile: MachineProfile) => Promise<MachineProfile>
+  machinesDeleteUser: (machineId: string) => Promise<boolean>
+  machinesImportJson: (text: string) => Promise<MachineProfile>
+  machinesImportFile: (filePath: string) => Promise<MachineProfile>
+  machinesExportUser: (machineId: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
   settingsGet: () => Promise<AppSettings>
   settingsSet: (partial: Partial<AppSettings>) => Promise<AppSettings>
   projectOpenDir: () => Promise<string | null>
@@ -107,7 +113,7 @@ export type Api = {
     projectDir: string,
     sourcePath: string,
     pythonPath: string,
-    placement?: { placement?: MeshImportPlacement; upAxis?: MeshImportUpAxis }
+    placement?: { placement?: MeshImportPlacement; upAxis?: MeshImportUpAxis; transform?: MeshImportTransform }
   ) => Promise<
     | { ok: true; stlPath: string; relativePath: string; report: ImportHistoryEntry }
     | { ok: false; error: string; detail?: string }
@@ -136,8 +142,22 @@ export type Api = {
   ) => Promise<ToolLibraryFile>
   /** Merge tools from a path (CSV, JSON, `.hsmlib` / gzipped XML, `.tpgz`, `.tp.xml`). */
   toolsImportFile: (projectDir: string, filePath: string) => Promise<ToolLibraryFile>
+  /** Per-machine tool library in app userData (keyed by machine id). */
+  machineToolsRead: (machineId: string) => Promise<ToolLibraryFile>
+  machineToolsSave: (machineId: string, lib: ToolLibraryFile) => Promise<ToolLibraryFile>
+  machineToolsImport: (
+    machineId: string,
+    payload: { kind: 'csv' | 'json' | 'fusion' | 'fusion_csv'; content: string }
+  ) => Promise<ToolLibraryFile>
+  machineToolsImportFile: (machineId: string, filePath: string) => Promise<ToolLibraryFile>
+  /** Merge project `tools.json` into the machine-scoped library (dedupes by name+diameter like other merges). */
+  machineToolsMigrateFromProject: (machineId: string, projectDir: string) => Promise<ToolLibraryFile>
   shellOpenPath: (p: string) => Promise<void>
   readTextFile: (p: string) => Promise<string>
+  meshPreviewStlBase64: (
+    sourcePath: string,
+    pythonPath: string
+  ) => Promise<{ ok: true; base64: string } | { ok: false; error: string; detail?: string }>
   designLoad: (projectDir: string) => Promise<DesignFileV2 | null>
   /** Parsed `part/kernel-manifest.json` or null if missing/unreadable. */
   designReadKernelManifest: (projectDir: string) => Promise<KernelManifest | null>
@@ -188,6 +208,12 @@ export type Api = {
 const api: Api = {
   appGetVersion: () => ipcRenderer.invoke('app:getVersion'),
   machinesList: () => ipcRenderer.invoke('machines:list'),
+  machinesCatalog: () => ipcRenderer.invoke('machines:catalog'),
+  machinesSaveUser: (profile) => ipcRenderer.invoke('machines:saveUser', profile),
+  machinesDeleteUser: (machineId) => ipcRenderer.invoke('machines:deleteUser', machineId),
+  machinesImportJson: (text) => ipcRenderer.invoke('machines:importJson', text),
+  machinesImportFile: (filePath) => ipcRenderer.invoke('machines:importFile', filePath),
+  machinesExportUser: (machineId) => ipcRenderer.invoke('machines:exportUser', machineId),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (partial) => ipcRenderer.invoke('settings:set', partial),
   projectOpenDir: () => ipcRenderer.invoke('project:openDir'),
@@ -213,8 +239,16 @@ const api: Api = {
   toolsSave: (projectDir, lib) => ipcRenderer.invoke('tools:save', projectDir, lib),
   toolsImport: (projectDir, payload) => ipcRenderer.invoke('tools:import', projectDir, payload),
   toolsImportFile: (projectDir, filePath) => ipcRenderer.invoke('tools:importFile', projectDir, filePath),
+  machineToolsRead: (machineId) => ipcRenderer.invoke('machineTools:read', machineId),
+  machineToolsSave: (machineId, lib) => ipcRenderer.invoke('machineTools:save', machineId, lib),
+  machineToolsImport: (machineId, payload) => ipcRenderer.invoke('machineTools:import', machineId, payload),
+  machineToolsImportFile: (machineId, filePath) =>
+    ipcRenderer.invoke('machineTools:importFile', machineId, filePath),
+  machineToolsMigrateFromProject: (machineId, projectDir) =>
+    ipcRenderer.invoke('machineTools:migrateFromProject', machineId, projectDir),
   shellOpenPath: (p) => ipcRenderer.invoke('shell:openPath', p),
   readTextFile: (p) => ipcRenderer.invoke('file:readText', p),
+  meshPreviewStlBase64: (sourcePath, pythonPath) => ipcRenderer.invoke('mesh:previewStlBase64', sourcePath, pythonPath),
   designLoad: (projectDir) => ipcRenderer.invoke('design:load', projectDir),
   designReadKernelManifest: (projectDir) => ipcRenderer.invoke('design:readKernelManifest', projectDir),
   designReadKernelStlBase64: (projectDir) => ipcRenderer.invoke('design:readKernelStlBase64', projectDir),

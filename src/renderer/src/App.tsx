@@ -3,7 +3,7 @@ import { emptyAssembly, type AssemblyFile } from '../../shared/assembly-schema'
 import type { MachineProfile } from '../../shared/machine-schema'
 import { emptyManufacture, type ManufactureFile } from '../../shared/manufacture-schema'
 import { MESH_IMPORT_FILE_EXTENSIONS, MESH_PYTHON_EXTENSIONS } from '../../shared/mesh-import-formats'
-import type { MeshImportPlacement, MeshImportUpAxis } from '../../shared/mesh-import-placement'
+import type { MeshImportPlacement, MeshImportTransform, MeshImportUpAxis } from '../../shared/mesh-import-placement'
 import type { AppSettings, ImportHistoryEntry, ProjectFile } from '../../shared/project-schema'
 import {
   emptyDrawingFile,
@@ -11,21 +11,29 @@ import {
   type DrawingSheet,
   type DrawingViewPlaceholder
 } from '../../shared/drawing-sheet-schema'
+import { mergeMachineFirstProjectTools } from '../../shared/tool-merge'
 import type { ToolLibraryFile } from '../../shared/tool-schema'
 import { resolveCamCutParams, resolveManufactureSetupForCam } from '../../shared/cam-cut-params'
 import { mergeCuraSliceInvocationSettings } from '../../shared/cura-slice-defaults'
 import { resolveCamToolDiameterMm } from '../../shared/cam-tool-resolve'
 import { getManufactureCamRunBlock } from '../../shared/manufacture-cam-gate'
+import { evaluateManufactureReadiness } from '../../shared/manufacture-readiness'
 import { formatLoadRejection } from '../../shared/file-parse-errors'
-import { AssemblyWorkspace } from '../assembly/AssemblyWorkspace'
+import {
+  getAppDisplayName,
+  getAppProductFromBuild,
+  getAppWindowTitle,
+  getSplashLead,
+  resolveWorkspaceForProduct,
+  workspacesForProduct
+} from '../../shared/app-product'
 import { CommandPalette } from '../commands/CommandPalette'
 import { ShortcutsReferenceDialog } from '../commands/ShortcutsReferenceDialog'
 import { createCommandPickHandler, openShortcutsReference } from '../commands/command-dispatch'
 import { useShellKeyboardShortcuts } from '../commands/useShellKeyboardShortcuts'
 import { dispatchDesignCommand } from '../design/design-command-bridge'
-import { DesignSessionProvider } from '../design/DesignSessionContext'
-import { DesignWorkspace } from '../design/DesignWorkspace'
-import { ManufactureWorkspace } from '../manufacture/ManufactureWorkspace'
+import { ManufactureWorkspace } from '../fabrication'
+import { AssemblyWorkspace, DesignSessionProvider, DesignWorkspace } from '../modeling'
 import { AppShell, type UtilityTab } from '../shell/AppShell'
 import {
   readPersistedComboViewTab,
@@ -34,7 +42,11 @@ import {
   readPersistedUtilityTab,
   readPersistedWorkspace,
   writePersistedComboViewTab,
+  readPersistedManufactureLastRunMode,
+  readPersistedManufactureLastSourceStl,
   writePersistedManufacturePanelTab,
+  writePersistedManufactureLastRunMode,
+  writePersistedManufactureLastSourceStl,
   writePersistedUiShell,
   writePersistedUtilityTab,
   writePersistedWorkspace,
@@ -106,7 +118,20 @@ function camFallbackReasonLabel(reason: string | undefined): string {
 }
 
 export function App() {
-  const [workspace, setWorkspace] = useState<Workspace>(() => readPersistedWorkspace('utilities'))
+  const appProduct = getAppProductFromBuild()
+  const allowedWorkspaces = workspacesForProduct(appProduct) as Workspace[]
+  const appDisplayName = getAppDisplayName(appProduct)
+
+  const [workspace, setWorkspaceInternal] = useState<Workspace>(() => {
+    const product = getAppProductFromBuild()
+    const defaultFallback: Workspace =
+      product === 'cam' ? 'manufacture' : product === 'cad' ? 'design' : 'utilities'
+    return resolveWorkspaceForProduct(readPersistedWorkspace(defaultFallback), product) as Workspace
+  })
+
+  const setWorkspace = useCallback((w: Workspace) => {
+    setWorkspaceInternal(resolveWorkspaceForProduct(w, appProduct) as Workspace)
+  }, [appProduct])
   const [utilityTab, setUtilityTab] = useState<UtilityTab>(() => readPersistedUtilityTab('project'))
   const [manufacturePanelTab, setManufacturePanelTab] = useState(() => readPersistedManufacturePanelTab('plan'))
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false)
@@ -124,7 +149,8 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [projectDir, setProjectDir] = useState<string | null>(null)
   const [project, setProject] = useState<ProjectFile | null>(null)
-  const [tools, setTools] = useState<ToolLibraryFile | null>(null)
+  const [projectTools, setProjectTools] = useState<ToolLibraryFile | null>(null)
+  const [machineTools, setMachineTools] = useState<ToolLibraryFile | null>(null)
   const [status, setStatus] = useState<string>('')
 
   const [sideAsm, setSideAsm] = useState<AssemblyFile | null>(null)
@@ -140,11 +166,18 @@ export function App() {
   const [designDiskRevision, setDesignDiskRevision] = useState(0)
   const [splashSettingsOpen, setSplashSettingsOpen] = useState(false)
   const [splashAppVersion, setSplashAppVersion] = useState<string | null>(null)
-  const [uiShell, setUiShell] = useState<UiShellLayout>(() => readPersistedUiShell('freecad'))
+  const [uiShell, setUiShell] = useState<UiShellLayout>(() => readPersistedUiShell('fusion'))
   const [comboViewTab, setComboViewTab] = useState<ComboViewTab>(() => readPersistedComboViewTab('model'))
   const [pendingMeshImport, setPendingMeshImport] = useState<PendingMeshImport | null>(null)
 
   const fab = window.fab
+
+  const tools = useMemo(() => {
+    if (!projectTools) return null
+    const mid = project?.activeMachineId?.trim()
+    if (!mid || !machineTools) return projectTools
+    return mergeMachineFirstProjectTools(machineTools, projectTools)
+  }, [projectTools, machineTools, project?.activeMachineId])
 
   const patchDrawingFirstSheet = useCallback(
     (partial: { name?: string; scale?: string; viewPlaceholders?: DrawingViewPlaceholder[] }) => {
@@ -262,6 +295,10 @@ export function App() {
   })
 
   useEffect(() => {
+    document.title = getAppWindowTitle(appProduct)
+  }, [appProduct])
+
+  useEffect(() => {
     writePersistedWorkspace(workspace)
   }, [workspace])
 
@@ -283,11 +320,20 @@ export function App() {
 
   useEffect(() => {
     if (!projectDir) {
-      setTools(null)
+      setProjectTools(null)
       return
     }
-    void fab.toolsRead(projectDir).then(setTools)
+    void fab.toolsRead(projectDir).then(setProjectTools)
   }, [fab, projectDir])
+
+  useEffect(() => {
+    const mid = project?.activeMachineId?.trim()
+    if (!projectDir || !mid) {
+      setMachineTools(null)
+      return
+    }
+    void fab.machineToolsRead(mid).then(setMachineTools)
+  }, [fab, projectDir, project?.activeMachineId])
 
   useEffect(() => {
     void reloadSidecars()
@@ -458,13 +504,29 @@ export function App() {
   }
 
   async function runSlice(): Promise<void> {
-    if (!projectDir || !project || !settings?.curaEnginePath) {
+    const readiness = evaluateManufactureReadiness({
+      project,
+      settings,
+      machines,
+      manufacture: sideMfg
+    })
+    if (!readiness.canSlice || !projectDir || !project || !settings?.curaEnginePath) {
       setStatus('Set CuraEngine path under File → Settings and open a project.')
       return
     }
-    const stl = await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }])
+    const fdmSourceRel = sideMfg?.operations.find((o) => !o.suppressed && o.kind === 'fdm_slice')?.sourceMesh?.trim()
+    const remembered = readPersistedManufactureLastRunMode('cam') === 'slice' ? readPersistedManufactureLastSourceStl('') : ''
+    const defaultStl = fdmSourceRel ? `${projectDir}\\${fdmSourceRel.replace(/\//g, '\\')}` : remembered || null
+    let stl = defaultStl || (await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }]))
     if (!stl) return
-    const staged = await fab.stlStage(projectDir, stl)
+    let staged: string
+    try {
+      staged = await fab.stlStage(projectDir, stl)
+    } catch {
+      stl = await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }])
+      if (!stl) return
+      staged = await fab.stlStage(projectDir, stl)
+    }
     const out = `${projectDir}\\output\\k2_slice.gcode`
     const curaEngineSettings = Object.fromEntries(mergeCuraSliceInvocationSettings(settings))
     const r = await fab.sliceCura({
@@ -488,10 +550,21 @@ export function App() {
       setSliceOut(r.stdout ?? 'G-code written (could not read file).')
     }
     setStatus('Slice complete.')
+    writePersistedManufactureLastRunMode('slice')
+    writePersistedManufactureLastSourceStl(stl)
   }
 
   async function runCam(): Promise<void> {
-    if (!projectDir || !project) return
+    const readiness = evaluateManufactureReadiness({
+      project,
+      settings,
+      machines,
+      manufacture: sideMfg
+    })
+    if (!readiness.canCam || !projectDir || !project) {
+      setStatus('CAM is not ready. Check machine and operation setup in Manufacture Plan.')
+      return
+    }
     const planDrive = sideMfg?.operations.find((o) => !o.suppressed)
     const camBlock = getManufactureCamRunBlock(planDrive?.kind)
     if (camBlock) {
@@ -500,9 +573,19 @@ export function App() {
       setStatus('CAM skipped — first operation cannot use Generate CAM. See output panel.')
       return
     }
-    const stl = await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }])
+    const camSourceRel = sideMfg?.operations.find((o) => !o.suppressed && o.kind.startsWith('cnc_'))?.sourceMesh?.trim()
+    const remembered = readPersistedManufactureLastRunMode('cam') === 'cam' ? readPersistedManufactureLastSourceStl('') : ''
+    const defaultStl = camSourceRel ? `${projectDir}\\${camSourceRel.replace(/\//g, '\\')}` : remembered || null
+    let stl = defaultStl || (await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }]))
     if (!stl) return
-    const staged = await fab.stlStage(projectDir, stl)
+    let staged: string
+    try {
+      staged = await fab.stlStage(projectDir, stl)
+    } catch {
+      stl = await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }])
+      if (!stl) return
+      staged = await fab.stlStage(projectDir, stl)
+    }
     const machineId =
       machines.find((m) => m.kind === 'cnc' && m.id === project.activeMachineId)?.id ??
       machines.find((m) => m.kind === 'cnc')?.id
@@ -550,6 +633,8 @@ export function App() {
         : 'CAM ran with built-in engine.'
     const primary = r.hint ? `${engineMsg} ${r.hint}` : engineMsg
     setStatus(`${primary} Unverified for real machines — docs/MACHINES.md.`)
+    writePersistedManufactureLastRunMode('cam')
+    writePersistedManufactureLastSourceStl(stl)
   }
 
   function pathNeedsPythonForMeshImport(filePath: string): boolean {
@@ -566,9 +651,10 @@ export function App() {
   async function executeMeshImport(
     pending: PendingMeshImport,
     placement: MeshImportPlacement,
-    upAxis: MeshImportUpAxis
+    upAxis: MeshImportUpAxis,
+    transform: MeshImportTransform
   ): Promise<void> {
-    const opts = { placement, upAxis }
+    const opts = { placement, upAxis, transform }
     if (pending.kind === 'existing') {
       const dir = pending.targetProjectDir ?? projectDir
       const baseProject = pending.targetProject ?? project
@@ -756,15 +842,30 @@ export function App() {
     })
   }
 
-  async function importTools(kind: 'csv' | 'json' | 'fusion' | 'fusion_csv'): Promise<void> {
+  async function importTools(
+    kind: 'csv' | 'json' | 'fusion' | 'fusion_csv',
+    target: 'project' | 'machine' = 'project'
+  ): Promise<void> {
     if (!projectDir) return
+    if (target === 'machine') {
+      const mid = project?.activeMachineId?.trim()
+      if (!mid) {
+        setStatus('Set an active machine on File → Project (Manufacture uses it for the machine tool library).')
+        return
+      }
+      const merged = await fab.machineToolsImport(mid, { kind, content: importText })
+      await fab.machineToolsSave(mid, merged)
+      setMachineTools(merged)
+      setStatus('Machine tool library updated.')
+      return
+    }
     const merged = await fab.toolsImport(projectDir, { kind, content: importText })
-    setTools(merged)
+    setProjectTools(merged)
     await fab.toolsSave(projectDir, merged)
-    setStatus('Tool library updated.')
+    setStatus('Project tool library (tools.json) updated.')
   }
 
-  async function importToolLibraryFromFile(): Promise<void> {
+  async function importToolLibraryFromFile(target: 'project' | 'machine' = 'project'): Promise<void> {
     if (!projectDir) return
     const path = await fab.dialogOpenFile([
       {
@@ -774,11 +875,43 @@ export function App() {
       { name: 'All files', extensions: ['*'] }
     ])
     if (!path) return
+    if (target === 'machine') {
+      const mid = project?.activeMachineId?.trim()
+      if (!mid) {
+        setStatus('Set an active machine on File → Project first.')
+        return
+      }
+      const merged = await fab.machineToolsImportFile(mid, path)
+      await fab.machineToolsSave(mid, merged)
+      setMachineTools(merged)
+      const n = merged.tools.length
+      setStatus(`Machine tool library updated from file (${n} tool${n === 1 ? '' : 's'}).`)
+      return
+    }
     const merged = await fab.toolsImportFile(projectDir, path)
-    setTools(merged)
+    setProjectTools(merged)
     await fab.toolsSave(projectDir, merged)
     const n = merged.tools.length
-    setStatus(`Tool library updated from file (${n} tool${n === 1 ? '' : 's'}).`)
+    setStatus(`Project tool library updated from file (${n} tool${n === 1 ? '' : 's'}).`)
+  }
+
+  async function migrateProjectToolsToMachine(): Promise<void> {
+    if (!projectDir || !project?.activeMachineId?.trim()) {
+      setStatus('Open a project and set an active machine.')
+      return
+    }
+    const mid = project.activeMachineId.trim()
+    const merged = await fab.machineToolsMigrateFromProject(mid, projectDir)
+    setMachineTools(merged)
+    setStatus(`Copied project tools into machine library (${merged.tools.length} tools).`)
+  }
+
+  async function saveActiveMachineId(machineId: string): Promise<void> {
+    if (!projectDir || !project) return
+    const next = { ...project, activeMachineId: machineId, updatedAt: new Date().toISOString() }
+    setProject(next)
+    await fab.projectSave(projectDir, next)
+    setStatus('Active machine saved.')
   }
 
   async function saveDrawingManifest(): Promise<void> {
@@ -812,6 +945,30 @@ export function App() {
 
   const docTitle = project?.name ?? 'No document'
 
+  const camComplianceBanner = useMemo(() => {
+    if (appProduct !== 'cam' || !projectDir || !settings || settings.camGcodeSafetyAcknowledged === true) {
+      return null
+    }
+    return (
+      <div className="app-shell-compliance" role="alert">
+        <p className="app-shell-compliance__text">
+          WorkTrackCAM: Generated G-code is not verified for your machine until you check the post, units, and clearances
+          (see docs/MACHINES.md). Confirm in File → Settings.
+        </p>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            setWorkspace('utilities')
+            setUtilityTab('settings')
+          }}
+        >
+          Open File → Settings
+        </button>
+      </div>
+    )
+  }, [appProduct, projectDir, settings, setWorkspace, setUtilityTab])
+
   const handleCommandPick = useMemo(
     () =>
       createCommandPickHandler({
@@ -828,7 +985,15 @@ export function App() {
         importModel3D,
         exportDrawing
       }),
-    [openProjectFolder, createProject, createProjectFromImport, saveProject, importModel3D, exportDrawing]
+    [
+      setWorkspace,
+      openProjectFolder,
+      createProject,
+      createProjectFromImport,
+      saveProject,
+      importModel3D,
+      exportDrawing
+    ]
   )
 
   const headerActions = (
@@ -874,9 +1039,13 @@ export function App() {
         projectDir={projectDir}
         machines={machines}
         tools={tools}
+        projectTools={projectTools}
+        machineTools={machineTools}
         activeMachineId={project?.activeMachineId ?? null}
+        onSaveActiveMachineId={saveActiveMachineId}
         onStatus={setStatus}
         onAfterSave={reloadSidecars}
+        onAfterMeshImport={reloadSidecars}
         panelTab={manufacturePanelTab}
         onPanelTabChange={setManufacturePanelTab}
         settings={settings}
@@ -891,6 +1060,15 @@ export function App() {
         onRunCam={runCam}
         onImportTools={importTools}
         onImportToolLibraryFromFile={importToolLibraryFromFile}
+        onMigrateProjectToolsToMachine={migrateProjectToolsToMachine}
+        onGoSettings={() => {
+          setWorkspace('utilities')
+          setUtilityTab('settings')
+        }}
+        onGoProject={() => {
+          setWorkspace('utilities')
+          setUtilityTab('project')
+        }}
       />
     )
   } else {
@@ -938,17 +1116,21 @@ export function App() {
       <ImportMeshPlacementModal
         open={pendingMeshImport != null}
         fileCount={pendingMeshImport?.files.length ?? 0}
+        previewSourcePath={pendingMeshImport?.files[0]}
+        previewPythonPath={pendingMeshImport?.py}
         onCancel={() => setPendingMeshImport(null)}
-        onConfirm={(placement, upAxis) => {
+        onConfirm={(placement, upAxis, transform) => {
           const p = pendingMeshImport
           setPendingMeshImport(null)
           if (!p) return
-          void executeMeshImport(p, placement, upAxis)
+          void executeMeshImport(p, placement, upAxis, transform)
         }}
       />
       {!projectDir ? (
         <>
           <SplashScreen
+            brandName={appDisplayName}
+            splashLead={getSplashLead(appProduct)}
             recentProjectPaths={settings?.recentProjectPaths ?? []}
             lastProjectPath={settings?.lastProjectPath}
             statusMessage={status}
@@ -1004,6 +1186,8 @@ export function App() {
         >
           <AppShell
             docTitle={docTitle}
+            appSubtitle={appDisplayName}
+            allowedWorkspaces={allowedWorkspaces}
             headerActions={headerActions}
             workspace={workspace}
             onWorkspaceChange={setWorkspace}
@@ -1011,6 +1195,7 @@ export function App() {
             onUtilityTabChange={setUtilityTab}
             uiShell={uiShell}
             onUiShellChange={setUiShell}
+            complianceBanner={camComplianceBanner}
             menuBar={
               uiShell === 'freecad' ? (
                 <AppMenuBar
@@ -1034,6 +1219,7 @@ export function App() {
                   onOpenShortcuts={openShortcutsReferenceHandler}
                   uiShell={uiShell}
                   onUiShellChange={setUiShell}
+                  allowedWorkspaces={allowedWorkspaces}
                 />
               ) : null
             }

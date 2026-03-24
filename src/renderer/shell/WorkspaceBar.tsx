@@ -5,6 +5,8 @@ export type Workspace = 'design' | 'assemble' | 'manufacture' | 'utilities'
 type Props = {
   workspace: Workspace
   onChange: (w: Workspace) => void
+  /** When set, only these workbenches are shown (e.g. WorkTrackCAD vs WorkTrackCAM builds). */
+  allowedWorkspaces?: Workspace[] | null
 }
 
 const ITEMS: { id: Workspace; label: string; title: string; ariaLabel: string }[] = [
@@ -34,10 +36,14 @@ const ITEMS: { id: Workspace; label: string; title: string; ariaLabel: string }[
   }
 ]
 
-export const WorkspaceBar = memo(function WorkspaceBar({ workspace, onChange }: Props) {
+export const WorkspaceBar = memo(function WorkspaceBar({ workspace, onChange, allowedWorkspaces }: Props) {
+  const items =
+    allowedWorkspaces != null && allowedWorkspaces.length > 0
+      ? ITEMS.filter((it) => allowedWorkspaces.includes(it.id))
+      : ITEMS
   return (
     <nav className="workspace-bar workspace-bar--fusion" aria-label="Workspace">
-      {ITEMS.map((it) => (
+      {items.map((it) => (
         <button
           key={it.id}
           type="button"

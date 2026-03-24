@@ -13,6 +13,8 @@ import type { ToolLibraryFile } from '../../shared/tool-schema'
 import { buildCamSimulationPreview } from '../../shared/cam-simulation-preview'
 import { formatFdmLayerSummaryHuman, summarizeFdmGcodeLayers } from '../../shared/fdm-gcode-layer-summary'
 import { CamLastRunHint } from '../utilities/CamLastRunHint'
+import { evaluateManufactureReadiness } from '../../shared/manufacture-readiness'
+import type { ManufactureFile } from '../../shared/manufacture-schema'
 
 const SLICE_PREVIEW = 8000
 const CAM_PREVIEW = 8000
@@ -24,6 +26,8 @@ export type ManufactureAuxPanelsProps = {
   project: ProjectFile | null
   projectDir: string | null
   tools: ToolLibraryFile | null
+  projectTools: ToolLibraryFile | null
+  machineTools: ToolLibraryFile | null
   activeMachine: MachineProfile | undefined
   sliceOut: string
   camOut: string
@@ -33,11 +37,21 @@ export type ManufactureAuxPanelsProps = {
   onSaveSettingsField: (partial: Partial<AppSettings>) => void
   onRunSlice: () => void
   onRunCam: () => void
-  onImportTools: (kind: 'csv' | 'json' | 'fusion' | 'fusion_csv') => void
-  onImportToolLibraryFromFile: () => void | Promise<void>
+  onImportTools: (kind: 'csv' | 'json' | 'fusion' | 'fusion_csv', target?: 'project' | 'machine') => void
+  onImportToolLibraryFromFile: (target?: 'project' | 'machine') => void | Promise<void>
+  onMigrateProjectToolsToMachine?: () => void | Promise<void>
+  manufacture: ManufactureFile | null
+  onGoSettings: () => void
+  onGoProject: () => void
 }
 
 export function SliceManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
+  const readiness = evaluateManufactureReadiness({
+    project: p.project,
+    settings: p.settings,
+    machines: p.machines,
+    manufacture: p.manufacture
+  })
   const preset = (p.settings?.curaSlicePreset ?? 'balanced') as CuraSlicePresetId
   const active = resolveCuraSliceParams(preset)
   const namedProfiles = parseCuraSliceProfilesJson(p.settings?.curaSliceProfilesJson)
@@ -117,6 +131,19 @@ export function SliceManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
       <button type="button" className="primary" onClick={() => void p.onRunSlice()} aria-describedby="mfg-slice-run-heading">
         Slice STL…
       </button>
+      {!readiness.canSlice ? (
+        <div className="msg manufacture-op-hint">
+          <p>{readiness.issues.find((i) => i.id === 'settings_cura_missing')?.message ?? 'Slice preflight not ready.'}</p>
+          <div className="row">
+            <button type="button" className="secondary" onClick={() => p.onGoSettings()}>
+              Open Settings
+            </button>
+            <button type="button" className="secondary" onClick={() => p.onGoProject()}>
+              Open Project tab
+            </button>
+          </div>
+        </div>
+      ) : null}
       {!p.sliceOut?.trim() ? (
         <p className="msg util-output-placeholder" role="status">
           No Cura output yet. Add an STL on the <strong>File → Project</strong> tab, then run <strong>Slice STL…</strong>.
@@ -150,6 +177,12 @@ export function SliceManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
 }
 
 export function CamManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
+  const readiness = evaluateManufactureReadiness({
+    project: p.project,
+    settings: p.settings,
+    machines: p.machines,
+    manufacture: p.manufacture
+  })
   const [camPreviewTick, setCamPreviewTick] = useState(0)
   const [camPreview, setCamPreview] = useState(() => buildCamSimulationPreview(''))
 
@@ -169,6 +202,10 @@ export function CamManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
       <p className="msg">
         G-code is <strong>not verified</strong> for any CNC until you confirm post, units, work offset, and clearances —{' '}
         see <code>docs/MACHINES.md</code>.
+      </p>
+      <p className="msg msg--muted">
+        On the <strong>Plan</strong> tab, picking a <strong>library tool</strong> fills diameter and suggests a rough feed (mm/min)
+        when the tool has surface speed and chipload set — always verify before running on hardware.
       </p>
       <h3 className="subh util-section-heading" id="mfg-cam-run-heading">
         Generate toolpath
@@ -193,6 +230,21 @@ export function CamManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
           Preview G-code analysis
         </button>
       </div>
+      {!readiness.canCam ? (
+        <div className="msg manufacture-op-hint">
+          <p>
+            {readiness.issues
+              .filter((i) => i.id === 'cam_non_cnc_first_op' || i.id === 'cam_cnc_machine_missing')
+              .map((i) => i.message)
+              .join(' ') || 'CAM preflight not ready.'}
+          </p>
+          <div className="row">
+            <button type="button" className="secondary" onClick={() => p.onGoProject()}>
+              Fix machine in Project tab
+            </button>
+          </div>
+        </div>
+      ) : null}
       {!p.camOut?.trim() ? (
         <p className="msg util-output-placeholder" role="status">
           No G-code yet. Add a mesh on the <strong>File → Project</strong> tab, then run <strong>Generate toolpath…</strong>.
@@ -254,12 +306,15 @@ export function CamManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
 }
 
 export function ToolsManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
+  const mid = p.project?.activeMachineId?.trim()
+  const hasMachineTarget = Boolean(mid)
   return (
     <section className="panel workspace-util-panel" aria-labelledby="mfg-tools-heading">
-      <h2 id="mfg-tools-heading">Tool library</h2>
+      <h2 id="mfg-tools-heading">Tool libraries</h2>
       <p className="msg util-panel-intro">
-        CNC tool definitions for manufacture workflows. Open a project folder on the <strong>File → Project</strong> tab before
-        importing — paths resolve against the project directory.
+        <strong>Merged view</strong> below lists tools available to CAM (machine library first, then project-only). Import into
+        the <strong>machine library</strong> to reuse tools across all projects for this machine, or into <strong>project</strong>{' '}
+        (<code>tools.json</code>) for project-specific tools.
       </p>
       <p className="msg">
         Paste CSV or JSON below, or pick <strong>Import library file…</strong> for <code>.csv</code>, <code>.json</code>,{' '}
@@ -268,7 +323,7 @@ export function ToolsManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
         CSV</strong> for wide Fusion Manufacture exports.
       </p>
       <label htmlFor="mfg-tools-import">
-        Import data
+        Import data (same paste box for both targets)
         <textarea
           id="mfg-tools-import"
           value={p.importText}
@@ -279,57 +334,103 @@ export function ToolsManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
         />
       </label>
       <p id="mfg-tools-import-hint" className="msg">
-        Import buttons need an open project folder; open or create a project on the File tab first.
+        Open a project first. Machine imports require an <strong>active machine</strong> on File → Project.
       </p>
       <fieldset className="util-tools-actions" aria-describedby="mfg-tools-import-hint">
-        <legend className="util-fieldset-legend">Import format</legend>
-        <div className="row">
-          <button type="button" onClick={() => void p.onImportToolLibraryFromFile()} disabled={!p.projectDir}>
-            Import library file…
-          </button>
-          <button type="button" className="secondary" onClick={() => void p.onImportTools('csv')} disabled={!p.projectDir}>
-            Import CSV
-          </button>
-          <button type="button" className="secondary" onClick={() => void p.onImportTools('json')} disabled={!p.projectDir}>
-            Import JSON
+        <legend className="util-fieldset-legend">Import into machine library (app storage)</legend>
+        <div className="row row--wrap">
+          <button
+            type="button"
+            onClick={() => void p.onImportToolLibraryFromFile('machine')}
+            disabled={!p.projectDir || !hasMachineTarget}
+          >
+            Import file → machine…
           </button>
           <button
             type="button"
             className="secondary"
-            onClick={() => void p.onImportTools('fusion')}
-            disabled={!p.projectDir}
+            onClick={() => void p.onImportTools('csv', 'machine')}
+            disabled={!p.projectDir || !hasMachineTarget}
           >
-            Import Fusion-style JSON
+            Paste CSV → machine
           </button>
           <button
             type="button"
             className="secondary"
-            onClick={() => void p.onImportTools('fusion_csv')}
-            disabled={!p.projectDir}
+            onClick={() => void p.onImportTools('json', 'machine')}
+            disabled={!p.projectDir || !hasMachineTarget}
           >
-            Import Fusion CSV
+            Paste JSON → machine
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void p.onImportTools('fusion', 'machine')}
+            disabled={!p.projectDir || !hasMachineTarget}
+          >
+            Fusion JSON → machine
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void p.onImportTools('fusion_csv', 'machine')}
+            disabled={!p.projectDir || !hasMachineTarget}
+          >
+            Fusion CSV → machine
           </button>
         </div>
       </fieldset>
+      <fieldset className="util-tools-actions">
+        <legend className="util-fieldset-legend">Import into project tools.json</legend>
+        <div className="row row--wrap">
+          <button type="button" onClick={() => void p.onImportToolLibraryFromFile('project')} disabled={!p.projectDir}>
+            Import file → project…
+          </button>
+          <button type="button" className="secondary" onClick={() => void p.onImportTools('csv', 'project')} disabled={!p.projectDir}>
+            Paste CSV → project
+          </button>
+          <button type="button" className="secondary" onClick={() => void p.onImportTools('json', 'project')} disabled={!p.projectDir}>
+            Paste JSON → project
+          </button>
+          <button type="button" className="secondary" onClick={() => void p.onImportTools('fusion', 'project')} disabled={!p.projectDir}>
+            Fusion JSON → project
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void p.onImportTools('fusion_csv', 'project')}
+            disabled={!p.projectDir}
+          >
+            Fusion CSV → project
+          </button>
+        </div>
+      </fieldset>
+      {p.onMigrateProjectToolsToMachine && hasMachineTarget ? (
+        <p className="msg">
+          <button type="button" className="secondary" onClick={() => void p.onMigrateProjectToolsToMachine?.()} disabled={!p.projectDir}>
+            Merge project tools.json into machine library
+          </button>{' '}
+          (dedupes by name + diameter like other imports)
+        </p>
+      ) : null}
       {p.tools && p.tools.tools.length > 0 ? (
-        <ul className="tools" aria-label="Tools in library">
+        <ul className="tools" aria-label="Merged tools for CAM">
           {p.tools.tools.map((t) => (
             <li key={t.id}>
-              {t.name} — Ø{t.diameterMm} mm {t.type} {t.fluteCount != null ? `(${t.fluteCount} fl)` : ''}
+              {t.name} — Ø{t.diameterMm} mm {t.type} {t.fluteCount != null ? `(${t.fluteCount} fl)` : ''}{' '}
+              <span className="msg msg--muted">({t.id})</span>
             </li>
           ))}
         </ul>
       ) : null}
       {p.projectDir && p.tools && p.tools.tools.length === 0 ? (
         <p className="msg util-output-placeholder" role="status">
-          <code>tools.json</code> is empty for this project. Paste data and choose an import format, use{' '}
-          <strong>Import library file…</strong>, or add tools from the <strong>Plan</strong> tab in Manufacture — then save the
-          project if your workflow writes tools to disk.
+          No tools yet. Import into the machine or project library above, or add tools from the <strong>Plan</strong> tab.
         </p>
       ) : null}
       {!p.projectDir ? (
         <p className="msg util-output-placeholder" role="status">
-          Open or create a project on the <strong>File → Project</strong> tab so tool paths resolve and imports can run.
+          Open or create a project on the <strong>File → Project</strong> tab so imports can run.
         </p>
       ) : null}
     </section>

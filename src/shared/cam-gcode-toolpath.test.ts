@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { extractToolpathSegmentsFromGcode } from './cam-gcode-toolpath'
+import {
+  buildContiguousPathChains,
+  buildToolpathLengthSampler,
+  extractToolpathSegmentsFromGcode,
+  totalToolpathLengthMm
+} from './cam-gcode-toolpath'
 
 describe('extractToolpathSegmentsFromGcode', () => {
   it('tracks modal XYZ on G0/G1', () => {
@@ -18,5 +23,48 @@ describe('extractToolpathSegmentsFromGcode', () => {
     const s = extractToolpathSegmentsFromGcode(g)
     expect(s.length).toBe(1)
     expect(s[0]!.kind).toBe('rapid')
+  })
+})
+
+describe('buildContiguousPathChains', () => {
+  it('merges continuous feed moves into one chain', () => {
+    const g = ['G0 Z5', 'G1 Z0 F200', 'G1 X1 Y0'].join('\n')
+    const segs = extractToolpathSegmentsFromGcode(g)
+    const chains = buildContiguousPathChains(segs)
+    expect(chains.length).toBe(2)
+    const feed = chains.find((c) => c.kind === 'feed')
+    expect(feed?.points.length).toBe(3)
+    expect(feed?.points[0]).toEqual({ x: 0, y: 0, z: 5 })
+    expect(feed?.points[2]).toEqual({ x: 1, y: 0, z: 0 })
+  })
+
+  it('starts a new chain on kind change', () => {
+    const g = ['G0 X0 Y0 Z5', 'G1 X1 Y0 Z0'].join('\n')
+    const segs = extractToolpathSegmentsFromGcode(g)
+    const chains = buildContiguousPathChains(segs)
+    expect(chains.length).toBe(2)
+  })
+})
+
+describe('buildToolpathLengthSampler', () => {
+  it('interpolates along segment lengths', () => {
+    const g = ['G0 X0 Y0 Z0', 'G1 X3 Y4 Z0 F200'].join('\n')
+    const segs = extractToolpathSegmentsFromGcode(g)
+    expect(totalToolpathLengthMm(segs)).toBeCloseTo(5, 5)
+    const s = buildToolpathLengthSampler(segs)
+    expect(s.totalMm).toBeCloseTo(5, 5)
+    const mid = s.atUnit(0.5)
+    expect(mid.x).toBeCloseTo(1.5, 5)
+    expect(mid.y).toBeCloseTo(2, 5)
+    expect(mid.z).toBeCloseTo(0, 5)
+    const end = s.atUnit(1)
+    expect(end.x).toBe(3)
+    expect(end.y).toBe(4)
+  })
+
+  it('handles empty segments', () => {
+    const s = buildToolpathLengthSampler([])
+    expect(s.totalMm).toBe(0)
+    expect(s.atUnit(0.5)).toEqual({ x: 0, y: 0, z: 0 })
   })
 })

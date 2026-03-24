@@ -40,6 +40,8 @@ const COMMAND_CATALOG_QUERY_KEY = 'ufs_command_catalog_query'
 const COMMAND_CATALOG_WORKSPACE_KEY = 'ufs_command_catalog_workspace'
 const COMMAND_CATALOG_STATUS_KEY = 'ufs_command_catalog_status'
 const COMMAND_CATALOG_RIBBON_KEY = 'ufs_command_catalog_ribbon'
+const MFG_LAST_SOURCE_STL_KEY = 'ufs_mfg_last_source_stl'
+const MFG_LAST_RUN_MODE_KEY = 'ufs_mfg_last_run_mode'
 
 const VALID: ReadonlySet<Workspace> = new Set(['design', 'assemble', 'manufacture', 'utilities'])
 
@@ -296,6 +298,40 @@ export function readPersistedCommandCatalogRibbon(fallback: CommandRibbonGroup |
 export function writePersistedCommandCatalogRibbon(v: CommandRibbonGroup | 'all'): void {
   try {
     localStorage.setItem(COMMAND_CATALOG_RIBBON_KEY, v)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPersistedManufactureLastSourceStl(fallback = ''): string {
+  try {
+    return localStorage.getItem(MFG_LAST_SOURCE_STL_KEY) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+export function writePersistedManufactureLastSourceStl(path: string): void {
+  try {
+    if (!path.trim()) localStorage.removeItem(MFG_LAST_SOURCE_STL_KEY)
+    else localStorage.setItem(MFG_LAST_SOURCE_STL_KEY, path)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPersistedManufactureLastRunMode(fallback: 'slice' | 'cam' = 'cam'): 'slice' | 'cam' {
+  try {
+    const raw = localStorage.getItem(MFG_LAST_RUN_MODE_KEY)
+    return raw === 'slice' || raw === 'cam' ? raw : fallback
+  } catch {
+    return fallback
+  }
+}
+
+export function writePersistedManufactureLastRunMode(mode: 'slice' | 'cam'): void {
+  try {
+    localStorage.setItem(MFG_LAST_RUN_MODE_KEY, mode)
   } catch {
     /* ignore */
   }

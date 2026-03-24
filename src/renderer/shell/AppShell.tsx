@@ -14,6 +14,10 @@ export type UtilityTab = 'project' | 'settings'
 
 type Props = {
   docTitle: string
+  /** Product name under the document title (e.g. WorkTrackCAD). */
+  appSubtitle: string
+  /** When set and non-empty, limits workbench picker / bar to these workspaces. */
+  allowedWorkspaces?: Workspace[] | null
   headerActions?: ReactNode
   workspace: Workspace
   onWorkspaceChange: (w: Workspace) => void
@@ -31,6 +35,8 @@ type Props = {
   /** Rendered above the main header when `uiShell` is `freecad` (e.g. `AppMenuBar`). */
   menuBar?: ReactNode
   onUiShellChange?: (s: UiShellLayout) => void
+  /** e.g. WorkTrackCAM G-code safety reminder (non-dismissible; rendered below header). */
+  complianceBanner?: ReactNode
 }
 
 const UTIL_TABS: { id: UtilityTab; label: string }[] = [
@@ -44,6 +50,8 @@ function utilityTabA11yLabel(tab: { label: string }, index: number): string {
 
 export function AppShell({
   docTitle,
+  appSubtitle,
+  allowedWorkspaces,
   headerActions,
   workspace,
   onWorkspaceChange,
@@ -58,7 +66,8 @@ export function AppShell({
   children,
   uiShell = 'freecad',
   menuBar = null,
-  onUiShellChange
+  onUiShellChange,
+  complianceBanner = null
 }: Props) {
   const {
     browserPx,
@@ -115,10 +124,15 @@ export function AppShell({
             <span className="app-doc-name app-doc-name--primary" title={docTitle}>
               {docTitle}
             </span>
-            <span className="app-title-sub">Unified Fab Studio</span>
+            <span className="app-title-sub">{appSubtitle}</span>
           </div>
           {uiShell === 'freecad' ? (
-            <WorkbenchSelector id="workbench-selector" workspace={workspace} onChange={onWorkspaceChange} />
+            <WorkbenchSelector
+              id="workbench-selector"
+              workspace={workspace}
+              onChange={onWorkspaceChange}
+              allowedWorkspaces={allowedWorkspaces}
+            />
           ) : (
             <>
               {onUiShellChange ? (
@@ -131,7 +145,7 @@ export function AppShell({
                   Menu bar layout
                 </button>
               ) : null}
-              <WorkspaceBar workspace={workspace} onChange={onWorkspaceChange} />
+              <WorkspaceBar workspace={workspace} onChange={onWorkspaceChange} allowedWorkspaces={allowedWorkspaces} />
             </>
           )}
         </div>
@@ -149,6 +163,7 @@ export function AppShell({
         </div>
       </header>
 
+      {complianceBanner}
       <ShellInfoBanner />
 
       {workspace === 'utilities' && (

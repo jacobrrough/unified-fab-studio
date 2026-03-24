@@ -5,7 +5,35 @@ import type { AppSettings, ProjectFile } from '../../shared/project-schema'
 import type { DrawingFile, DrawingViewPlaceholder } from '../../shared/drawing-sheet-schema'
 import { DrawingExportRibbon } from '../shell/DrawingExportRibbon'
 import { DrawingManifestPanel } from './DrawingManifestPanel'
+import { MachineManagerPanel } from './MachineManagerPanel'
 import type { UtilityTab } from '../shell/AppShell'
+import { getAppDisplayName, getAppProductFromBuild } from '../../shared/app-product'
+
+const UTIL_SETTINGS_APP_NAME = getAppDisplayName(getAppProductFromBuild())
+
+type SettingsDisclosureProps = {
+  id: string
+  title: string
+  /** Initial expanded state; user can still collapse/expand. */
+  defaultOpen?: boolean
+  children: ReactNode
+}
+
+/** Collapsible section for File → Settings. */
+function SettingsDisclosure({ id, title, defaultOpen = false, children }: SettingsDisclosureProps) {
+  const summaryId = `${id}-summary`
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <details className="util-settings-disclosure" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="util-settings-disclosure__summary" id={summaryId}>
+        {title}
+      </summary>
+      <div className="util-settings-disclosure__body" role="group" aria-labelledby={summaryId}>
+        {children}
+      </div>
+    </details>
+  )
+}
 
 export type UtilitiesWorkspacePanelsProps = {
   tab: UtilityTab
@@ -42,6 +70,7 @@ export type UtilitiesWorkspacePanelsProps = {
 }
 
 export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): ReactNode {
+  const isCamProduct = getAppProductFromBuild() === 'cam'
   const [appVersion, setAppVersion] = useState<string | null>(null)
 
   useEffect(() => {
@@ -165,20 +194,17 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
               </p>
               <label htmlFor="util-active-machine-id">
                 Active machine ID
-                <input
+                <select
                   id="util-active-machine-id"
                   value={p.project.activeMachineId}
                   onChange={(e) => p.onProjectChange({ ...p.project!, activeMachineId: e.target.value })}
-                  list="machine-ids-util"
-                  autoComplete="off"
-                />
-                <datalist id="machine-ids-util">
+                >
                   {p.machines.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.name}
+                      {m.name} ({m.id})
                     </option>
                   ))}
-                </datalist>
+                </select>
               </label>
 
               <h3 className="subh util-section-heading" id="util-physical-material-heading">
@@ -201,10 +227,10 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                     type="text"
                     autoComplete="off"
                     placeholder="e.g. 6061-T6 aluminum"
-                    value={p.project.physicalMaterial?.name ?? ''}
+                    value={p.project!.physicalMaterial?.name ?? ''}
                     onChange={(e) => {
                       const name = e.target.value.trim() ? e.target.value.trim() : undefined
-                      const density = p.project.physicalMaterial?.densityKgM3
+                      const density = p.project!.physicalMaterial?.densityKgM3
                       const validD =
                         density != null && !Number.isNaN(density) && density > 0 ? density : undefined
                       const next =
@@ -214,7 +240,7 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                               ...(validD != null ? { densityKgM3: validD } : {})
                             }
                           : undefined
-                      p.onProjectChange({ ...p.project, physicalMaterial: next })
+                      p.onProjectChange({ ...p.project!, physicalMaterial: next })
                     }}
                   />
                 </label>
@@ -228,8 +254,8 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                     inputMode="decimal"
                     placeholder="e.g. 2700"
                     value={
-                      p.project.physicalMaterial?.densityKgM3 != null
-                        ? String(p.project.physicalMaterial.densityKgM3)
+                      p.project!.physicalMaterial?.densityKgM3 != null
+                        ? String(p.project!.physicalMaterial!.densityKgM3)
                         : ''
                     }
                     onChange={(e) => {
@@ -237,7 +263,7 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                       const parsed = raw.length === 0 ? NaN : Number.parseFloat(raw)
                       const validD =
                         !Number.isNaN(parsed) && parsed > 0 ? parsed : undefined
-                      const name = p.project.physicalMaterial?.name?.trim()
+                      const name = p.project!.physicalMaterial?.name?.trim()
                       const next =
                         (name != null && name.length > 0) || validD != null
                           ? {
@@ -245,7 +271,7 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                               ...(validD != null ? { densityKgM3: validD } : {})
                             }
                           : undefined
-                      p.onProjectChange({ ...p.project, physicalMaterial: next })
+                      p.onProjectChange({ ...p.project!, physicalMaterial: next })
                     }}
                   />
                 </label>
@@ -265,11 +291,11 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                   rows={3}
                   aria-describedby="util-appearance-hint"
                   placeholder="e.g. Powder coat RAL 9005"
-                  value={p.project.appearanceNotes ?? ''}
+                  value={p.project!.appearanceNotes ?? ''}
                   onChange={(e) => {
                     const v = e.target.value
                     p.onProjectChange({
-                      ...p.project,
+                      ...p.project!,
                       appearanceNotes: v.trim().length ? v : undefined
                     })
                   }}
@@ -388,16 +414,80 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
         <section className="panel workspace-util-panel" aria-labelledby="util-settings-heading">
           <h2 id="util-settings-heading">Settings</h2>
           <p className="msg util-panel-intro" role="status">
-            Unified Fab Studio {appVersion ? `v${appVersion}` : '…'}
+            {UTIL_SETTINGS_APP_NAME} {appVersion ? `v${appVersion}` : '…'}
           </p>
-          <fieldset
-            className="util-tools-actions util-settings-paths"
-            aria-describedby="util-settings-more-info"
-          >
-            <legend className="util-fieldset-legend">External tool paths</legend>
+          {isCamProduct ? (
+            <SettingsDisclosure id="util-cam-mfg" title="Manufacturing defaults" defaultOpen>
+              <p className="msg util-panel-intro">
+                Defaults apply when you click <strong>New machine draft</strong> below. Post templates live under{' '}
+                <code>resources/posts</code> (see <code>docs/MACHINES.md</code>).
+              </p>
+              <div className="row">
+                <label htmlFor="util-cam-default-post">
+                  Default post template (filename)
+                  <input
+                    id="util-cam-default-post"
+                    value={p.settings.camDefaultPostTemplate ?? ''}
+                    onChange={(e) =>
+                      void p.onSaveSettingsField({
+                        camDefaultPostTemplate: e.target.value.trim() ? e.target.value : undefined
+                      })
+                    }
+                    placeholder="grbl-mm.gcode.hbs"
+                    autoComplete="off"
+                    aria-describedby="util-cam-default-post-hint"
+                  />
+                </label>
+              </div>
+              <p id="util-cam-default-post-hint" className="msg msg--compact">
+                Must match a Handlebars file under <code>resources/posts</code>. Empty uses <code>grbl-mm.gcode.hbs</code>.
+              </p>
+              <div className="row">
+                <label htmlFor="util-cam-default-dialect">
+                  Default machine dialect (new drafts)
+                  <select
+                    id="util-cam-default-dialect"
+                    value={p.settings.camDefaultMachineDialect ?? 'grbl'}
+                    onChange={(e) =>
+                      void p.onSaveSettingsField({
+                        camDefaultMachineDialect: e.target.value as 'grbl' | 'mach3' | 'generic_mm'
+                      })
+                    }
+                  >
+                    <option value="grbl">grbl</option>
+                    <option value="mach3">mach3</option>
+                    <option value="generic_mm">generic_mm</option>
+                  </select>
+                </label>
+              </div>
+              <label className="util-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={p.settings.camGcodeSafetyAcknowledged === true}
+                  onChange={(e) =>
+                    void p.onSaveSettingsField({ camGcodeSafetyAcknowledged: e.target.checked })
+                  }
+                />
+                <span>
+                  I understand generated G-code is not verified for my machine until I check the post, units, and clearances
+                  (see <code>docs/MACHINES.md</code>).
+                </span>
+              </label>
+            </SettingsDisclosure>
+          ) : null}
+          <SettingsDisclosure id="util-external-paths" title="External tool paths" defaultOpen>
             <p className="msg util-panel-intro">
-              Paths to CuraEngine, Cura definitions, and Python (CadQuery / OpenCAMLib). Used by <strong>Manufacture → Slice</strong>, STEP
-              import, and optional CAM. Values save as you type.
+              {isCamProduct ? (
+                <>
+                  Paths to CuraEngine, Cura definitions, and Python (OpenCAMLib and mesh conversion). Used by the{' '}
+                  <strong>Slice</strong> tab, mesh/STEP import, and CAM. Values save as you type.
+                </>
+              ) : (
+                <>
+                  Paths to CuraEngine, Cura definitions, and Python (CadQuery / OpenCAMLib). Used by{' '}
+                  <strong>Manufacture → Slice</strong>, STEP import, and optional CAM. Values save as you type.
+                </>
+              )}
             </p>
             <div className="row">
               <label htmlFor="util-cura-engine">
@@ -444,7 +534,7 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
             </div>
             <div className="row">
               <label htmlFor="util-python">
-                Python (OpenCAMLib / CadQuery)
+                {isCamProduct ? 'Python (OpenCAMLib / mesh)' : 'Python (OpenCAMLib / CadQuery)'}
                 <input
                   id="util-python"
                   value={p.settings.pythonPath ?? ''}
@@ -455,18 +545,15 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                 />
               </label>
             </div>
-          </fieldset>
-          <p id="util-settings-more-info" className="msg">
-            See <code>resources/slicer/README.md</code> for <code>CURA_ENGINE_SEARCH_PATH</code> and bundled profile notes.
-          </p>
-          <fieldset className="util-tools-actions" aria-labelledby="util-cura-advanced-legend">
-            <legend id="util-cura-advanced-legend" className="util-fieldset-legend">
-              CuraEngine advanced (optional)
-            </legend>
+            <p id="util-settings-more-info" className="msg util-settings-disclosure__footer-msg">
+              See <code>resources/slicer/README.md</code> for <code>CURA_ENGINE_SEARCH_PATH</code> and bundled profile notes.
+            </p>
+          </SettingsDisclosure>
+          <SettingsDisclosure id="util-cura-advanced" title="CuraEngine advanced (optional)">
             <p className="msg util-panel-intro">
               Extra <code>-s</code> keys use Cura setting ids (underscore names). Merged after the numeric preset on the{' '}
-              <strong>Manufacture → Slice</strong> tab. Named profiles JSON can set a per-material <code>basePreset</code> plus{' '}
-              <code>settingsJson</code>.
+              <strong>{isCamProduct ? 'Slice' : 'Manufacture → Slice'}</strong> tab. Named profiles JSON can set a per-material{' '}
+              <code>basePreset</code> plus <code>settingsJson</code>.
             </p>
             <label htmlFor="util-cura-extra-json">
               Extra Cura settings JSON
@@ -500,8 +587,15 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                 spellCheck={false}
               />
             </label>
-          </fieldset>
+          </SettingsDisclosure>
           <p className="msg util-panel-intro">Settings are auto-saved per field for quicker tab-to-tab workflows.</p>
+          <SettingsDisclosure id="util-machine-manager" title="Machine Manager">
+            <p className="msg util-panel-intro">
+              Manage <strong>your</strong> machine profiles (imported JSON/YAML/TOML or .cps stubs). Bundled app machines stay
+              available for projects elsewhere but do not appear in this list.
+            </p>
+            <MachineManagerPanel />
+          </SettingsDisclosure>
         </section>
       ) : (
         <section

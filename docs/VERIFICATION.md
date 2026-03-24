@@ -10,7 +10,7 @@ Use this after substantive changes to **kernel build**, **CAM**, **assembly mesh
 npm test
 ```
 
-Relevant suites include `src/main/ipc-contract.test.ts` (**preload `invoke` channels ⊆ main `handle`**), `src/main/slicer.test.ts` (default bundled Cura definition path in `buildCuraSliceArgs`), `src/shared/sketch-profile.test.ts` (kernel JSON payload), `src/main/cam-*.test.ts`, `src/main/cam-local.test.ts`, `src/shared/cam-*.test.ts`, `src/main/assembly-mesh-interference.test.ts`, `src/shared/assembly-schema.test.ts` (parse, BOM summary roll-ups, hierarchical BOM text), `src/shared/assembly-viewport-math.test.ts`, `src/shared/app-keyboard-shortcuts.test.ts`, `src/main/drawing-export-*.test.ts`, `src/main/drawing-file-store.test.ts`, `src/shared/drawing-sheet-schema.test.ts`, `src/renderer/design/viewport3d-bounds.test.ts`, and `src/shared/fusion-style-command-catalog.test.ts`.
+Relevant suites include `src/main/ipc-contract.test.ts` (**preload `invoke` channels ⊆ `ipcMain.handle` across non-test `src/main/**/*.ts`**), `src/main/slicer.test.ts` (default bundled Cura definition path in `buildCuraSliceArgs`), `src/shared/sketch-profile.test.ts` (kernel JSON payload), `src/main/cam-*.test.ts`, `src/main/cam-local.test.ts`, `src/shared/cam-*.test.ts`, `src/main/assembly-mesh-interference.test.ts`, `src/shared/assembly-schema.test.ts` (parse, BOM summary roll-ups, hierarchical BOM text), `src/shared/assembly-viewport-math.test.ts`, `src/shared/app-keyboard-shortcuts.test.ts`, `src/main/drawing-export-*.test.ts`, `src/main/drawing-file-store.test.ts`, `src/shared/drawing-sheet-schema.test.ts`, `src/renderer/design/viewport3d-bounds.test.ts`, and `src/shared/fusion-style-command-catalog.test.ts`.
 
 **Parallel test-only work:** assign **[`docs/agents/STREAM-H-tests-only.md`](agents/STREAM-H-tests-only.md)** (**Stream H**) so coverage expands without colliding on hot production files — declare island **H1–H4** per chat. Use the suite list **above** as a **prioritization map** for Stream H themes (IPC, CAM, assembly, drawing, slicer, viewport, shortcuts, etc.); each Stream H chat should still target **one theme** and **one** `*.test.ts` when possible. For **Aggressive — Stream H** or pre-merge batches, run **`npm run build`** from **`unified-fab-studio/`** in addition to **`npm test`**.
 
@@ -59,7 +59,7 @@ Relevant suites include `src/main/ipc-contract.test.ts` (**preload `invoke` chan
 
 **Parallel lane:** feature work on routing, formats, `importHistory`, and `engines/mesh` → **[`agents/STREAM-R-import-mesh-tools.md`](agents/STREAM-R-import-mesh-tools.md)** (**Stream R**).
 
-**IPC:** `assets:importMesh` in [`src/main/index.ts`](../src/main/index.ts); routing in [`src/main/mesh-import-registry.ts`](../src/main/mesh-import-registry.ts). **`dialog:openFiles`** enables multi-select. **`cad:importStl`** / **`cad:importStep`** use the same registry (return legacy `{ ok, stlPath }` shape; no `importHistory` merge unless the renderer uses **`assetsImportMesh`**).
+**IPC:** `assets:importMesh` registered in [`src/main/ipc-modeling.ts`](../src/main/ipc-modeling.ts); routing in [`src/main/mesh-import-registry.ts`](../src/main/mesh-import-registry.ts). **`dialog:openFiles`** enables multi-select. **`cad:importStl`** / **`cad:importStep`** use the same registry (return legacy `{ ok, stlPath }` shape; no `importHistory` merge unless the renderer uses **`assetsImportMesh`**).
 
 | Step | Check |
 |------|--------|
@@ -91,7 +91,7 @@ Relevant suites include `src/main/ipc-contract.test.ts` (**preload `invoke` chan
 
 **Parallel lane:** bundled defs and operator docs → **[`agents/STREAM-L-cura-slicer.md`](agents/STREAM-L-cura-slicer.md)** (**Stream L**). Index: [`resources/slicer/README.md`](../resources/slicer/README.md).
 
-**IPC:** preload **`sliceCura`** → **`slice:cura`** in [`src/main/index.ts`](../src/main/index.ts); implementation [`src/main/slicer.ts`](../src/main/slicer.ts) (`sliceWithCuraEngine`, `buildCuraSliceArgs`). Default machine definition path when the UI omits **`definitionPath`**: **`resourcesRoot/slicer/creality_k2_plus.def.json`** (see **`src/main/slicer.test.ts`**). Optional override: pass another bundled stub (e.g. **`generic_fdm_250.def.json`**) or a user path.
+**IPC:** preload **`sliceCura`** → **`slice:cura`** in [`src/main/ipc-fabrication.ts`](../src/main/ipc-fabrication.ts); implementation [`src/main/slicer.ts`](../src/main/slicer.ts) (`sliceWithCuraEngine`, `buildCuraSliceArgs`). Default machine definition path when the UI omits **`definitionPath`**: **`resourcesRoot/slicer/creality_k2_plus.def.json`** (see **`src/main/slicer.test.ts`**). Optional override: pass another bundled stub (e.g. **`generic_fdm_250.def.json`**) or a user path.
 
 | Step | Check |
 |------|--------|
@@ -163,7 +163,7 @@ Relevant suites include `src/main/ipc-contract.test.ts` (**preload `invoke` chan
 
 | Symptom | What to check |
 |---------|----------------|
-| **`ipc-contract.test.ts` fails** | [`src/preload/index.ts`](../src/preload/index.ts) exposed `invoke` names vs [`src/main/index.ts`](../src/main/index.ts) `ipcMain.handle` registrations — fix in one PR. Prefer a single **Stream S** batch: [`agents/STREAM-S-ipc-integration.md`](agents/STREAM-S-ipc-integration.md). |
+| **`ipc-contract.test.ts` fails** | [`src/preload/index.ts`](../src/preload/index.ts) exposed `invoke` names vs `ipcMain.handle` in non-test `src/main/**/*.ts` (e.g. [`ipc-core.ts`](../src/main/ipc-core.ts), [`ipc-modeling.ts`](../src/main/ipc-modeling.ts), [`ipc-fabrication.ts`](../src/main/ipc-fabrication.ts)) — fix in one PR. Prefer a single **Stream S** batch: [`agents/STREAM-S-ipc-integration.md`](agents/STREAM-S-ipc-integration.md). |
 | **Kernel build: Python / import errors** | Design settings → Python executable; `cadquery` installed in **that** env; project saved so the build reads current `design/` + `part/`. |
 | **CAM never uses OpenCAMLib** | In the **same** interpreter the app runs for CAM, run `python -c "import opencamlib"`. If that fails, waterline / adaptive / raster use built-in paths (see [`PARITY_PHASES.md`](PARITY_PHASES.md)). |
 | **Interference stays AABB-only** | Per-instance **`meshPath`** must resolve to a **project-relative** binary STL (no `..` escapes). See the mesh table above. |

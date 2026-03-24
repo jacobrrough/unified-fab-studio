@@ -22,7 +22,7 @@
 
 ## 2. IPC channel inventory (renderer ↔ main)
 
-Contract enforced by **`ipc-contract.test.ts`**: every `ipcRenderer.invoke('…')` in `src/preload/index.ts` has `ipcMain.handle('…')` in `src/main/index.ts`.
+Contract enforced by **`ipc-contract.test.ts`**: every `ipcRenderer.invoke('…')` in `src/preload/index.ts` has a matching `ipcMain.handle('…')` somewhere in non-test `src/main/**/*.ts` (registrars include [`ipc-core.ts`](../../src/main/ipc-core.ts), [`ipc-modeling.ts`](../../src/main/ipc-modeling.ts), [`ipc-fabrication.ts`](../../src/main/ipc-fabrication.ts), plus any future `ipc-*.ts` modules). Duplicate channel names across files fail the test.
 
 **Channels in use (alphabetical):**
 
@@ -88,3 +88,4 @@ When refreshing this file, end the Stream T chat with:
 | 2026-03-19 | Initial artifact; documented typecheck debt; IPC inventory; gate results. |
 | 2026-03-19 | `CommandCatalogPanel` `resetFilters` P0 fix (Stream T micro-fix). |
 | 2026-03-20 | Refreshed gates (test/build pass; typecheck 7 errors). IPC list unchanged vs preload. §3 trimmed to remaining debt; micro-fixes: assembly test identity `transform`; PDF `margins` for Electron `PrintToPDFOptions`; shell resize listeners use DOM `PointerEvent`. |
+| 2026-03-24 | Stream S: §2 contract description updated — `ipc-contract.test.ts` scans all non-test `src/main/**/*.ts`; core IPC moved to `ipc-core.ts`; duplicate `ipcMain.handle` channels fail tests. |

@@ -1,6 +1,10 @@
 import type { ReactNode } from 'react'
 
 export type SplashScreenProps = {
+  /** Window / product name (e.g. WorkTrackCAD). */
+  brandName?: string
+  /** Welcome card lead paragraph. */
+  splashLead?: string
   recentProjectPaths: string[]
   lastProjectPath: string | undefined
   statusMessage: string
@@ -18,6 +22,8 @@ export type SplashScreenProps = {
 }
 
 export function SplashScreen({
+  brandName = 'Unified Fab Studio',
+  splashLead = 'Open a project, start fresh, or import STL / STEP / mesh files — everything stays on your machine.',
   recentProjectPaths,
   lastProjectPath,
   statusMessage,
@@ -36,7 +42,7 @@ export function SplashScreen({
   return (
     <div className="splash-screen">
       <header className="splash-screen-top" aria-label="Splash toolbar">
-        <span className="splash-screen-brand">Unified Fab Studio</span>
+        <span className="splash-screen-brand">{brandName}</span>
         <div className="splash-screen-top-actions">
           <button type="button" className="secondary" onClick={onOpenCommands}>
             Commands
@@ -51,9 +57,7 @@ export function SplashScreen({
           <h1 id="splash-welcome-heading" className="splash-card-title">
             Welcome
           </h1>
-          <p className="splash-card-lead">
-            Open a project, start fresh, or import STL / STEP / mesh files — everything stays on your machine.
-          </p>
+          <p className="splash-card-lead">{splashLead}</p>
 
           {showResume ? (
             <div className="splash-actions splash-actions--primary">

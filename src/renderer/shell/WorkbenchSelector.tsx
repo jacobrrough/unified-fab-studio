@@ -5,6 +5,7 @@ type Props = {
   workspace: Workspace
   onChange: (w: Workspace) => void
   id?: string
+  allowedWorkspaces?: Workspace[] | null
 }
 
 const OPTIONS: { id: Workspace; label: string }[] = [
@@ -14,7 +15,11 @@ const OPTIONS: { id: Workspace; label: string }[] = [
   { id: 'utilities', label: 'File' }
 ]
 
-export const WorkbenchSelector = memo(function WorkbenchSelector({ workspace, onChange, id }: Props) {
+export const WorkbenchSelector = memo(function WorkbenchSelector({ workspace, onChange, id, allowedWorkspaces }: Props) {
+  const options =
+    allowedWorkspaces != null && allowedWorkspaces.length > 0
+      ? OPTIONS.filter((o) => allowedWorkspaces.includes(o.id))
+      : OPTIONS
   return (
     <label className="workbench-selector">
       <span className="workbench-selector__label">Workbench</span>
@@ -26,7 +31,7 @@ export const WorkbenchSelector = memo(function WorkbenchSelector({ workspace, on
         aria-label="Workbench"
         title="Switch workbench (workspace)"
       >
-        {OPTIONS.map((o) => (
+        {options.map((o) => (
           <option key={o.id} value={o.id}>
             {o.label}
           </option>

@@ -6,6 +6,7 @@ import { isLikelyAsciiStl, iterateBinaryStlTriangles, type Vec3 } from './stl'
 
 type PlacementMode = 'as_is' | 'center_origin' | 'center_xy_ground_z'
 type UpAxisMode = 'y_up' | 'z_up'
+type TransformMode = { translateMm?: [number, number, number]; rotateDeg?: [number, number, number] }
 
 function zUpToYUpStl(v: Vec3): Vec3 {
   const [x, y, z] = v
@@ -14,6 +15,26 @@ function zUpToYUpStl(v: Vec3): Vec3 {
 
 function addVecStl(a: Vec3, t: readonly [number, number, number]): Vec3 {
   return [a[0] + t[0], a[1] + t[1], a[2] + t[2]]
+}
+
+function rotateXYZDeg(v: Vec3, d: readonly [number, number, number]): Vec3 {
+  const [x, y, z] = v
+  const rx = (d[0] * Math.PI) / 180
+  const ry = (d[1] * Math.PI) / 180
+  const rz = (d[2] * Math.PI) / 180
+  const cx = Math.cos(rx)
+  const sx = Math.sin(rx)
+  const cy = Math.cos(ry)
+  const sy = Math.sin(ry)
+  const cz = Math.cos(rz)
+  const sz = Math.sin(rz)
+  const y1 = y * cx - z * sx
+  const z1 = y * sx + z * cx
+  const x2 = x * cy + z1 * sy
+  const z2 = -x * sy + z1 * cy
+  const x3 = x2 * cz - y1 * sz
+  const y3 = x2 * sz + y1 * cz
+  return [x3, y3, z2]
 }
 
 function triangleNormalStl(a: Vec3, b: Vec3, c: Vec3): Vec3 {
@@ -67,7 +88,8 @@ function encodeBinaryStlFromTriangles(triangles: Array<[Vec3, Vec3, Vec3]>): Buf
 export function transformBinaryStlWithPlacement(
   buffer: Buffer,
   placement: PlacementMode,
-  upAxis: UpAxisMode
+  upAxis: UpAxisMode,
+  transform?: TransformMode
 ): { ok: true; buffer: Buffer } | { ok: false; error: string; detail?: string } {
   if (buffer.length < 84) {
     return { ok: false, error: 'stl_too_small' }
@@ -125,11 +147,25 @@ export function transformBinaryStlWithPlacement(
   }
 
   const t: [number, number, number] = [tx, ty, tz]
-  const outTris: Array<[Vec3, Vec3, Vec3]> = tris.map(([a, b, c]) => [
+  let outTris: Array<[Vec3, Vec3, Vec3]> = tris.map(([a, b, c]) => [
     addVecStl(a, t),
     addVecStl(b, t),
     addVecStl(c, t)
   ])
+
+  const rot = transform?.rotateDeg ?? [0, 0, 0]
+  const trn = transform?.translateMm ?? [0, 0, 0]
+  const hasRot = Math.abs(rot[0]) > 1e-6 || Math.abs(rot[1]) > 1e-6 || Math.abs(rot[2]) > 1e-6
+  const hasTrn = Math.abs(trn[0]) > 1e-6 || Math.abs(trn[1]) > 1e-6 || Math.abs(trn[2]) > 1e-6
+  if (hasRot || hasTrn) {
+    outTris = outTris.map(([a, b, c]) => {
+      const ra = hasRot ? rotateXYZDeg(a, rot) : a
+      const rb = hasRot ? rotateXYZDeg(b, rot) : b
+      const rc = hasRot ? rotateXYZDeg(c, rot) : c
+      if (!hasTrn) return [ra, rb, rc]
+      return [addVecStl(ra, trn), addVecStl(rb, trn), addVecStl(rc, trn)]
+    })
+  }
 
   return { ok: true, buffer: encodeBinaryStlFromTriangles(outTris) }
 }

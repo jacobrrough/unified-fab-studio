@@ -53,13 +53,22 @@ Post-processors live under `resources/posts/` as **Handlebars** templates. Machi
 - `{{toolpathLines}}` — generated moves (block per line)
 - `{{spindleOn}}` / `{{spindleOff}}` — per-dialect snippets from `dialect` in profile
 
-The stock **`cnc_generic_mm.hbs`** template emits **comment-only safety reminders** (unverified output, dry-run guidance, WCS/units notes). It does **not** insert automatic safe-Z rapids — those values are machine- and fixture-specific; add them in the template or in your CAM prep only after you know clearance heights.
+The stock **`cnc_generic_mm.hbs`** template emits **comment-only safety reminders** (unverified output, dry-run guidance, WCS/units, tool-change assumptions). It does **not** insert automatic safe-Z rapids — those values are machine- and fixture-specific; add them in the template or in your CAM prep only after you know clearance heights.
 
 Edit `resources/machines/laguna-swift-5x10.json` to match your controller’s M-codes and safe heights.
 
 ### Generic 3-axis stub (`generic-3axis`)
 
 Kernel samples ship with **`activeMachineId`: `generic-3axis`**, defined in **`resources/machines/generic-3axis.json`**. It is a **placeholder envelope** (200×200×100 mm, `generic_mm` dialect) so projects load without pointing at a specific OEM machine. **Duplicate and rename** this file for your router/mill, then tighten `workAreaMm`, `maxFeedMmMin`, and `dialect` to match the controller.
+
+### Bundled benchtop CNC stubs
+
+Two additional **stub** profiles ship for small benchtop routers — **not** collision-checked or feed-verified:
+
+- **`resources/machines/benchtop-grbl-300.json`** — `benchtop-grbl-300`, Grbl-class dialect. Confirm real travel, `G21` at power-on, and spindle/coolant M-codes before running.
+- **`resources/machines/benchtop-mach3-350.json`** — `benchtop-mach3-350`, Mach3-class dialect. Confirm travel, feeds, and spindle/coolant blocks against your controller manual.
+
+Both use the stock post **`resources/posts/cnc_generic_mm.hbs`**. Treat output as **unverified** until you dry-run and compare to a known-good program for your machine.
 
 ### Sample project (assembly + CAM + kernel)
 

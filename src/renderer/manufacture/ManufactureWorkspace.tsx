@@ -10,8 +10,10 @@ import {
 import { CAM_CUT_DEFAULTS, resolveManufactureSetupForCam } from '../../shared/cam-cut-params'
 import { mergeCuraSliceInvocationSettings } from '../../shared/cura-slice-defaults'
 import { isManufactureKindBlockedFromCam } from '../../shared/manufacture-cam-gate'
+import { MESH_IMPORT_FILE_EXTENSIONS } from '../../shared/mesh-import-formats'
 import type { ManufactureFile, ManufactureOperation, ManufactureSetup } from '../../shared/manufacture-schema'
 import { emptyManufacture } from '../../shared/manufacture-schema'
+import { computeBinaryStlBoundingBox, stockBoxDimensionsFromPartBounds } from '../../shared/stl-binary-preview'
 import {
   readPersistedManufactureActionableOnly,
   readPersistedManufactureOpFilter,
@@ -20,8 +22,10 @@ import {
   writePersistedManufactureActionableOnly,
   writePersistedManufactureOpFilter
 } from '../shell/workspaceMemory'
+import { estimateFeedMmMinFromTool } from '../../shared/tool-feed-hint'
 import type { ToolLibraryFile } from '../../shared/tool-schema'
 import { CamManufacturePanel, SliceManufacturePanel, ToolsManufacturePanel } from './ManufactureAuxPanels'
+import { ManufactureSetupStrip } from './ManufactureSetupStrip'
 import { ManufactureCamSimulationPanel } from './ManufactureCamSimulationPanel'
 import { ManufactureSubTabStrip } from './ManufactureSubTabStrip'
 
@@ -38,10 +42,15 @@ function resolveManufactureCamMachine(mfg: ManufactureFile, machines: MachinePro
 type Props = {
   projectDir: string | null
   machines: MachineProfile[]
-  /** Used for optional per-op tool id + defaults for Generate CAM */
+  /** Merged machine-first + project tools for CAM pickers */
   tools?: ToolLibraryFile | null
+  /** Project-folder tools.json (may be empty) */
+  projectTools?: ToolLibraryFile | null
+  /** App userData library for active machine */
+  machineTools?: ToolLibraryFile | null
   /** Project active machine id — matches which manufacture setup Make → Generate CAM prefers */
   activeMachineId?: string | null
+  onSaveActiveMachineId?: (machineId: string) => void | Promise<void>
   onStatus?: (msg: string) => void
   onAfterSave?: () => void
   panelTab: ManufacturePanelTab
@@ -56,8 +65,13 @@ type Props = {
   onSaveSettingsField: (partial: Partial<AppSettings>) => void
   onRunSlice: () => void
   onRunCam: () => void
-  onImportTools: (kind: 'csv' | 'json' | 'fusion' | 'fusion_csv') => void
-  onImportToolLibraryFromFile: () => void | Promise<void>
+  onImportTools: (kind: 'csv' | 'json' | 'fusion' | 'fusion_csv', target?: 'project' | 'machine') => void
+  onImportToolLibraryFromFile: (target?: 'project' | 'machine') => void | Promise<void>
+  onMigrateProjectToolsToMachine?: () => void | Promise<void>
+  onGoSettings: () => void
+  onGoProject: () => void
+  /** After importing a mesh into the project from Manufacture, refresh project sidecars (e.g. `project.json`). */
+  onAfterMeshImport?: () => void | Promise<void>
 }
 
 function cncOp(kind: ManufactureOperation['kind']): boolean {
@@ -91,7 +105,10 @@ export function ManufactureWorkspace({
   projectDir,
   machines,
   tools,
+  projectTools = null,
+  machineTools = null,
   activeMachineId = null,
+  onSaveActiveMachineId,
   onStatus,
   onAfterSave,
   panelTab,
@@ -107,14 +124,28 @@ export function ManufactureWorkspace({
   onRunSlice,
   onRunCam,
   onImportTools,
-  onImportToolLibraryFromFile
+  onImportToolLibraryFromFile,
+  onMigrateProjectToolsToMachine,
+  onGoSettings,
+  onGoProject,
+  onAfterMeshImport
 }: Props) {
   const [mfg, setMfg] = useState<ManufactureFile>(() => emptyManufacture())
   const [contourCandidates, setContourCandidates] = useState<DerivedContourCandidate[]>([])
   const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now())
   const [opFilter, setOpFilter] = useState<ManufactureOpFilter>(() => readPersistedManufactureOpFilter('all'))
   const [actionableOnly, setActionableOnly] = useState<boolean>(() => readPersistedManufactureActionableOnly(false))
+  const [selectedOpIndex, setSelectedOpIndex] = useState(0)
+  const [fabPlanSidebarCollapsed, setFabPlanSidebarCollapsed] = useState(false)
+  const [fitStockPadMm, setFitStockPadMm] = useState(2)
   const fab = window.fab
+
+  useEffect(() => {
+    setSelectedOpIndex((i) => {
+      if (mfg.operations.length === 0) return 0
+      return Math.min(Math.max(0, i), mfg.operations.length - 1)
+    })
+  }, [mfg.operations.length])
 
   useEffect(() => {
     if (!projectDir) {
@@ -294,7 +325,13 @@ export function ManufactureWorkspace({
     } else {
       base.toolId = toolId
       const rec = tools?.tools.find((t) => t.id === toolId)
-      if (rec) base.toolDiameterMm = rec.diameterMm
+      if (rec) {
+        base.toolDiameterMm = rec.diameterMm
+        const hasFeed =
+          typeof base.feedMmMin === 'number' && Number.isFinite(base.feedMmMin) && base.feedMmMin > 0
+        const hint = estimateFeedMmMinFromTool(rec)
+        if (!hasFeed && hint != null) base.feedMmMin = hint
+      }
     }
     updateOp(i, { params: Object.keys(base).length ? base : undefined })
   }
@@ -538,6 +575,12 @@ export function ManufactureWorkspace({
     [mfg, camRunCncMachineId]
   )
 
+  const camResolvedSetupIdx = useMemo(() => {
+    if (!camResolvedSetup) return 0
+    const i = mfg.setups.findIndex((s) => s.id === camResolvedSetup.id)
+    return i >= 0 ? i : 0
+  }, [mfg.setups, camResolvedSetup])
+
   const camResolvedMachineName = useMemo(() => {
     if (!camResolvedSetup) return undefined
     return machines.find((m) => m.id === camResolvedSetup.machineId)?.name ?? camResolvedSetup.machineId
@@ -548,12 +591,99 @@ export function ManufactureWorkspace({
     [machines, project?.activeMachineId]
   )
 
+  /** CNC profile for CAM simulation envelope (same id logic as Make → Generate CAM). */
+  const camSimMachine = useMemo(
+    () =>
+      camRunCncMachineId
+        ? machines.find((m) => m.id === camRunCncMachineId && m.kind === 'cnc')
+        : undefined,
+    [machines, camRunCncMachineId]
+  )
+
+  const assetStlOptions = useMemo(() => {
+    const paths = new Set<string>()
+    for (const m of project?.meshes ?? []) {
+      if (m.toLowerCase().endsWith('.stl')) paths.add(m.replace(/\\/g, '/'))
+    }
+    for (const h of project?.importHistory ?? []) {
+      const p = h.assetRelativePath.replace(/\\/g, '/')
+      if (p.toLowerCase().endsWith('.stl')) paths.add(p)
+    }
+    return [...paths].sort((a, b) => a.localeCompare(b))
+  }, [project?.meshes, project?.importHistory])
+
+  async function importMeshForSelectedOp(): Promise<void> {
+    if (!projectDir) return
+    const py = settings?.pythonPath?.trim() || 'python'
+    const filters = [{ name: 'Mesh', extensions: [...MESH_IMPORT_FILE_EXTENSIONS] }]
+    const path = await fab.dialogOpenFile(filters, projectDir)
+    if (!path) return
+    const r = await fab.assetsImportMesh(projectDir, path, py)
+    if (!r.ok) {
+      onStatus?.(r.error + (r.detail ? ` — ${r.detail}` : ''))
+      return
+    }
+    if (mfg.operations.length === 0) {
+      onStatus?.('Add an operation first, then import a mesh to bind it.')
+      return
+    }
+    const relPath = r.relativePath.replace(/\\/g, '/')
+    setMfg((m) => {
+      const idx = Math.min(selectedOpIndex, m.operations.length - 1)
+      const ops = [...m.operations]
+      ops[idx] = { ...ops[idx]!, sourceMesh: relPath }
+      return { ...m, operations: ops }
+    })
+    onStatus?.(`Imported mesh → ${relPath}`)
+    await onAfterMeshImport?.()
+  }
+
+  async function fitStockFromPartOnSetup(setupIndex: number): Promise<void> {
+    if (!projectDir) return
+    const op = mfg.operations[selectedOpIndex]
+    const rel = op?.sourceMesh?.trim()
+    if (!rel) {
+      onStatus?.('Select an operation with a source mesh (.stl) first.')
+      return
+    }
+    try {
+      const r = await fab.assemblyReadStlBase64(projectDir, rel)
+      if (!r.ok) {
+        onStatus?.(r.error)
+        return
+      }
+      const bin = atob(r.base64)
+      const u8 = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+      const bbox = computeBinaryStlBoundingBox(u8)
+      if (!bbox) {
+        onStatus?.('Could not read STL bounds (binary STL required).')
+        return
+      }
+      const dim = stockBoxDimensionsFromPartBounds(bbox, Math.max(0, fitStockPadMm))
+      updateSetupStock(setupIndex, {
+        kind: 'box',
+        x: dim.x,
+        y: dim.y,
+        z: dim.z,
+        allowanceMm: fitStockPadMm > 0 ? fitStockPadMm : undefined
+      })
+      onStatus?.(
+        `Stock set to ${dim.x.toFixed(2)}×${dim.y.toFixed(2)}×${dim.z.toFixed(2)} mm (part AABB + ${fitStockPadMm} mm/side).`
+      )
+    } catch (e) {
+      onStatus?.(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const auxPanelProps = {
     machines,
     settings,
     project,
     projectDir,
     tools: tools ?? null,
+    projectTools,
+    machineTools,
     activeMachine,
     sliceOut,
     camOut,
@@ -564,18 +694,60 @@ export function ManufactureWorkspace({
     onRunSlice,
     onRunCam,
     onImportTools,
-    onImportToolLibraryFromFile
+    onImportToolLibraryFromFile,
+    onMigrateProjectToolsToMachine,
+    manufacture: mfg,
+    onGoSettings,
+    onGoProject
   }
 
   const planBody =
     !projectDir ? (
       <p className="msg panel">Open a project for manufacture setups and operations.</p>
     ) : (
-      <div className="panel" tabIndex={0} onKeyDown={handlePanelKeydown}>
+      <div className="panel manufacture-plan-root" tabIndex={0} onKeyDown={handlePanelKeydown}>
       <h2>Manufacture</h2>
+      <div
+        className={`manufacture-plan-layout${fabPlanSidebarCollapsed ? ' manufacture-plan-layout--sidebar-collapsed' : ''}`}
+      >
+        <div className="manufacture-plan-viewport-col">
+          <div className="row row--align-center manufacture-plan-toolbar">
+            <button type="button" className="secondary" onClick={() => setFabPlanSidebarCollapsed((c) => !c)}>
+              {fabPlanSidebarCollapsed ? 'Show job panel' : 'Hide job panel'}
+            </button>
+            <span className="msg msg--muted msg--xs">
+              3D workspace uses the operation marked <strong>3D preview</strong> below for mesh + tool proxy.
+            </span>
+          </div>
+          <ManufactureCamSimulationPanel
+            projectDir={projectDir}
+            mfg={mfg}
+            tools={tools ?? null}
+            machine={camSimMachine}
+            layout="workspace"
+            stockSetupIndex={camResolvedSetupIdx}
+            previewMeshRelativePath={mfg.operations[selectedOpIndex]?.sourceMesh?.trim() ?? null}
+            previewOperation={mfg.operations[selectedOpIndex] ?? null}
+          />
+        </div>
+        <aside
+          className={`manufacture-plan-sidebar${fabPlanSidebarCollapsed ? ' manufacture-plan-sidebar--collapsed' : ''}`}
+          aria-hidden={fabPlanSidebarCollapsed}
+        >
+      {project && projectDir && onSaveActiveMachineId ? (
+        <ManufactureSetupStrip
+          project={project}
+          machines={machines}
+          machineToolCount={machineTools?.tools.length ?? 0}
+          projectToolCount={projectTools?.tools.length ?? 0}
+          onActiveMachineChange={onSaveActiveMachineId}
+          onGoSettings={onGoSettings}
+          onGoProject={onGoProject}
+        />
+      ) : null}
       <p className="msg">
-        Setups (machine + stock) and an operation list. Use the <strong>Slice</strong> and <strong>CAM</strong> tabs here for
-        Cura / toolpath output; meshes live under <code>assets/</code>. This <strong>Plan</strong> view tracks intent and links.
+        <strong>Plan</strong> sidebar: machine, stock, operations. Use <strong>Slice</strong> / <strong>CAM</strong> tabs for
+        Cura and toolpath runs; meshes live under <code>assets/</code>.
       </p>
       <p className="msg manufacture-gcode-safety">
         Any generated G-code is <strong>unverified</strong> until you check posts, units, and clearances for your machine (
@@ -608,6 +780,8 @@ export function ManufactureWorkspace({
               </>
             ) : camResolvedSetup.stock?.kind === 'cylinder' ? (
               <>. Stock: cylinder (see dimensions on setup)</>
+            ) : camResolvedSetup.stock?.kind === 'fromExtents' ? (
+              <>. Stock: from part extents (preview) — use Fit stock from part to persist a box.</>
             ) : null}
             . <code>contourPoints</code> / <code>drillPoints</code> are in this WCS.
           </p>
@@ -615,8 +789,46 @@ export function ManufactureWorkspace({
       ) : mfg.setups.length === 0 ? (
         <p className="msg msg--muted">Add a setup so work offset and stock context are defined for CAM.</p>
       ) : null}
-      <div className="mb-block">
-        <ManufactureCamSimulationPanel projectDir={projectDir} mfg={mfg} tools={tools ?? null} />
+      <div className="row row--wrap manufacture-fab-import-row">
+        <button type="button" className="secondary" onClick={() => void importMeshForSelectedOp()}>
+          Import mesh into project…
+        </button>
+        <label>
+          Bind STL from project
+          <select
+            value={mfg.operations[selectedOpIndex]?.sourceMesh ?? ''}
+            onChange={(e) => {
+              if (mfg.operations.length === 0) return
+              updateOp(selectedOpIndex, { sourceMesh: e.target.value || undefined })
+            }}
+            disabled={mfg.operations.length === 0}
+          >
+            <option value="">—</option>
+            {assetStlOptions.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Fit padding (mm)
+          <input
+            type="number"
+            min={0}
+            step={0.5}
+            value={fitStockPadMm}
+            onChange={(e) => setFitStockPadMm(Number.parseFloat(e.target.value) || 0)}
+          />
+        </label>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => void fitStockFromPartOnSetup(camResolvedSetupIdx)}
+          title="Set CAM setup stock to axis-aligned box from selected op STL + padding"
+        >
+          Fit stock from part
+        </button>
       </div>
       <div className="row">
         <button type="button" className="secondary" onClick={addSetup}>
@@ -831,8 +1043,16 @@ export function ManufactureWorkspace({
         {filteredOps.map((op) => {
           const i = mfg.operations.findIndex((x) => x.id === op.id)
           return (
-          <li key={op.id}>
+          <li key={op.id} className={selectedOpIndex === i ? 'manufacture-op-li manufacture-op-li--selected' : 'manufacture-op-li'}>
             <div className="row">
+              <button
+                type="button"
+                className={selectedOpIndex === i ? 'primary' : 'secondary'}
+                onClick={() => setSelectedOpIndex(i)}
+                title="Use this operation’s source mesh in the 3D workspace"
+              >
+                3D preview
+              </button>
               <label>
                 Label
                 <input value={op.label} onChange={(e) => updateOp(i, { label: e.target.value })} />
@@ -1472,6 +1692,8 @@ export function ManufactureWorkspace({
           )
         })}
       </ul>
+        </aside>
+      </div>
     </div>
     )
 

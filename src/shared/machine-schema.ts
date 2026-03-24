@@ -19,7 +19,12 @@ export const machineProfileSchema = z.object({
   meta: z
     .object({
       manufacturer: z.string().optional(),
-      model: z.string().optional()
+      model: z.string().optional(),
+      source: z.enum(['bundled', 'user']).optional(),
+      /** Stub profile created from a Fusion / HSM `.cps` post file (app does not execute CPS). */
+      importedFromCps: z.boolean().optional(),
+      /** Original `.cps` file basename when `importedFromCps` is true. */
+      cpsOriginalBasename: z.string().optional()
     })
     .optional()
 })
