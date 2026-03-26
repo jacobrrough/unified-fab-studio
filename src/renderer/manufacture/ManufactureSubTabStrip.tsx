@@ -1,11 +1,17 @@
 import { useCallback, type KeyboardEvent } from 'react'
 import type { ManufacturePanelTab } from '../shell/workspaceMemory'
 
-const TABS: { id: ManufacturePanelTab; label: string }[] = [
-  { id: 'plan', label: 'Plan' },
-  { id: 'slice', label: 'Slice' },
-  { id: 'cam', label: 'CAM' },
-  { id: 'tools', label: 'Tools' }
+/**
+ * Manufacture sub-tab strip — Makera CAM-style tab ordering.
+ * Plan → Setup → CAM → Simulate → Slice → Tools
+ */
+const TABS: { id: ManufacturePanelTab; label: string; icon: string; title: string }[] = [
+  { id: 'plan', label: 'Plan', icon: '≡', title: 'Job plan — WCS setups and operation list' },
+  { id: 'setup', label: 'Setup', icon: '▣', title: 'Stock parameters, material type, WCS origin' },
+  { id: 'cam', label: 'CAM', icon: '⚙', title: 'Generate G-code toolpaths' },
+  { id: 'simulate', label: 'Simulate', icon: '▶', title: '3D toolpath simulation viewer' },
+  { id: 'slice', label: 'Slice', icon: '⊟', title: 'FDM slicer (CuraEngine)' },
+  { id: 'tools', label: 'Tools', icon: '🔧', title: 'Tool library import and management' }
 ]
 
 function tabA11yLabel(tab: { label: string }, index: number): string {
@@ -66,14 +72,16 @@ export function ManufactureSubTabStrip({ tab, onChange }: Props) {
             aria-setsize={TABS.length}
             tabIndex={tab === t.id ? 0 : -1}
             className={tab === t.id ? 'active' : ''}
+            title={t.title}
             onClick={() => onChange(t.id)}
             onKeyDown={(e) => onKeyDown(e, t.id)}
           >
-            {t.label}
+            <span className="mfg-subtab-icon" aria-hidden="true">{t.icon}</span>
+            <span className="mfg-subtab-label">{t.label}</span>
           </button>
         ))}
       </div>
-      <p id="mfg-subtab-visible-hint" className="utility-strip-hint msg" aria-live="polite">
+      <p id="mfg-subtab-visible-hint" className="utility-strip-hint msg sr-only">
         Manufacture tabs: arrow keys move focus and selection, Home/End jump.
       </p>
       <p id="mfg-subtab-kbd-hint" className="sr-only">

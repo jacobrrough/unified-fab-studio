@@ -4,7 +4,8 @@
  */
 export type ManufactureCamBlockedKind = 'fdm_slice' | 'export_stl'
 
-const BLOCKED = new Set<string>(['fdm_slice', 'export_stl'])
+/** cnc_laser is blocked from the built-in CAM runner — needs external laser post. */
+const BLOCKED = new Set<string>(['fdm_slice', 'export_stl', 'cnc_laser'])
 
 export function isManufactureKindBlockedFromCam(kind: string | undefined): boolean {
   if (kind == null || kind === '') return false
@@ -24,6 +25,12 @@ export function getManufactureCamRunBlock(kind: string | undefined): { error: st
     return {
       error: 'Export STL is not a CNC toolpath operation.',
       hint: 'Export meshes from Design or project assets/. The export_stl operation is for planning only and does not use cam:run.'
+    }
+  }
+  if (kind === 'cnc_laser') {
+    return {
+      error: 'Laser operations are not posted by the built-in CAM runner.',
+      hint: 'Use Makera CAM or dedicated laser software to generate laser G-code. The cnc_laser kind is for planning only.'
     }
   }
   return null

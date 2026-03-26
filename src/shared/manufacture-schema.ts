@@ -1,5 +1,64 @@
 import { z } from 'zod'
 
+/**
+ * Stock material types — used to auto-select tool presets (Makera CAM style).
+ * The material type drives default speed/feed lookup in materialPresets on ToolRecord.
+ */
+export const STOCK_MATERIAL_TYPES = [
+  'wood',
+  'plywood',
+  'mdf',
+  'aluminum',
+  'brass',
+  'steel',
+  'plastic',
+  'acrylic',
+  'pcb',
+  'carbon_fiber',
+  'foam',
+  'wax',
+  'other'
+] as const
+
+export type StockMaterialType = (typeof STOCK_MATERIAL_TYPES)[number]
+
+export const STOCK_MATERIAL_LABELS: Record<StockMaterialType, string> = {
+  wood: 'Wood (hardwood)',
+  plywood: 'Plywood',
+  mdf: 'MDF',
+  aluminum: 'Aluminum',
+  brass: 'Brass',
+  steel: 'Steel',
+  plastic: 'Plastic (general)',
+  acrylic: 'Acrylic / PMMA',
+  pcb: 'PCB (FR4)',
+  carbon_fiber: 'Carbon Fiber',
+  foam: 'Foam / EPS',
+  wax: 'Machinable Wax',
+  other: 'Other'
+}
+
+/**
+ * WCS origin control point — maps to one of 10 positions on the stock (5 top + 5 bottom).
+ * Matches the Makera CAM "10-point stock origin picker" concept.
+ * top-tl / top-tc / top-tr / top-ml / top-center / top-mr / top-bl / top-bc / top-br = 9 (3×3 grid)
+ * bottom-center = 10th point (flip side reference).
+ */
+export const WCS_ORIGIN_POINTS = [
+  'top-tl',
+  'top-tc',
+  'top-tr',
+  'top-ml',
+  'top-center',
+  'top-mr',
+  'top-bl',
+  'top-bc',
+  'top-br',
+  'bottom-center'
+] as const
+
+export type WcsOriginPoint = (typeof WCS_ORIGIN_POINTS)[number]
+
 export const stockSchema = z.object({
   kind: z.enum(['box', 'cylinder', 'fromExtents']),
   /** mm */
@@ -7,7 +66,9 @@ export const stockSchema = z.object({
   y: z.number().positive().optional(),
   z: z.number().positive().optional(),
   /** Extra material on stock faces for roughing (mm). */
-  allowanceMm: z.number().nonnegative().optional()
+  allowanceMm: z.number().nonnegative().optional(),
+  /** Material type for auto speed/feed preset lookup. */
+  materialType: z.enum(STOCK_MATERIAL_TYPES).optional()
 })
 
 export const setupSchema = z.object({
@@ -19,7 +80,15 @@ export const setupSchema = z.object({
   fixtureNote: z.string().optional(),
   /** Work offset index 1–6 → G54–G59 on most mills. */
   workCoordinateIndex: z.number().int().min(1).max(6).optional(),
-  stock: stockSchema.optional()
+  stock: stockSchema.optional(),
+  /**
+   * Makera-style WCS origin control point — one of 10 positions on the stock
+   * (3×3 top grid + bottom center). Tells the operator which corner/face of
+   * the physical workpiece maps to machine zero.
+   */
+  wcsOriginPoint: z.enum(WCS_ORIGIN_POINTS).optional(),
+  /** Axis count for this setup: 3 (default) or 4. Drives default op kinds offered. */
+  axisMode: z.enum(['3axis', '4axis']).optional()
 })
 
 export type ManufactureSetup = z.infer<typeof setupSchema>
@@ -43,6 +112,74 @@ export const manufactureOperationSchema = z.object({
      * (`resolvePencilStepoverMm`: optional `pencilStepoverMm` or `pencilStepoverFactor` × op stepover, default factor 0.22).
      */
     'cnc_pencil',
+    /**
+     * 4-axis wrapping — cylindrical wrapping of an XZ profile around the A axis.
+     * Wraps a 2D contour (or mesh-height raster) onto a cylinder; useful for
+     * engraving, relief carving, and cylindrical parts on the Carvera 4th-axis
+     * attachment. Requires `axisCount >= 4` on the active machine profile.
+     * Params: `cylinderDiameterMm`, `wrapAxis` ('x'|'y'), `wrapMode` ('contour'|'raster'|'parallel'),
+     * `zPassMm`, `stepoverMm`, `feedMmMin`, `safeZMm`, `toolDiameterMm`.
+     */
+    'cnc_4axis_wrapping',
+    /**
+     * 4-axis indexed — machine multiple 3-axis setups with the A axis locked at
+     * discrete rotation angles. Each index stop is a separate sub-operation.
+     * Requires `axisCount >= 4` on the active machine profile.
+     * Params: `indexAnglesDeg` (array of A-axis stops, e.g. [0, 90, 180, 270]),
+     * `zPassMm`, `stepoverMm`, `feedMmMin`, `safeZMm`, `toolDiameterMm`.
+     */
+    'cnc_4axis_indexed',
+    /**
+     * 3D Roughing — aggressive adaptive clearing to remove bulk material.
+     * Routes to OpenCAMLib `AdaptiveWaterline` when available; falls back to
+     * built-in parallel with coarse stepover. Leaves `stockAllowanceMm` on walls.
+     * Params: `zPassMm`, `stepoverMm`, `feedMmMin`, `plungeMmMin`, `safeZMm`,
+     *   `toolDiameterMm`, `stockAllowanceMm` (default 0.5), `toolId`.
+     */
+    'cnc_3d_rough',
+    /**
+     * 3D Finishing — fine surface pass to hit final geometry tolerance.
+     * Uses raster (default) or waterline strategy with tight stepover.
+     * Params: `zPassMm`, `stepoverMm`, `feedMmMin`, `plungeMmMin`, `safeZMm`,
+     *   `toolDiameterMm`, `finishStrategy` ('raster'|'waterline'|'pencil'),
+     *   `finishStepoverMm` (overrides stepoverMm for finer resolution), `toolId`.
+     */
+    'cnc_3d_finish',
+    /**
+     * 2D Chamfer — cuts a chamfer along an edge contour using a V-bit or chamfer mill.
+     * Params: `contourPoints: [x,y][]`, `chamferAngleDeg` (tool half-angle, default 45),
+     * `chamferDepthMm` (cut depth for chamfer profile), `toolDiameterMm`, `feedMmMin`, `safeZMm`.
+     */
+    'cnc_chamfer',
+    /**
+     * Thread milling — helical thread entry along a contour or single bore.
+     * Params: `contourPoints: [x,y][]`, `threadPitchMm`, `threadDepthMm`,
+     * `threadDirection` ('right'|'left'), `zPassMm`, `toolDiameterMm`, `feedMmMin`, `safeZMm`.
+     */
+    'cnc_thread_mill',
+    /**
+     * Laser — vector or raster laser path (inline with milling ops, same project).
+     * Params: `laserMode` ('vector'|'raster'|'fill'), `laserPower` (0–100%),
+     * `laserSpeed` (mm/min), `passes` (integer), `contourPoints: [x,y][]` for vector mode.
+     */
+    'cnc_laser',
+    /**
+     * PCB isolation (trace/copper clearing) — imported from Gerber or polygon contours.
+     * Params: `contourPoints: [x,y][][]` (array of polygons), `isolationDepthMm` (default 0.05),
+     * `toolDiameterMm`, `feedMmMin`, `safeZMm`.
+     */
+    'cnc_pcb_isolation',
+    /**
+     * PCB drilling — drill holes from Excellon / drill point array.
+     * Params: `drillPoints: [x,y][]`, `zPassMm`, `toolDiameterMm`, `feedMmMin`, `safeZMm`.
+     */
+    'cnc_pcb_drill',
+    /**
+     * PCB board outline contour — cuts the PCB perimeter with optional tabs.
+     * Params: `contourPoints: [x,y][]`, `zPassMm`, `zStepMm`, `tabCount`, `tabWidthMm`,
+     * `tabHeightMm`, `toolDiameterMm`, `feedMmMin`, `safeZMm`.
+     */
+    'cnc_pcb_contour',
     'export_stl'
   ]),
   label: z.string().trim().min(1),
@@ -65,6 +202,13 @@ export const manufactureOperationSchema = z.object({
    *   and `drillDerivedAt` (ISO timestamp)
    * - pencil (`cnc_pencil`): optional `pencilStepoverMm` (mm, clamped to tool Ø) or `pencilStepoverFactor` (0.05–1, default 0.22)
    *   applied to resolved `stepoverMm` for the tight raster pass.
+   * - contour/pcb_contour tab generation: optional `tabsMode` ('none'|'count'|'interval'),
+   *   `tabCount` (int, for 'count' mode), `tabIntervalMm` (mm, for 'interval' mode),
+   *   `tabWidthMm` (default 3), `tabHeightMm` (default 1.5) — holding bridges auto-inserted.
+   * - chamfer (`cnc_chamfer`): `contourPoints: [x,y][]`, `chamferAngleDeg` (default 45),
+   *   `chamferDepthMm` (how far below surface to reach full width), `toolDiameterMm`, `feedMmMin`.
+   * - laser (`cnc_laser`): `laserMode` ('vector'|'raster'|'fill'), `laserPower` (0–100),
+   *   `laserSpeed` mm/min, `passes`, `contourPoints` for vector/fill.
    * See `resolveCamCutParams` / `resolveCamToolDiameterMm` for defaults.
    */
   params: z.record(z.string(), z.unknown()).optional()

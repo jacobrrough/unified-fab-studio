@@ -12,10 +12,18 @@ const VALID_UTIL: ReadonlySet<PersistedUtilityTab> = new Set(['project', 'settin
 
 const UTILITY_TAB_KEY = 'ufs_utility_tab'
 
-/** Manufacture workspace sub-tabs (Slice / CAM / Tools live here; Plan = manufacture.json editor). */
-export type ManufacturePanelTab = 'plan' | 'slice' | 'cam' | 'tools'
+/**
+ * Manufacture workspace sub-tabs.
+ * - plan: operation list / job editor (Makera-style functions panel)
+ * - setup: stock, WCS origin, material type per setup
+ * - cam: G-code generation + toolpath output
+ * - simulate: 3D toolpath simulation viewer
+ * - slice: FDM CuraEngine slice
+ * - tools: tool library management
+ */
+export type ManufacturePanelTab = 'plan' | 'setup' | 'cam' | 'simulate' | 'slice' | 'tools'
 
-const VALID_MFG_PANEL: ReadonlySet<ManufacturePanelTab> = new Set(['plan', 'slice', 'cam', 'tools'])
+const VALID_MFG_PANEL: ReadonlySet<ManufacturePanelTab> = new Set(['plan', 'setup', 'cam', 'simulate', 'slice', 'tools'])
 
 const MFG_PANEL_TAB_KEY = 'ufs_manufacture_panel_tab'
 

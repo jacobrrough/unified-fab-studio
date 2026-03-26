@@ -28,6 +28,9 @@ import { CamManufacturePanel, SliceManufacturePanel, ToolsManufacturePanel } fro
 import { ManufactureSetupStrip } from './ManufactureSetupStrip'
 import { ManufactureCamSimulationPanel } from './ManufactureCamSimulationPanel'
 import { ManufactureSubTabStrip } from './ManufactureSubTabStrip'
+import { MakeraFunctionsPanel } from './MakeraFunctionsPanel'
+import { StockMaterialPanel } from './StockMaterialPanel'
+import type { StockMaterialType, WcsOriginPoint } from '../../shared/manufacture-schema'
 
 function resolveManufactureCamMachine(mfg: ManufactureFile, machines: MachineProfile[]): MachineProfile | undefined {
   const cnc = machines.filter((m) => m.kind === 'cnc')
@@ -136,8 +139,11 @@ export function ManufactureWorkspace({
   const [opFilter, setOpFilter] = useState<ManufactureOpFilter>(() => readPersistedManufactureOpFilter('all'))
   const [actionableOnly, setActionableOnly] = useState<boolean>(() => readPersistedManufactureActionableOnly(false))
   const [selectedOpIndex, setSelectedOpIndex] = useState(0)
+  const [selectedSetupIndex, setSelectedSetupIndex] = useState(0)
   const [fabPlanSidebarCollapsed, setFabPlanSidebarCollapsed] = useState(false)
   const [fitStockPadMm, setFitStockPadMm] = useState(2)
+  // Project type chooser (Makera-style launch screen): shown once when manufacture file is empty & no ops
+  const [projectTypeChosen, setProjectTypeChosen] = useState(false)
   const fab = window.fab
 
   useEffect(() => {
@@ -294,6 +300,48 @@ export function ManufactureWorkspace({
 
   function removeOp(i: number): void {
     setMfg((m) => ({ ...m, operations: m.operations.filter((_, j) => j !== i) }))
+  }
+
+  function moveOpUp(i: number): void {
+    if (i <= 0) return
+    setMfg((m) => {
+      const ops = [...m.operations]
+      const tmp = ops[i - 1]!
+      ops[i - 1] = ops[i]!
+      ops[i] = tmp
+      return { ...m, operations: ops }
+    })
+    setSelectedOpIndex((prev) => (prev === i ? i - 1 : prev === i - 1 ? i : prev))
+  }
+
+  function moveOpDown(i: number): void {
+    setMfg((m) => {
+      if (i >= m.operations.length - 1) return m
+      const ops = [...m.operations]
+      const tmp = ops[i + 1]!
+      ops[i + 1] = ops[i]!
+      ops[i] = tmp
+      return { ...m, operations: ops }
+    })
+    setSelectedOpIndex((prev) => (prev === i ? i + 1 : prev === i + 1 ? i : prev))
+  }
+
+  function updateSetupWcsOrigin(si: number, point: WcsOriginPoint): void {
+    updateSetup(si, { wcsOriginPoint: point })
+  }
+
+  function updateSetupAxisMode(si: number, mode: '3axis' | '4axis'): void {
+    updateSetup(si, { axisMode: mode })
+  }
+
+  function updateSetupMaterialType(si: number, mat: StockMaterialType | undefined): void {
+    setMfg((m) => {
+      const setups = [...m.setups]
+      const cur = setups[si]!
+      const stock = { kind: 'box' as const, x: 200, y: 200, z: 25, ...cur.stock, materialType: mat }
+      setups[si] = { ...cur, stock }
+      return { ...m, setups }
+    })
   }
 
   function toolDiameterFieldValue(op: ManufactureOperation): string {
@@ -476,6 +524,15 @@ export function ManufactureWorkspace({
       return { label: 'ready', bg: '#14532d' }
     }
     return { label: 'ready', bg: '#14532d' }
+  }
+
+  function opStatusForPanel(op: ManufactureOperation): 'ready' | 'missing' | 'stale' | 'suppressed' | 'non-cam' {
+    const r = opReadiness(op).label
+    if (r === 'missing geometry') return 'missing'
+    if (r === 'stale geometry') return 'stale'
+    if (r === 'suppressed') return 'suppressed'
+    if (r === 'non-cam') return 'non-cam'
+    return 'ready'
   }
 
   const readinessCounts = mfg.operations.reduce(
@@ -708,15 +765,34 @@ export function ManufactureWorkspace({
       <div className="panel manufacture-plan-root" tabIndex={0} onKeyDown={handlePanelKeydown}>
       <h2>Manufacture</h2>
       <div
-        className={`manufacture-plan-layout${fabPlanSidebarCollapsed ? ' manufacture-plan-layout--sidebar-collapsed' : ''}`}
+        className={`manufacture-plan-layout${fabPlanSidebarCollapsed ? ' manufacture-plan-layout--sidebar-collapsed' : ''} manufacture-plan-layout--makera`}
       >
+        {/* ── MAKERA-STYLE FUNCTIONS PANEL (far left) ── */}
+        <MakeraFunctionsPanel
+          mfg={mfg}
+          selectedSetupIndex={selectedSetupIndex}
+          selectedOpIndex={selectedOpIndex}
+          onSelectSetup={(si) => setSelectedSetupIndex(si)}
+          onAddSetup={addSetup}
+          onRemoveSetup={removeSetup}
+          onSelectOp={setSelectedOpIndex}
+          onToggleSuppressed={(i) => updateOp(i, { suppressed: !mfg.operations[i]?.suppressed })}
+          onAddOp={addOp}
+          onRemoveOp={removeOp}
+          onMoveOpUp={moveOpUp}
+          onMoveOpDown={moveOpDown}
+          opStatus={opStatusForPanel}
+          assetStlPaths={assetStlOptions}
+          currentSourceMesh={mfg.operations[selectedOpIndex]?.sourceMesh?.trim()}
+        />
+
         <div className="manufacture-plan-viewport-col">
           <div className="row row--align-center manufacture-plan-toolbar">
             <button type="button" className="secondary" onClick={() => setFabPlanSidebarCollapsed((c) => !c)}>
               {fabPlanSidebarCollapsed ? 'Show job panel' : 'Hide job panel'}
             </button>
             <span className="msg msg--muted msg--xs">
-              3D workspace uses the operation marked <strong>3D preview</strong> below for mesh + tool proxy.
+              3D workspace — select an operation on the left to preview its mesh + toolpath.
             </span>
           </div>
           <ManufactureCamSimulationPanel
@@ -1707,6 +1783,130 @@ export function ManufactureWorkspace({
       >
         {panelTab === 'plan' ? (
           planBody
+        ) : panelTab === 'setup' ? (
+          /* ── SETUP TAB: Stock, material, WCS origin ── */
+          <section className="panel workspace-util-panel makera-setup-panel" aria-labelledby="mfg-setup-tab-heading">
+            <h2 id="mfg-setup-tab-heading">Stock Parameters</h2>
+            {!projectDir ? (
+              <p className="msg">Open a project first.</p>
+            ) : mfg.setups.length === 0 ? (
+              <div className="msg">
+                <p>No setups yet.</p>
+                <button type="button" className="primary" onClick={addSetup}>Add setup</button>
+              </div>
+            ) : (
+              <>
+                {/* Setup selector */}
+                <div className="makera-setup-tab-selector" role="tablist" aria-label="Select setup">
+                  {mfg.setups.map((s, si) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={si === selectedSetupIndex}
+                      className={`secondary${si === selectedSetupIndex ? ' active' : ''}`}
+                      onClick={() => setSelectedSetupIndex(si)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                  <button type="button" className="secondary" onClick={addSetup}>+ Add</button>
+                </div>
+                {/* Machine + WCS offset row */}
+                {mfg.setups[selectedSetupIndex] ? (
+                  <>
+                    <div className="row">
+                      <label>
+                        Setup label
+                        <input
+                          value={mfg.setups[selectedSetupIndex]!.label}
+                          onChange={(e) => updateSetup(selectedSetupIndex, { label: e.target.value })}
+                        />
+                      </label>
+                      <label>
+                        Machine
+                        <select
+                          value={mfg.setups[selectedSetupIndex]!.machineId}
+                          onChange={(e) => updateSetup(selectedSetupIndex, { machineId: e.target.value })}
+                        >
+                          {machines.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Work offset
+                        <select
+                          value={String(mfg.setups[selectedSetupIndex]!.workCoordinateIndex ?? 1)}
+                          onChange={(e) => updateSetup(selectedSetupIndex, { workCoordinateIndex: Number.parseInt(e.target.value, 10) as 1|2|3|4|5|6 })}
+                        >
+                          <option value="1">G54 (1)</option>
+                          <option value="2">G55 (2)</option>
+                          <option value="3">G56 (3)</option>
+                          <option value="4">G57 (4)</option>
+                          <option value="5">G58 (5)</option>
+                          <option value="6">G59 (6)</option>
+                        </select>
+                      </label>
+                      <label>
+                        WCS note
+                        <input
+                          value={mfg.setups[selectedSetupIndex]!.wcsNote ?? ''}
+                          onChange={(e) => updateSetup(selectedSetupIndex, { wcsNote: e.target.value || undefined })}
+                          placeholder="e.g. Z0 on top of stock"
+                        />
+                      </label>
+                    </div>
+                    <StockMaterialPanel
+                      setup={mfg.setups[selectedSetupIndex]!}
+                      setupIndex={selectedSetupIndex}
+                      fitStockPadMm={fitStockPadMm}
+                      assetStlPaths={assetStlOptions}
+                      currentSourceMesh={mfg.operations[selectedOpIndex]?.sourceMesh?.trim()}
+                      onFitStockPadChange={setFitStockPadMm}
+                      onFitFromPart={fitStockFromPartOnSetup}
+                      onStockKindChange={(kind) => updateSetupStock(selectedSetupIndex, { kind })}
+                      onStockDimChange={(field, value) => updateSetupStock(selectedSetupIndex, { [field]: value })}
+                      onMaterialTypeChange={(mat) => updateSetupMaterialType(selectedSetupIndex, mat)}
+                      onWcsOriginChange={(pt) => updateSetupWcsOrigin(selectedSetupIndex, pt)}
+                      onAxisModeChange={(mode) => updateSetupAxisMode(selectedSetupIndex, mode)}
+                    />
+                    <div className="row" style={{ marginTop: '0.75rem' }}>
+                      <button type="button" className="primary" onClick={() => void save()}>Save</button>
+                      <button type="button" className="secondary" onClick={() => removeSetup(selectedSetupIndex)} disabled={mfg.setups.length <= 1}>Remove setup</button>
+                    </div>
+                  </>
+                ) : null}
+              </>
+            )}
+          </section>
+        ) : panelTab === 'simulate' ? (
+          /* ── SIMULATE TAB: full-screen 3D toolpath viewer ── */
+          <section className="makera-simulate-panel" aria-labelledby="mfg-simulate-heading">
+            <div className="makera-simulate-header">
+              <h2 id="mfg-simulate-heading" className="makera-simulate-heading">3D Toolpath Simulation</h2>
+              <p className="msg msg--muted makera-simulate-hint">
+                Visualizes the generated G-code as feed (cyan) and rapid (amber) tubes over the part mesh.
+                Generate a toolpath first via the <strong>CAM</strong> tab.
+              </p>
+            </div>
+            <div className="makera-simulate-canvas-wrap">
+              {projectDir ? (
+                <ManufactureCamSimulationPanel
+                  projectDir={projectDir}
+                  mfg={mfg}
+                  tools={tools ?? null}
+                  machine={camSimMachine}
+                  layout="workspace"
+                  stockSetupIndex={camResolvedSetupIdx}
+                  previewMeshRelativePath={mfg.operations[selectedOpIndex]?.sourceMesh?.trim() ?? null}
+                  previewOperation={mfg.operations[selectedOpIndex] ?? null}
+                />
+              ) : (
+                <p className="msg">Open a project to use the simulation viewer.</p>
+              )}
+            </div>
+          </section>
         ) : panelTab === 'slice' ? (
           <SliceManufacturePanel {...auxPanelProps} />
         ) : panelTab === 'cam' ? (

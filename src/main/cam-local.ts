@@ -93,6 +93,155 @@ export function heightAtXyFromTriangles(triangles: ReadonlyArray<readonly [Vec3,
   return best
 }
 
+/** Caps point×triangle inner tests for mesh height-field raster (main-process safety). */
+export const MESH_RASTER_INNER_OP_BUDGET = 60_000_000
+
+const MESH_RASTER_MAX_ROWS_CAP = 400
+const MESH_RASTER_MAX_COLS_CAP = 450
+const MESH_RASTER_MIN_DIM = 4
+
+/**
+ * Max raster sample budget (row×col target) from triangle count. Capped by the legacy 400×450 grid so
+ * stride math stays bounded; for huge meshes this drops to ~{@link MESH_RASTER_INNER_OP_BUDGET}/n.
+ */
+export function resolveMeshRasterSampleBudget(triangleCount: number): number {
+  const n = Math.max(1, triangleCount)
+  const byBudget = Math.floor(MESH_RASTER_INNER_OP_BUDGET / n)
+  const legacyMax = MESH_RASTER_MAX_ROWS_CAP * MESH_RASTER_MAX_COLS_CAP
+  return Math.max(200, Math.min(legacyMax, byBudget))
+}
+
+/**
+ * Row/column caps for the height-field grid from bbox aspect and sample budget (exported for tests).
+ */
+export function chooseMeshRasterGridCaps(spanX: number, spanY: number, maxSamples: number): { maxRows: number; maxCols: number } {
+  if (!(spanX > 0) || !(spanY > 0) || maxSamples < 1) {
+    return { maxRows: MESH_RASTER_MIN_DIM, maxCols: MESH_RASTER_MIN_DIM }
+  }
+  const ratio = spanX / spanY
+  let maxCols = Math.min(MESH_RASTER_MAX_COLS_CAP, Math.max(MESH_RASTER_MIN_DIM, Math.round(Math.sqrt(maxSamples * ratio))))
+  let maxRows = Math.min(MESH_RASTER_MAX_ROWS_CAP, Math.max(MESH_RASTER_MIN_DIM, Math.round(maxSamples / maxCols)))
+  while (maxRows * maxCols > maxSamples && (maxRows > MESH_RASTER_MIN_DIM || maxCols > MESH_RASTER_MIN_DIM)) {
+    if (maxCols >= maxRows && maxCols > MESH_RASTER_MIN_DIM) maxCols--
+    else if (maxRows > MESH_RASTER_MIN_DIM) maxRows--
+    else break
+  }
+  return { maxRows, maxCols }
+}
+
+/** Triangles whose XY AABB spans more than this many bucket cells go to `overflow` (checked every query). */
+const MAX_BUCKET_CELLS_PER_TRI = 256
+
+type TriangleBucketGrid = {
+  buckets: number[][]
+  /** Triangle indices too large for fine bucketing — tested on every height query. */
+  overflow: readonly number[]
+  nx: number
+  ny: number
+  minX: number
+  minY: number
+  cellW: number
+  cellH: number
+}
+
+function buildTriangleBucketGrid(
+  triangles: ReadonlyArray<readonly [Vec3, Vec3, Vec3]>,
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number
+): TriangleBucketGrid {
+  const spanX = maxX - minX
+  const spanY = maxY - minY
+  const n = triangles.length
+  const base = Math.min(80, Math.max(10, Math.ceil(Math.pow(Math.max(1, n), 0.25) * 3)))
+  let nx = Math.round((base * spanX) / Math.max(spanX, spanY, 1e-9))
+  let ny = Math.round((base * spanY) / Math.max(spanX, spanY, 1e-9))
+  nx = Math.min(96, Math.max(8, nx))
+  ny = Math.min(96, Math.max(8, ny))
+  const cellW = spanX / nx || 1
+  const cellH = spanY / ny || 1
+  const buckets: number[][] = Array.from({ length: nx * ny }, () => [])
+  const overflow: number[] = []
+
+  for (let ti = 0; ti < n; ti++) {
+    const [v0, v1, v2] = triangles[ti]!
+    const xs = [v0[0], v1[0], v2[0]]
+    const ys = [v0[1], v1[1], v2[1]]
+    let tMinX = Math.min(xs[0], xs[1], xs[2])
+    let tMaxX = Math.max(xs[0], xs[1], xs[2])
+    let tMinY = Math.min(ys[0], ys[1], ys[2])
+    let tMaxY = Math.max(ys[0], ys[1], ys[2])
+    tMinX = Math.max(minX, tMinX)
+    tMaxX = Math.min(maxX, tMaxX)
+    tMinY = Math.max(minY, tMinY)
+    tMaxY = Math.min(maxY, tMaxY)
+    if (!(tMaxX >= tMinX) || !(tMaxY >= tMinY)) continue
+
+    let ix0 = Math.floor((tMinX - minX) / cellW)
+    let ix1 = Math.floor((tMaxX - minX) / cellW)
+    let iy0 = Math.floor((tMinY - minY) / cellH)
+    let iy1 = Math.floor((tMaxY - minY) / cellH)
+    ix0 = Math.max(0, Math.min(nx - 1, ix0))
+    ix1 = Math.max(0, Math.min(nx - 1, ix1))
+    iy0 = Math.max(0, Math.min(ny - 1, iy0))
+    iy1 = Math.max(0, Math.min(ny - 1, iy1))
+    const cellSpan = (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
+    if (cellSpan > MAX_BUCKET_CELLS_PER_TRI) {
+      overflow.push(ti)
+      continue
+    }
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iy = iy0; iy <= iy1; iy++) {
+        buckets[ix * ny + iy].push(ti)
+      }
+    }
+  }
+
+  return { buckets, overflow, nx, ny, minX, minY, cellW, cellH }
+}
+
+function heightAtXyFromBucketGrid(
+  grid: TriangleBucketGrid,
+  triangles: ReadonlyArray<readonly [Vec3, Vec3, Vec3]>,
+  px: number,
+  py: number
+): number | null {
+  const { buckets, overflow, nx, ny, minX, minY, cellW, cellH } = grid
+  let ix = Math.floor((px - minX) / cellW)
+  let iy = Math.floor((py - minY) / cellH)
+  ix = Math.max(0, Math.min(nx - 1, ix))
+  iy = Math.max(0, Math.min(ny - 1, iy))
+
+  const seen = new Set<number>()
+  let best: number | null = null
+
+  const consider = (ti: number): void => {
+    if (seen.has(ti)) return
+    seen.add(ti)
+    const [v0, v1, v2] = triangles[ti]!
+    const [x0, y0] = v0
+    const [x1, y1] = v1
+    const [x2, y2] = v2
+    if (!pointInTriangle2d(px, py, x0, y0, x1, y1, x2, y2)) return
+    const z = zOnTrianglePlane(px, py, v0, v1, v2)
+    if (z == null) return
+    if (best == null || z > best) best = z
+  }
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const cx = ix + dx
+      const cy = iy + dy
+      if (cx < 0 || cx >= nx || cy < 0 || cy >= ny) continue
+      const list = buckets[cx * ny + cy]
+      for (let k = 0; k < list.length; k++) consider(list[k]!)
+    }
+  }
+  for (let o = 0; o < overflow.length; o++) consider(overflow[o]!)
+  return best
+}
+
 export type MeshHeightRasterParams = {
   triangles: ReadonlyArray<readonly [Vec3, Vec3, Vec3]>
   minX: number
@@ -108,7 +257,7 @@ export type MeshHeightRasterParams = {
 
 /**
  * XY zigzag raster with Z from a 2.5D upper envelope of STL triangles (no cutter offset / undercuts).
- * Caps row and column counts for large meshes.
+ * Adaptive sample budget (vs triangle count) plus XY bucketing keep main-thread work bounded.
  */
 export function generateMeshHeightRasterLines(params: MeshHeightRasterParams): string[] {
   const { triangles, minX, maxX, minY, maxY, feedMmMin, plungeMmMin, safeZMm } = params
@@ -116,12 +265,20 @@ export function generateMeshHeightRasterLines(params: MeshHeightRasterParams): s
 
   const stepY = Math.max(0.05, params.stepoverMm)
   const rawStepX = Math.max(0.05, params.sampleStepMm)
-  const maxRows = 400
-  const maxCols = 450
   const spanY = maxY - minY
   const spanX = maxX - minX
+
+  const maxSamples = resolveMeshRasterSampleBudget(triangles.length)
+  const { maxRows, maxCols } = chooseMeshRasterGridCaps(spanX, spanY, maxSamples)
   const yStride = Math.max(stepY, spanY / maxRows)
   const xStride = Math.max(rawStepX, spanX / maxCols)
+
+  const approxSamples = Math.ceil(spanY / yStride + 2) * Math.ceil(spanX / xStride + 2)
+  const naiveInnerBudget = approxSamples * triangles.length
+  const useBuckets = triangles.length >= 400 || naiveInnerBudget > 2_000_000
+  const grid = useBuckets ? buildTriangleBucketGrid(triangles, minX, maxX, minY, maxY) : null
+  const heightAt = (px: number, py: number): number | null =>
+    grid ? heightAtXyFromBucketGrid(grid, triangles, px, py) : heightAtXyFromTriangles(triangles, px, py)
 
   const lines: string[] = []
   let y = minY
@@ -148,7 +305,7 @@ export function generateMeshHeightRasterLines(params: MeshHeightRasterParams): s
     }
 
     for (const x of xs) {
-      const z = heightAtXyFromTriangles(triangles, x, y)
+      const z = heightAt(x, y)
       if (z == null) {
         flush()
         continue
@@ -589,5 +746,162 @@ export function generateDrill2dLines(params: Drill2dParams): string[] {
   }
   if (mode !== 'expanded') lines.push('G80')
   lines.push(`G0 Z${params.safeZMm.toFixed(3)}`)
+  return lines
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// CHAMFER TOOLPATH  (Makera CAM-style cnc_chamfer operation)
+// ────────────────────────────────────────────────────────────────────────────
+
+export type Chamfer2dParams = {
+  /** Closed polygon in setup WCS (mm). */
+  contourPoints: ReadonlyArray<CamPoint2d>
+  /** Depth from Z0 to the bottom of the chamfer profile (mm, positive). */
+  chamferDepthMm: number
+  /** Tool half-angle from vertical axis (degrees, default 45 for a 90° V-bit). */
+  chamferAngleDeg?: number
+  feedMmMin: number
+  plungeMmMin: number
+  safeZMm: number
+  /** Tool diameter at tip (mm). */
+  toolDiameterMm?: number
+}
+
+/**
+ * Generates a single-pass chamfer toolpath along a closed contour.
+ *
+ * The tool follows the polygon at `chamferDepthMm` below Z0.
+ * The XY offset from the profile equals `depth × tan(chamferAngleDeg)`, giving
+ * the correct chamfer width for a V-bit of the chosen included angle.
+ */
+export function generateChamfer2dLines(params: Chamfer2dParams): string[] {
+  const { contourPoints, chamferDepthMm, feedMmMin, plungeMmMin, safeZMm } = params
+  if (contourPoints.length < 3) return []
+  const angleDeg = params.chamferAngleDeg ?? 45
+  const xyOffset = chamferDepthMm * Math.tan((angleDeg * Math.PI) / 180)
+  const zWork = -Math.abs(chamferDepthMm)
+  const lines: string[] = []
+
+  const [x0, y0] = contourPoints[0]!
+  lines.push(`; Chamfer — depth ${chamferDepthMm.toFixed(3)} mm, angle ${angleDeg}°, XY offset ${xyOffset.toFixed(3)} mm`)
+  lines.push(`G0 Z${safeZMm.toFixed(3)}`)
+  lines.push(`G0 X${x0.toFixed(3)} Y${y0.toFixed(3)}`)
+  lines.push(`G1 Z${zWork.toFixed(3)} F${plungeMmMin.toFixed(0)}`)
+
+  for (let i = 1; i < contourPoints.length; i++) {
+    const [x, y] = contourPoints[i]!
+    lines.push(`G1 X${x.toFixed(3)} Y${y.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+  }
+  // Close the loop
+  lines.push(`G1 X${x0.toFixed(3)} Y${y0.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+  lines.push(`G0 Z${safeZMm.toFixed(3)}`)
+  return lines
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// AUTO-TAB (HOLDING BRIDGE) INSERTION  (Makera CAM-style tabsMode for contour)
+// ────────────────────────────────────────────────────────────────────────────
+
+export type TabInsertionMode = 'none' | 'count' | 'interval'
+
+export type TabParams = {
+  tabsMode: TabInsertionMode
+  /** Number of evenly-spaced tabs (for tabsMode = 'count'). */
+  tabCount?: number
+  /** Approximate spacing between tab centres (mm, for tabsMode = 'interval'). */
+  tabIntervalMm?: number
+  /** Width of each tab bridge in XY (mm, default 3). */
+  tabWidthMm?: number
+  /** Height of each tab above the cut floor (mm, default 1.5). */
+  tabHeightMm?: number
+}
+
+/** Compute perimeter length of a closed polygon. */
+export function polygonPerimeterMm(points: ReadonlyArray<CamPoint2d>): number {
+  if (points.length < 2) return 0
+  let total = 0
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i]!
+    const [x2, y2] = points[(i + 1) % points.length]!
+    total += Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+  }
+  return total
+}
+
+/**
+ * Returns arc-length positions (mm along perimeter) for tab centres.
+ */
+export function computeTabPositionsMm(perimeter: number, params: TabParams): number[] {
+  if (params.tabsMode === 'none' || perimeter <= 0) return []
+  if (params.tabsMode === 'count') {
+    const n = Math.max(1, Math.round(params.tabCount ?? 4))
+    return Array.from({ length: n }, (_, k) => (perimeter * k) / n)
+  }
+  if (params.tabsMode === 'interval') {
+    const interval = Math.max(1, params.tabIntervalMm ?? 50)
+    const n = Math.max(1, Math.round(perimeter / interval))
+    return Array.from({ length: n }, (_, k) => (perimeter * k) / n)
+  }
+  return []
+}
+
+/**
+ * Injects G-code tab bridges into a contour pass.
+ * The tool rises to `zWork + tabHeightMm` across the tab width, then drops back.
+ */
+export function injectTabsIntoContourPass(
+  contourPoints: ReadonlyArray<CamPoint2d>,
+  zWork: number,
+  feedMmMin: number,
+  tabPositionsMm: number[],
+  tabWidthMm: number,
+  tabHeightMm: number
+): string[] {
+  if (tabPositionsMm.length === 0 || contourPoints.length < 3) return []
+  const pts = [...contourPoints, contourPoints[0]!] // closed
+  const zTab = zWork + Math.abs(tabHeightMm)
+  const halfTab = tabWidthMm / 2
+  const lines: string[] = []
+
+  const segLengths: number[] = []
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i]!
+    const [x2, y2] = pts[i + 1]!
+    segLengths.push(Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2))
+  }
+
+  const tabRanges = tabPositionsMm.map((c) => [c - halfTab, c + halfTab] as [number, number])
+
+  let arcPos = 0
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i]!
+    const [x2, y2] = pts[i + 1]!
+    const segLen = segLengths[i]!
+    const segEnd = arcPos + segLen
+
+    const intersectingTabs = tabRanges.filter(([ts, te]) => ts < segEnd && te > arcPos)
+    if (intersectingTabs.length === 0) {
+      lines.push(`G1 X${x2.toFixed(3)} Y${y2.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+      arcPos = segEnd
+      continue
+    }
+
+    if (segLen < 1e-9) { arcPos = segEnd; continue }
+    const dx = (x2 - x1) / segLen
+    const dy = (y2 - y1) / segLen
+
+    for (const [tabStart, tabEnd] of intersectingTabs) {
+      const localStart = Math.max(tabStart - arcPos, 0)
+      const localEnd = Math.min(tabEnd - arcPos, segLen)
+      if (localStart > 0) {
+        lines.push(`G1 X${(x1 + dx * localStart).toFixed(3)} Y${(y1 + dy * localStart).toFixed(3)} Z${zWork.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+      }
+      lines.push(`G1 X${(x1 + dx * localStart).toFixed(3)} Y${(y1 + dy * localStart).toFixed(3)} Z${zTab.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+      lines.push(`G1 X${(x1 + dx * localEnd).toFixed(3)} Y${(y1 + dy * localEnd).toFixed(3)} Z${zTab.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+      lines.push(`G1 X${(x1 + dx * localEnd).toFixed(3)} Y${(y1 + dy * localEnd).toFixed(3)} Z${zWork.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+    }
+    lines.push(`G1 X${x2.toFixed(3)} Y${y2.toFixed(3)} Z${zWork.toFixed(3)} F${feedMmMin.toFixed(0)}`)
+    arcPos = segEnd
+  }
   return lines
 }
