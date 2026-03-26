@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Unified Fab Studio (dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "CAD Mode (dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:cad"],
+      "port": 5174
+    },
+    {
+      "name": "CAM Mode (dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:cam"],
+      "port": 5175
+    }
+  ]
+}
