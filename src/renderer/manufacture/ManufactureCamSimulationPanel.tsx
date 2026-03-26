@@ -5,9 +5,12 @@ import * as THREE from 'three'
 import { buildHeightFieldFromCuttingSegments } from '../../shared/cam-heightfield-2d5'
 import { compareToolpathToMachineEnvelope } from '../../shared/cam-machine-envelope'
 import {
+  apply4AxisRadialZToMillPreviewSegments,
   buildContiguousPathChains,
   buildToolpathLengthSampler,
-  extractToolpathSegmentsFromGcode
+  extractToolpathSegmentsFromGcode,
+  isManufactureKind4AxisForPreview,
+  resolve4AxisCylinderDiameterMm
 } from '../../shared/cam-gcode-toolpath'
 import { buildVoxelRemovalFromCuttingSegments } from '../../shared/cam-voxel-removal-proxy'
 import type { MachineProfile } from '../../shared/machine-schema'
@@ -304,6 +307,8 @@ type Props = {
   previewMeshRelativePath?: string | null
   /** Operation used for tool-diameter proxy (e.g. selected row). */
   previewOperation?: ManufactureOperation | null
+  /** Last **Generate toolpath…** output from the app — syncs the viewer and textarea. */
+  camOut?: string
   /** When `workspace`, the 3D canvas is shown first and uses a taller viewport. */
   layout?: 'compact' | 'workspace'
 }
@@ -321,9 +326,10 @@ export function ManufactureCamSimulationPanel({
   stockSetupIndex = 0,
   previewMeshRelativePath = null,
   previewOperation = null,
+  camOut = '',
   layout = 'compact'
 }: Props): ReactNode {
-  const [gcode, setGcode] = useState<string>('')
+  const [gcode, setGcode] = useState<string>(() => camOut ?? '')
   const [loadNote, setLoadNote] = useState<string | null>(null)
   const [showRemoval, setShowRemoval] = useState(true)
   const [removalMode, setRemovalMode] = useState<'tier2' | 'tier3'>('tier2')
@@ -334,6 +340,10 @@ export function ManufactureCamSimulationPanel({
   const [partPositionsRaw, setPartPositionsRaw] = useState<Float32Array | null>(null)
   const [playbackU, setPlaybackU] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
+
+  useEffect(() => {
+    setGcode(camOut ?? '')
+  }, [camOut])
 
   const setupIdx = Math.max(0, Math.min(stockSetupIndex, Math.max(0, mfg.setups.length - 1)))
   const stockDef = mfg.setups[setupIdx]?.stock
@@ -455,7 +465,19 @@ export function ManufactureCamSimulationPanel({
     }
   }, [projectDir, previewMeshRelativePath])
 
-  const segments = useMemo(() => (gcode.trim() ? extractToolpathSegmentsFromGcode(gcode) : []), [gcode])
+  const rawSegments = useMemo(
+    () => (gcode.trim() ? extractToolpathSegmentsFromGcode(gcode) : []),
+    [gcode]
+  )
+
+  const segments = useMemo(() => {
+    const raw = rawSegments
+    const op = previewOperation && !previewOperation.suppressed ? previewOperation : null
+    if (!op || !isManufactureKind4AxisForPreview(op.kind)) return raw
+    if (!/\bA-?\d/.test(gcode)) return raw
+    const d = resolve4AxisCylinderDiameterMm(op.params)
+    return apply4AxisRadialZToMillPreviewSegments(raw, d)
+  }, [rawSegments, gcode, previewOperation])
 
   const pathSampler = useMemo(() => buildToolpathLengthSampler(segments), [segments])
 

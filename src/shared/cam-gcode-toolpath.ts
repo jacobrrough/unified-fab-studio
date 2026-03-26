@@ -54,6 +54,37 @@ export function extractToolpathSegmentsFromGcode(gcode: string): ToolpathSegment
   return segs
 }
 
+/** Default cylinder diameter (mm) for 4-axis preview when params omit it — matches `cam-runner` / `axis4_toolpath.py`. */
+export const DEFAULT_4AXIS_CYLINDER_DIAMETER_MM = 50
+
+export function isManufactureKind4AxisForPreview(kind: string | undefined): boolean {
+  return kind === 'cnc_4axis_wrapping' || kind === 'cnc_4axis_indexed'
+}
+
+export function resolve4AxisCylinderDiameterMm(params: unknown): number {
+  if (!params || typeof params !== 'object') return DEFAULT_4AXIS_CYLINDER_DIAMETER_MM
+  const d = (params as Record<string, unknown>).cylinderDiameterMm
+  if (typeof d === 'number' && Number.isFinite(d) && d > 0) return d
+  return DEFAULT_4AXIS_CYLINDER_DIAMETER_MM
+}
+
+/**
+ * Map 4-axis engine radial Z (distance from rotation axis) to mill-style Z for preview
+ * (stock top ≈ 0, cuts negative). Does not change emitted G-code.
+ */
+export function apply4AxisRadialZToMillPreviewSegments(
+  segments: ToolpathSegment3[],
+  cylinderDiameterMm: number
+): ToolpathSegment3[] {
+  const r = cylinderDiameterMm * 0.5
+  if (!(r > 0) || !Number.isFinite(r)) return segments
+  return segments.map((s) => ({
+    ...s,
+    z0: s.z0 - r,
+    z1: s.z1 - r
+  }))
+}
+
 /** One contiguous polyline in G-code space (mm), grouped by motion kind. */
 export type ToolpathPathChain = {
   kind: ToolpathMotionKind

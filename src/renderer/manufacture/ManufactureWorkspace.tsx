@@ -804,6 +804,7 @@ export function ManufactureWorkspace({
             stockSetupIndex={camResolvedSetupIdx}
             previewMeshRelativePath={mfg.operations[selectedOpIndex]?.sourceMesh?.trim() ?? null}
             previewOperation={mfg.operations[selectedOpIndex] ?? null}
+            camOut={camOut}
           />
         </div>
         <aside
@@ -1901,6 +1902,7 @@ export function ManufactureWorkspace({
                   stockSetupIndex={camResolvedSetupIdx}
                   previewMeshRelativePath={mfg.operations[selectedOpIndex]?.sourceMesh?.trim() ?? null}
                   previewOperation={mfg.operations[selectedOpIndex] ?? null}
+                  camOut={camOut}
                 />
               ) : (
                 <p className="msg">Open a project to use the simulation viewer.</p>

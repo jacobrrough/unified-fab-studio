@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  apply4AxisRadialZToMillPreviewSegments,
   buildContiguousPathChains,
   buildToolpathLengthSampler,
   extractToolpathSegmentsFromGcode,
+  resolve4AxisCylinderDiameterMm,
   totalToolpathLengthMm
 } from './cam-gcode-toolpath'
 
@@ -66,5 +68,27 @@ describe('buildToolpathLengthSampler', () => {
     const s = buildToolpathLengthSampler([])
     expect(s.totalMm).toBe(0)
     expect(s.atUnit(0.5)).toEqual({ x: 0, y: 0, z: 0 })
+  })
+})
+
+describe('apply4AxisRadialZToMillPreviewSegments', () => {
+  it('subtracts radius so cut_z = R + z_pass maps to z_pass (mill-style)', () => {
+    const D = 50
+    const R = D / 2
+    const zPass = -1
+    const cutZ = R + zPass
+    const g = `G1 Z${cutZ.toFixed(3)} F300`
+    const raw = extractToolpathSegmentsFromGcode(g)
+    const adj = apply4AxisRadialZToMillPreviewSegments(raw, D)
+    expect(adj.length).toBe(1)
+    expect(adj[0]!.z1).toBeCloseTo(zPass, 5)
+    expect(adj[0]!.z0).toBeCloseTo(-R, 5)
+  })
+
+  it('resolve4AxisCylinderDiameterMm reads params or defaults to 50', () => {
+    expect(resolve4AxisCylinderDiameterMm(undefined)).toBe(50)
+    expect(resolve4AxisCylinderDiameterMm({})).toBe(50)
+    expect(resolve4AxisCylinderDiameterMm({ cylinderDiameterMm: 40 })).toBe(40)
+    expect(resolve4AxisCylinderDiameterMm({ cylinderDiameterMm: -1 })).toBe(50)
   })
 })
