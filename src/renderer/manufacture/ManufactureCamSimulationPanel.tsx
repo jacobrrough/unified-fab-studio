@@ -369,19 +369,43 @@ export function ManufactureCamSimulationPanel({
     if (!partPositionsRaw || !showPartMesh) return null
     const n = partPositionsRaw.length
     const pos = new Float32Array(n)
+
+    // ── WCS-alignment offset ──────────────────────────────────────────────────
+    // G-code uses a WCS where:
+    //   X=0, Y=0 = stock min corner (front-left)
+    //   Z=0       = TOP of stock (all cuts go negative Z)
+    //
+    // The raw STL vertices carry whatever coordinates the CAD model was saved
+    // at, which is almost never at the G-code WCS origin.  Without correction,
+    // the part mesh renders at its model-space coordinates while the toolpath
+    // renders near [0,0,0] — they appear far apart.
+    //
+    // Fix: translate every vertex so that:
+    //   • STL minX → 0  (aligns part left edge with G-code X=0)
+    //   • STL minY → 0  (aligns part front edge with G-code Y=0)
+    //   • STL maxZ → 0  (aligns part TOP face with G-code Z=0)
+    //
+    // After this transform the part, stock outline box, and toolpath tubes
+    // all share the same Three.js origin.
+    const ox = partBoundsCnc ? partBoundsCnc.min[0] : 0
+    const oy = partBoundsCnc ? partBoundsCnc.min[1] : 0
+    const ozTop = partBoundsCnc ? partBoundsCnc.max[2] : 0   // top of part → Z=0
+
     for (let i = 0; i < n; i += 3) {
-      const x = partPositionsRaw[i]!
-      const y = partPositionsRaw[i + 1]!
-      const z = partPositionsRaw[i + 2]!
-      pos[i] = x
-      pos[i + 1] = z
+      const x = partPositionsRaw[i]! - ox
+      const y = partPositionsRaw[i + 1]! - oy
+      const z = partPositionsRaw[i + 2]! - ozTop  // part top lands at Z=0; rest is negative
+
+      // CNC → Three.js axis remap: X→X, CNC-Z→Three-Y (up), CNC-Y→Three-Z (depth)
+      pos[i]     = x
+      pos[i + 1] = z   // CNC Z (now offset so top=0) → Three.js Y
       pos[i + 2] = y
     }
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
     g.computeVertexNormals()
     return g
-  }, [partPositionsRaw, showPartMesh])
+  }, [partPositionsRaw, showPartMesh, partBoundsCnc])
 
   useEffect(() => {
     const rel = previewMeshRelativePath?.trim()
