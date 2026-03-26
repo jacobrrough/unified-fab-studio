@@ -1,5 +1,5 @@
 import { dialog, ipcMain, shell } from 'electron'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { getAppVersion } from './app-runtime'
 import type { MainIpcWindowContext } from './ipc-context'
 import { newProject, readProjectFile, writeProjectFile } from './project-store'
@@ -86,4 +86,28 @@ export function registerCoreIpc(ctx: MainIpcWindowContext): void {
   })
 
   ipcMain.handle('file:readText', async (_e, p: string) => readFile(p, 'utf-8'))
+
+  ipcMain.handle(
+    'dialog:saveFile',
+    async (
+      _e,
+      filters: { name: string; extensions: string[] }[],
+      defaultPath?: string
+    ) => {
+      const win = ctx.getMainWindow()
+      if (!win) return null
+      const r = await dialog.showSaveDialog(win, {
+        filters: filters.length ? filters : [{ name: 'All', extensions: ['*'] }],
+        ...(defaultPath != null && String(defaultPath).trim() !== ''
+          ? { defaultPath: String(defaultPath).trim() }
+          : {})
+      })
+      if (r.canceled || !r.filePath) return null
+      return r.filePath
+    }
+  )
+
+  ipcMain.handle('file:writeText', async (_e, p: string, content: string) => {
+    await writeFile(p, content, 'utf-8')
+  })
 }

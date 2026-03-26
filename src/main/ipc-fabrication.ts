@@ -1,8 +1,17 @@
 import { app, dialog, ipcMain } from 'electron'
 import { readFile, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { describeCamOperationKind } from './cam-operation-policy'
 import { runCamPipeline } from './cam-runner'
+import { listAllPosts, saveUserPost, readPostContent } from './posts-manager'
+import {
+  deleteMaterial,
+  importMaterialsFile,
+  importMaterialsJson,
+  listAllMaterials,
+  saveMaterial
+} from './materials-manager'
+import { moonrakerCancel, moonrakerPush, moonrakerStatus } from './moonraker-push'
 import {
   deleteUserMachine,
   getMachineById,
@@ -23,6 +32,7 @@ import {
   parseToolsCsv,
   parseToolsJson
 } from './tools-import'
+import { machineProfileWithSummaryFromCps, type CpsImportSummary } from './machine-cps-import'
 import { formatZodError, isENOENT, parseJsonText } from '../shared/file-parse-errors'
 import { emptyManufacture, manufactureFileSchema } from '../shared/manufacture-schema'
 import { toolLibraryFileSchema, type ToolLibraryFile } from '../shared/tool-schema'
@@ -58,6 +68,38 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
 
   ipcMain.handle('stl:stage', async (_e, projectDir: string, stlPath: string) =>
     stageStlForProject(projectDir, stlPath)
+  )
+  ipcMain.handle(
+    'stl:transformForCam',
+    async (
+      _e,
+      payload: {
+        stlPath: string
+        transform: {
+          position: { x: number; y: number; z: number }
+          rotation: { x: number; y: number; z: number }
+          scale: { x: number; y: number; z: number }
+        }
+      }
+    ) => {
+      const { transformBinaryStlWithPlacement } = await import('./binary-stl-placement')
+      const source = await readFile(payload.stlPath)
+      const t = payload.transform
+      const transformed = transformBinaryStlWithPlacement(source, 'as_is', 'y_up', {
+        // ShopModelViewer maps model Y->Three.js Z and model Z->Three.js Y.
+        rotateDeg: [t.rotation.x, t.rotation.z, t.rotation.y],
+        translateMm: [t.position.x, t.position.z, t.position.y],
+        scale: [t.scale.x, t.scale.z, t.scale.y]
+      })
+      if (!transformed.ok) {
+        throw new Error(transformed.detail ? `${transformed.error}: ${transformed.detail}` : transformed.error)
+      }
+      const ext = extname(payload.stlPath) || '.stl'
+      const stem = basename(payload.stlPath, ext)
+      const outPath = join(dirname(payload.stlPath), `${stem}.cam-aligned${ext}`)
+      await writeFile(outPath, transformed.buffer)
+      return outPath
+    }
   )
 
   ipcMain.handle(
@@ -208,7 +250,12 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
       cur = { version: 1, tools: [] }
     }
     const buf = await readFile(filePath)
-    const extra = inferToolRecordsFromFileBuffer(basename(filePath), buf)
+    const name = basename(filePath)
+    const extra = inferToolRecordsFromFileBuffer(name, buf)
+    console.log(`[tools:importFile] file="${name}" size=${buf.length} parsed=${extra.length} tools`)
+    if (extra.length === 0) {
+      console.log(`[tools:importFile] first 500 chars:`, buf.toString('utf-8').slice(0, 500))
+    }
     return mergeToolLibraries(cur, extra)
   })
 
@@ -241,8 +288,16 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
   ipcMain.handle('machineTools:importFile', async (_e, machineId: string, filePath: string) => {
     const cur = await loadMachineToolLibrary(machineId)
     const buf = await readFile(filePath)
-    const extra = inferToolRecordsFromFileBuffer(basename(filePath), buf)
-    return mergeToolLibraries(cur, extra)
+    const name = basename(filePath)
+    const extra = inferToolRecordsFromFileBuffer(name, buf)
+    console.log(`[tools:import] file="${name}" size=${buf.length} parsed=${extra.length} tools`)
+    if (extra.length === 0) {
+      // Dump first 500 chars so we can see the structure
+      console.log(`[tools:import] first 500 chars:`, buf.toString('utf-8').slice(0, 500))
+    }
+    const merged = mergeToolLibraries(cur, extra)
+    await saveMachineToolLibrary(machineId, merged)
+    return merged
   })
 
   ipcMain.handle('machineTools:migrateFromProject', async (_e, machineId: string, projectDir: string) => {
@@ -281,5 +336,112 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
       if (e instanceof ZodError) throw new Error(formatZodError(e, 'manufacture.json (save)'))
       throw e instanceof Error ? e : new Error(String(e))
     }
+  })
+
+  // ── Post-processor management ─────────────────────────────────────────────
+
+  ipcMain.handle('posts:list', async () => listAllPosts())
+
+  ipcMain.handle('posts:save', async (_e, filename: string, content: string) =>
+    saveUserPost(filename, content)
+  )
+
+  ipcMain.handle('posts:read', async (_e, filename: string) => readPostContent(filename))
+
+  ipcMain.handle('posts:uploadFile', async (_e, filePath: string) => {
+    const content = await readFile(filePath, 'utf-8')
+    return saveUserPost(basename(filePath), content)
+  })
+
+  ipcMain.handle('posts:pickAndUpload', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Upload post-processor template',
+      filters: [{ name: 'Handlebars template', extensions: ['hbs'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const filePath = result.filePaths[0]!
+    const content = await readFile(filePath, 'utf-8')
+    return saveUserPost(basename(filePath), content)
+  })
+
+  // ── Moonraker / Creality K2 Plus network push ──────────────────────────────
+
+  ipcMain.handle(
+    'moonraker:push',
+    async (
+      _e,
+      payload: {
+        gcodePath: string
+        printerUrl: string
+        uploadPath?: string
+        startAfterUpload?: boolean
+        timeoutMs?: number
+      }
+    ) => moonrakerPush(payload)
+  )
+
+  ipcMain.handle(
+    'moonraker:status',
+    async (_e, printerUrl: string, timeoutMs?: number) => moonrakerStatus(printerUrl, timeoutMs)
+  )
+
+  ipcMain.handle(
+    'moonraker:cancel',
+    async (_e, printerUrl: string, timeoutMs?: number) => moonrakerCancel(printerUrl, timeoutMs)
+  )
+
+  // ── Material library ─────────────────────────────────────────────────────────
+  ipcMain.handle('materials:list', async () => listAllMaterials())
+  ipcMain.handle('materials:save', async (_e, record) => saveMaterial(record))
+  ipcMain.handle('materials:delete', async (_e, id: string) => deleteMaterial(id))
+  ipcMain.handle('materials:importJson', async (_e, jsonText: string) => importMaterialsJson(jsonText))
+  ipcMain.handle('materials:importFile', async (_e, filePath: string) => importMaterialsFile(filePath))
+  ipcMain.handle('materials:pickAndImport', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Import material library',
+      filters: [{ name: 'Material Library JSON', extensions: ['json'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return importMaterialsFile(result.filePaths[0]!)
+  })
+
+  /**
+   * Read any local file as a base64 string so the renderer can decode it
+   * without needing direct file:// protocol access (which Chromium blocks).
+   */
+  ipcMain.handle('fs:readBase64', async (_e, filePath: string) => {
+    const buf = await readFile(filePath)
+    return buf.toString('base64')
+  })
+
+  // ── CPS post-processor import ─────────────────────────────────────────────
+  ipcMain.handle('machines:importCpsFile', async (_e, filePath: string): Promise<CpsImportSummary> => {
+    const buf = await readFile(filePath)
+    const text = buf.toString('utf-8')
+    const base = basename(filePath)
+    const summary = machineProfileWithSummaryFromCps(base, text)
+    await saveUserMachine(summary.profile)
+    return summary
+  })
+
+  ipcMain.handle('machines:pickAndImportCps', async (): Promise<CpsImportSummary | null> => {
+    const result = await dialog.showOpenDialog({
+      title: 'Import Fusion 360 / HSM Post-Processor',
+      filters: [
+        { name: 'Post-Processor Files', extensions: ['cps'] },
+        { name: 'All Files', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const filePath = result.filePaths[0]!
+    const buf = await readFile(filePath)
+    const text = buf.toString('utf-8')
+    const base = basename(filePath)
+    const summary = machineProfileWithSummaryFromCps(base, text)
+    await saveUserMachine(summary.profile)
+    return summary
   })
 }

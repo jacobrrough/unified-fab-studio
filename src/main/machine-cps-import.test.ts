@@ -27,7 +27,7 @@ function onOpen() {}
     expect(m.id).toBe('bench_mill')
     expect(m.kind).toBe('cnc')
     expect(m.dialect).toBe('grbl')
-    expect(m.postTemplate).toBe('cnc_generic_mm.hbs')
+    expect(m.postTemplate).toBe('cnc_grbl.hbs')
     expect(m.workAreaMm).toEqual({ x: 300, y: 300, z: 120 })
     expect(m.meta?.importedFromCps).toBe(true)
     expect(m.meta?.cpsOriginalBasename).toBe('bench_mill.cps')

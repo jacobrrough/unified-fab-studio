@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawnBounded } from './subprocess-bounded'
 import { copyFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
@@ -26,31 +26,27 @@ export type SliceRequest = {
   curaEngineSettings?: Record<string, string>
 }
 
-function runProcess(
+const CURA_OUTPUT_MAX_BYTES = 12 * 1024 * 1024
+const CURA_TIMEOUT_MS = 900_000
+
+async function runProcess(
   cmd: string,
   args: string[],
   cwd?: string,
   extraEnv?: NodeJS.ProcessEnv
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
+  try {
+    const r = await spawnBounded(cmd, args, {
       cwd,
-      shell: false,
-      env: { ...process.env, ...extraEnv }
+      env: extraEnv,
+      timeoutMs: CURA_TIMEOUT_MS,
+      maxBufferBytes: CURA_OUTPUT_MAX_BYTES
     })
-    let stdout = ''
-    let stderr = ''
-    child.stdout?.on('data', (d) => {
-      stdout += d.toString()
-    })
-    child.stderr?.on('data', (d) => {
-      stderr += d.toString()
-    })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      resolve({ code: code ?? 1, stdout, stderr })
-    })
-  })
+    return { code: r.code ?? 1, stdout: r.stdout, stderr: r.stderr }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { code: 1, stdout: '', stderr: msg }
+  }
 }
 
 /** Pure helper: `-s` list from a merged Cura settings map. */

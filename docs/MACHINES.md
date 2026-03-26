@@ -108,12 +108,103 @@ The **Simulation** panel on **Manufacture** parses posted **G-code** (`G0`/`G1`)
 - In **Utilities → Settings → Paths**, set **CuraEngine.exe** and the **Cura definitions folder** (the directory that contains `fdmprinter.def.json`). The app passes that folder as `CURA_ENGINE_SEARCH_PATH` when spawning CuraEngine. Windows examples and verification steps: [`resources/slicer/README.md`](../resources/slicer/README.md).
 - Always verify **start G-code** (purge, mesh, Z offset) in the slicer definition matches your firmware.
 
+### Network push (Moonraker)
+
+The K2 Plus runs **Klipper** with **Moonraker** for remote control. The app can push G-code and optionally start the print without touching a USB stick:
+
+1. Find the printer’s IP (LCD → Info, or your router’s DHCP table). Write it down — `http://192.168.x.x` or `http://k2plus.local`.
+2. In the **Manufacture** tab, after slicing succeeds, click **Send to Printer…** and enter the Moonraker URL.
+3. Toggle **Start print after upload** if you want the job to begin immediately.
+4. The IPC channel `moonraker:push` uploads to `/server/files/upload` then calls `/printer/print/start`.
+5. **Status polling**: `moonraker:status` reads `/printer/objects/query?print_stats` — state, filename, and progress percentage are returned.
+6. **Cancel**: `moonraker:cancel` calls `/printer/print/cancel`.
+
+**Troubleshooting Moonraker push:**
+
+| Symptom | Check |
+|---------|-------|
+| "Could not connect to printer" | Printer and PC on same network segment; K2 Plus WiFi connected; URL correct (no trailing `/`). |
+| HTTP 401 Unauthorized | Add an API key in `moonraker.conf`; the app does not yet pass an API key automatically — use a trusted network or add key support in `moonraker-push.ts`. |
+| File uploads but print won’t start | Check virtual SD card path — some setups prefix `gcodes/`. Try `uploadPath: "gcodes"` in the payload. |
+| Slow upload on large `.gcode` | Normal — 200 MB+ sliced files take 30–90 s over WiFi. Use Ethernet or reduce print quality for faster testing. |
+
 ---
 
-## Makera desktop CNC
+## Makera Carvera (3-axis desktop)
 
 - Envelope and max feed/accel are conservative defaults in **`resources/machines/makera-desktop.json`** — align with **Makera CAM** or manufacturer specs.
 - Many small routers use **Grbl**-compatible dialect; confirm in Makera documentation if `M3`/`M4`/`G21` differ.
+
+---
+
+## Makera Carvera + 4th Axis Rotary Attachment
+
+Profile: **`makera-carvera-4axis`** (`resources/machines/makera-carvera-4axis.json`).
+
+The Carvera 4th-axis attachment adds a **rotary chuck** (A-axis, rotation around X) mounted on the machine table. This enables:
+- **Cylindrical surface milling** (relief carving, engravings on round stock)
+- **Multi-face indexing** (milling flat faces on round stock: flats, keyways, hex profiles)
+- **Rotary turning-like passes** at multiple angular positions
+
+### 4-axis operation kinds
+
+| Kind | Description | Required params |
+|------|-------------|-----------------|
+| `cnc_4axis_wrapping` | Continuous rotary — wraps a raster or contour path around a cylinder | `cylinderDiameterMm`, `cylinderLengthMm`, `zPassMm`, `wrapMode` (`parallel`\|`contour`) |
+| `cnc_4axis_indexed` | Indexed — lock A at discrete angles; 3-axis pass at each stop | `indexAnglesDeg` (array), `cylinderDiameterMm` |
+
+Both ops route to **`engines/cam/axis4_toolpath.py`** (pure Python, no external CAM library required). Post-processor: **`cnc_4axis_grbl.hbs`** (emits X Z A words for Grbl).
+
+### Critical 4th-axis setup checklist (before any cut)
+
+1. **Rotary attachment mounting** — clamp the rotary unit firmly to the T-slots. Check run-out with a DTI; should be < 0.05 mm for finishing work.
+2. **Stock centring** — workpiece must be centred on the chuck. Off-centre stock crashes the tool on rotation. Verify with the spindle **off** by hand-rotating the chuck.
+3. **A WCS zero** — set A=0° to the left face (or a reference flat). Note in your setup card.
+4. **Cylinder diameter** — measure your actual stock with calipers. Enter `cylinderDiameterMm` in the operation params. Even 1 mm error causes depth inaccuracy.
+5. **Safe Z** — `safeZMm` is the **radial** clearance above the cylinder surface. Set ≥ 5 mm for roughing, ≥ 2 mm for finishing.
+6. **Feeds** — start at 50 % of typical feeds for the first test pass. Rotary ops can have higher effective chip-loads depending on diameter.
+7. **Air cut first** — run the full program with **spindle OFF** at 10 % feedrate override to verify the toolpath clears all clamps and chuck jaws.
+
+### Wiring and firmware notes
+
+- Carvera firmware must have **4-axis (A-axis) enabled**. Check Makera’s firmware release notes and the Carvera Controller app for rotary plugin installation.
+- The A-axis uses the same Grbl extended dialect (`$100`–`$122` for steps/mm and limits). Verify A steps/degree matches the attachment’s stepper/gear ratio in Makera documentation.
+- The post-processor emits `G0 A0` at program end to return the chuck to home. Confirm this is safe before enabling auto-return (in case of cable wrap-up issues).
+
+### Sample `manufacture.json` snippet
+
+```json
+{
+  "version": 1,
+  "setups": [
+    {
+      "id": "setup-rotary",
+      "label": "Rotary — cylindrical relief",
+      "machineId": "makera-carvera-4axis",
+      "wcsNote": "A=0° at left face of cylinder; Z=0 at top of stock surface"
+    }
+  ],
+  "operations": [
+    {
+      "id": "op-rotary-parallel",
+      "kind": "cnc_4axis_wrapping",
+      "label": "Cylindrical parallel finish",
+      "sourceMesh": "assets/part.stl",
+      "params": {
+        "cylinderDiameterMm": 50,
+        "cylinderLengthMm": 80,
+        "zPassMm": -1.5,
+        "stepoverDeg": 3,
+        "feedMmMin": 600,
+        "plungeMmMin": 200,
+        "safeZMm": 8,
+        "toolDiameterMm": 3.175,
+        "wrapMode": "parallel"
+      }
+    }
+  ]
+}
+```
 
 ---
 

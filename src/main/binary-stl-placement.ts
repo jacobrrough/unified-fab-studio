@@ -1,12 +1,12 @@
-/**
- * Binary STL placement / up-axis transform for mesh import.
- * Loaded via dynamic import from mesh-import-registry so the main chunk stays smaller (Vite SSR emit quirk).
- */
-import { isLikelyAsciiStl, iterateBinaryStlTriangles, type Vec3 } from './stl'
+import { isLikelyAsciiStl, iterateBinaryStlTriangles, type Vec3 } from "./stl"
 
-type PlacementMode = 'as_is' | 'center_origin' | 'center_xy_ground_z'
-type UpAxisMode = 'y_up' | 'z_up'
-type TransformMode = { translateMm?: [number, number, number]; rotateDeg?: [number, number, number] }
+type PlacementMode = "as_is" | "center_origin" | "center_xy_ground_z"
+type UpAxisMode = "y_up" | "z_up"
+type TransformMode = {
+  translateMm?: [number, number, number]
+  rotateDeg?: [number, number, number]
+  scale?: [number, number, number]
+}
 
 function zUpToYUpStl(v: Vec3): Vec3 {
   const [x, y, z] = v
@@ -15,6 +15,10 @@ function zUpToYUpStl(v: Vec3): Vec3 {
 
 function addVecStl(a: Vec3, t: readonly [number, number, number]): Vec3 {
   return [a[0] + t[0], a[1] + t[1], a[2] + t[2]]
+}
+
+function mulVecStl(a: Vec3, s: readonly [number, number, number]): Vec3 {
+  return [a[0] * s[0], a[1] * s[1], a[2] * s[2]]
 }
 
 function rotateXYZDeg(v: Vec3, d: readonly [number, number, number]): Vec3 {
@@ -53,7 +57,7 @@ function triangleNormalStl(a: Vec3, b: Vec3, c: Vec3): Vec3 {
 
 function encodeBinaryStlFromTriangles(triangles: Array<[Vec3, Vec3, Vec3]>): Buffer {
   const header = Buffer.alloc(80, 0)
-  header.write('UFS import', 0)
+  header.write("UFS import", 0)
   const count = triangles.length
   const out = Buffer.alloc(84 + count * 50)
   header.copy(out, 0)
@@ -81,10 +85,6 @@ function encodeBinaryStlFromTriangles(triangles: Array<[Vec3, Vec3, Vec3]>): Buf
   return out
 }
 
-/**
- * Apply up-axis fix and placement to a binary STL in memory.
- * ASCII STL is not supported (same limitation as viewport preview).
- */
 export function transformBinaryStlWithPlacement(
   buffer: Buffer,
   placement: PlacementMode,
@@ -92,36 +92,36 @@ export function transformBinaryStlWithPlacement(
   transform?: TransformMode
 ): { ok: true; buffer: Buffer } | { ok: false; error: string; detail?: string } {
   if (buffer.length < 84) {
-    return { ok: false, error: 'stl_too_small' }
+    return { ok: false, error: "stl_too_small" }
   }
   if (isLikelyAsciiStl(buffer)) {
     return {
       ok: false,
-      error: 'ascii_stl_placement',
-      detail: 'Use binary STL for repositioning (ASCII STL not supported).'
+      error: "ascii_stl_placement",
+      detail: "Use binary STL for repositioning (ASCII STL not supported)."
     }
   }
   const triangleCount = buffer.readUInt32LE(80)
   if (triangleCount < 1) {
-    return { ok: false, error: 'empty_stl' }
+    return { ok: false, error: "empty_stl" }
   }
 
-  const mapUp = upAxis === 'z_up' ? zUpToYUpStl : (v: Vec3): Vec3 => [v[0], v[1], v[2]]
+  const mapUp = upAxis === "z_up" ? zUpToYUpStl : (v: Vec3): Vec3 => [v[0], v[1], v[2]]
 
   const tris: Array<[Vec3, Vec3, Vec3]> = []
   const r = iterateBinaryStlTriangles(buffer, triangleCount, (v0, v1, v2) => {
     tris.push([mapUp(v0), mapUp(v1), mapUp(v2)])
   })
   if (r.truncated || r.yielded !== triangleCount) {
-    return { ok: false, error: 'stl_triangle_read_mismatch' }
+    return { ok: false, error: "stl_triangle_read_mismatch" }
   }
 
-  let minX = Infinity,
-    minY = Infinity,
-    minZ = Infinity
-  let maxX = -Infinity,
-    maxY = -Infinity,
-    maxZ = -Infinity
+  let minX = Infinity
+  let minY = Infinity
+  let minZ = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let maxZ = -Infinity
   for (const tri of tris) {
     for (const p of tri) {
       minX = Math.min(minX, p[0])
@@ -136,32 +136,33 @@ export function transformBinaryStlWithPlacement(
   let tx = 0
   let ty = 0
   let tz = 0
-  if (placement === 'center_origin') {
+  if (placement === "center_origin") {
     tx = -((minX + maxX) / 2)
     ty = -((minY + maxY) / 2)
     tz = -((minZ + maxZ) / 2)
-  } else if (placement === 'center_xy_ground_z') {
+  } else if (placement === "center_xy_ground_z") {
     tx = -((minX + maxX) / 2)
     ty = -((minY + maxY) / 2)
     tz = -minZ
   }
 
   const t: [number, number, number] = [tx, ty, tz]
-  let outTris: Array<[Vec3, Vec3, Vec3]> = tris.map(([a, b, c]) => [
-    addVecStl(a, t),
-    addVecStl(b, t),
-    addVecStl(c, t)
-  ])
+  let outTris: Array<[Vec3, Vec3, Vec3]> = tris.map(([a, b, c]) => [addVecStl(a, t), addVecStl(b, t), addVecStl(c, t)])
 
   const rot = transform?.rotateDeg ?? [0, 0, 0]
   const trn = transform?.translateMm ?? [0, 0, 0]
+  const scl = transform?.scale ?? [1, 1, 1]
   const hasRot = Math.abs(rot[0]) > 1e-6 || Math.abs(rot[1]) > 1e-6 || Math.abs(rot[2]) > 1e-6
   const hasTrn = Math.abs(trn[0]) > 1e-6 || Math.abs(trn[1]) > 1e-6 || Math.abs(trn[2]) > 1e-6
-  if (hasRot || hasTrn) {
+  const hasScl = Math.abs(scl[0] - 1) > 1e-6 || Math.abs(scl[1] - 1) > 1e-6 || Math.abs(scl[2] - 1) > 1e-6
+  if (hasRot || hasTrn || hasScl) {
     outTris = outTris.map(([a, b, c]) => {
-      const ra = hasRot ? rotateXYZDeg(a, rot) : a
-      const rb = hasRot ? rotateXYZDeg(b, rot) : b
-      const rc = hasRot ? rotateXYZDeg(c, rot) : c
+      const sa = hasScl ? mulVecStl(a, scl) : a
+      const sb = hasScl ? mulVecStl(b, scl) : b
+      const sc = hasScl ? mulVecStl(c, scl) : c
+      const ra = hasRot ? rotateXYZDeg(sa, rot) : sa
+      const rb = hasRot ? rotateXYZDeg(sb, rot) : sb
+      const rc = hasRot ? rotateXYZDeg(sc, rot) : sc
       if (!hasTrn) return [ra, rb, rc]
       return [addVecStl(ra, trn), addVecStl(rb, trn), addVecStl(rc, trn)]
     })

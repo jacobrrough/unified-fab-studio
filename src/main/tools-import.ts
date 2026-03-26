@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { gunzipSync } from 'node:zlib'
+import { gunzipSync, inflateRawSync } from 'node:zlib'
 import { toolLibraryFileSchema, toolRecordSchema, type ToolLibraryFile, type ToolRecord } from '../shared/tool-schema'
 
 /** Split one CSV line with optional double-quote fields (Fusion exports). */
@@ -130,7 +130,60 @@ export function parseToolsJson(content: string): ToolLibraryFile {
 }
 
 /** Gzip magic; HSM / Fusion sometimes ship libraries gzipped. */
+/**
+ * Extract the first text entry from a ZIP buffer that matches `targetName`.
+ * Handles both STORED (method=0) and DEFLATE (method=8) entries.
+ * Returns null if the file is not a ZIP or the target entry isn't found.
+ */
+function extractZipEntry(buf: Buffer, targetName: string): string | null {
+  const SIG = 0x04034b50 // local file header
+  let pos = 0
+  while (pos + 30 <= buf.length) {
+    if (buf.readUInt32LE(pos) !== SIG) break
+    const method    = buf.readUInt16LE(pos + 8)
+    const cmpSize   = buf.readUInt32LE(pos + 18)
+    const fnLen     = buf.readUInt16LE(pos + 26)
+    const exLen     = buf.readUInt16LE(pos + 28)
+    const dataStart = pos + 30 + fnLen + exLen
+    const entryName = buf.slice(pos + 30, pos + 30 + fnLen).toString('utf-8')
+    if (entryName === targetName) {
+      const compressed = buf.slice(dataStart, dataStart + cmpSize)
+      if (method === 0) return compressed.toString('utf-8')            // stored
+      if (method === 8) return inflateRawSync(compressed).toString('utf-8') // deflate
+      return null // unsupported compression
+    }
+    pos = dataStart + cmpSize
+  }
+  return null
+}
+
 export function bufferToUtf8ToolXml(buf: Buffer): string {
+  // ZIP archive (magic PK\x03\x04) — Fusion 360 .tools files are ZIPs containing tools.json
+  if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) {
+    const json = extractZipEntry(buf, 'tools.json') ?? extractZipEntry(buf, 'Tools.json')
+    if (json) return json
+    // Scan all entries for any .json file
+    const SIG = 0x04034b50
+    let pos = 0
+    while (pos + 30 <= buf.length) {
+      if (buf.readUInt32LE(pos) !== SIG) break
+      const method    = buf.readUInt16LE(pos + 8)
+      const cmpSize   = buf.readUInt32LE(pos + 18)
+      const fnLen     = buf.readUInt16LE(pos + 26)
+      const exLen     = buf.readUInt16LE(pos + 28)
+      const dataStart = pos + 30 + fnLen + exLen
+      const entryName = buf.slice(pos + 30, pos + 30 + fnLen).toString('utf-8')
+      if (entryName.endsWith('.json')) {
+        const compressed = buf.slice(dataStart, dataStart + cmpSize)
+        try {
+          if (method === 0) return compressed.toString('utf-8')
+          if (method === 8) return inflateRawSync(compressed).toString('utf-8')
+        } catch { /* skip */ }
+      }
+      pos = dataStart + cmpSize
+    }
+  }
+  // Gzip
   if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
     try {
       return gunzipSync(buf).toString('utf-8')
@@ -242,7 +295,69 @@ export function parseHsmToolLibraryXml(xml: string): ToolRecord[] {
 }
 
 /**
- * Load tool rows from a library **file** (CSV, JSON, gzipped XML `.hsmlib` / `.tpgz`, `.tp.xml`, `.xml`).
+ * Fusion 360 `.tools` JSON format.
+ * Structure: { data: { tools: [ { type, description, NFLUTES, geometry: { DC, OAL, LCF } } ] } }
+ * DC = diameter (mm), OAL = overall length, LCF = cutting length / stickout.
+ */
+export function parseFusionToolsFile(content: string): ToolRecord[] {
+  let data: unknown
+  try { data = JSON.parse(content) } catch { return [] }
+
+  // Locate the tools array wherever it lives in the structure
+  const findTools = (obj: unknown): unknown[] | null => {
+    if (!obj || typeof obj !== 'object') return null
+    if (Array.isArray(obj)) return obj
+    const rec = obj as Record<string, unknown>
+    if (Array.isArray(rec.tools)) return rec.tools as unknown[]
+    for (const v of Object.values(rec)) {
+      const found = findTools(v)
+      if (found) return found
+    }
+    return null
+  }
+
+  const toolsArr = findTools(data)
+  if (!toolsArr) return []
+
+  const out: ToolRecord[] = []
+  for (const raw of toolsArr) {
+    if (!raw || typeof raw !== 'object') continue
+    const t = raw as Record<string, unknown>
+    const geo = (t.geometry ?? {}) as Record<string, unknown>
+
+    const dia = Number(geo['DC'] ?? geo['diameter'] ?? geo['Diameter'] ?? 0)
+    if (!Number.isFinite(dia) || dia <= 0) continue
+
+    const name = String(t.description ?? t.name ?? t['product-id'] ?? `Tool Ø${dia}`)
+    const fluteCount = t['NFLUTES'] != null ? Number(t['NFLUTES']) :
+      t['numberOfFlutes'] != null ? Number(t['numberOfFlutes']) : undefined
+    const oal = Number(geo['OAL'] ?? geo['overall-length'] ?? 0)
+    const lcf = Number(geo['LCF'] ?? geo['flute-length'] ?? geo['SHOULDER-LEN'] ?? 0)
+
+    const rawType = String(t.type ?? '').toLowerCase()
+    const type: ToolRecord['type'] =
+      rawType.includes('ball') ? 'ball' :
+      rawType.includes('drill') || rawType.includes('spot') ? 'drill' :
+      rawType.includes('face') ? 'face' :
+      rawType.includes('chamfer') || rawType.includes('vbit') || rawType.includes('v-bit') ? 'vbit' :
+      'endmill'
+
+    out.push(toolRecordSchema.parse({
+      id: randomUUID(),
+      name: name.trim() || `Tool Ø${dia}`,
+      type,
+      diameterMm: dia,
+      fluteCount: Number.isFinite(fluteCount) && (fluteCount ?? 0) > 0 ? fluteCount : undefined,
+      stickoutMm: Number.isFinite(lcf) && lcf > 0 ? lcf : undefined,
+      lengthMm: Number.isFinite(oal) && oal > 0 ? oal : undefined,
+      source: 'fusion'
+    }))
+  }
+  return out
+}
+
+/**
+ * Load tool rows from a library **file** (CSV, JSON, Fusion `.tools`, gzipped XML `.hsmlib` / `.tpgz`, `.tp.xml`, `.xml`).
  */
 export function inferToolRecordsFromFileBuffer(fileName: string, buf: Buffer): ToolRecord[] {
   const lower = fileName.toLowerCase()
@@ -262,6 +377,21 @@ export function inferToolRecordsFromFileBuffer(fileName: string, buf: Buffer): T
     let t = parseToolsCsv(txt)
     if (t.length === 0) t = parseFusionToolsCsv(txt)
     return t
+  }
+
+  // Fusion 360 .tools files — JSON with nested data.tools array (often gzip-wrapped; header may name tools.json)
+  if (ext === 'tools') {
+    const txt = bufferToUtf8ToolXml(buf)
+    // Try the Fusion .tools JSON format first
+    const fromFusion = parseFusionToolsFile(txt)
+    if (fromFusion.length > 0) return fromFusion
+    // Fallback: try as a plain JSON tool library
+    try {
+      const lib = parseToolsJson(txt)
+      if (lib.tools.length > 0) return lib.tools
+    } catch { /* */ }
+    // Last resort: treat as XML (some older exports)
+    return parseHsmToolLibraryXml(txt)
   }
 
   const xmlByName =
@@ -322,5 +452,5 @@ export function mergeToolLibraries(base: ToolLibraryFile, extra: ToolRecord[]): 
     seen.add(key)
     tools.push(t)
   }
-  return { version: 1, tools }
+  return toolLibraryFileSchema.parse({ ...base, tools })
 }

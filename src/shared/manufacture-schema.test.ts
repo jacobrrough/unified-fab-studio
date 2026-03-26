@@ -130,7 +130,9 @@ describe('isManufactureCncOperationKind', () => {
     'cnc_adaptive',
     'cnc_waterline',
     'cnc_raster',
-    'cnc_pencil'
+    'cnc_pencil',
+    'cnc_4axis_wrapping',
+    'cnc_4axis_indexed'
   ]
 
   it('is true for every cnc_* manufacture kind', () => {
@@ -142,6 +144,53 @@ describe('isManufactureCncOperationKind', () => {
   it('is false for FDM and export kinds', () => {
     expect(isManufactureCncOperationKind('fdm_slice')).toBe(false)
     expect(isManufactureCncOperationKind('export_stl')).toBe(false)
+  })
+})
+
+describe('4-axis operation kinds', () => {
+  it('parses cnc_4axis_wrapping operation', () => {
+    const m = manufactureFileSchema.parse({
+      version: 1,
+      setups: [],
+      operations: [
+        {
+          id: 'rotary-1',
+          kind: 'cnc_4axis_wrapping',
+          label: 'Cylindrical parallel finish',
+          params: {
+            cylinderDiameterMm: 50,
+            cylinderLengthMm: 80,
+            zPassMm: -1.5,
+            stepoverDeg: 3,
+            feedMmMin: 600,
+            wrapMode: 'parallel'
+          }
+        }
+      ]
+    })
+    expect(m.operations[0]!.kind).toBe('cnc_4axis_wrapping')
+    expect(m.operations[0]!.params!['cylinderDiameterMm']).toBe(50)
+  })
+
+  it('parses cnc_4axis_indexed operation', () => {
+    const m = manufactureFileSchema.parse({
+      version: 1,
+      setups: [],
+      operations: [
+        {
+          id: 'indexed-1',
+          kind: 'cnc_4axis_indexed',
+          label: 'Hex flats — 6 faces',
+          params: {
+            indexAnglesDeg: [0, 60, 120, 180, 240, 300],
+            cylinderDiameterMm: 30,
+            zPassMm: -2
+          }
+        }
+      ]
+    })
+    expect(m.operations[0]!.kind).toBe('cnc_4axis_indexed')
+    expect(m.operations[0]!.params!['indexAnglesDeg']).toEqual([0, 60, 120, 180, 240, 300])
   })
 })
 

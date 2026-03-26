@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawnBounded } from '../subprocess-bounded'
 import { copyFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getEnginesRoot } from '../paths'
@@ -42,30 +42,37 @@ export async function importStlToProjectAssets(stlPath: string, projectAssetsDir
   return { ok: true, stlPath: dest }
 }
 
+const PYTHON_JSON_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
+/** Default wall-clock cap for CadQuery / mesh / kernel Python helpers (STEP can be slow). */
+const PYTHON_JSON_DEFAULT_TIMEOUT_MS = 600_000
+
 export async function runPythonJson(
   pythonPath: string,
   args: string[],
-  cwd: string
+  cwd: string,
+  opts?: { timeoutMs?: number | null; maxBufferBytes?: number }
 ): Promise<{ code: number | null; json?: Record<string, unknown> }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(pythonPath, args, { cwd, shell: false })
-    let out = ''
-    child.stdout?.on('data', (d) => {
-      out += d.toString()
+  const timeoutMs = opts?.timeoutMs !== undefined ? opts.timeoutMs : PYTHON_JSON_DEFAULT_TIMEOUT_MS
+  try {
+    const r = await spawnBounded(pythonPath, args, {
+      cwd,
+      timeoutMs: timeoutMs === null ? null : timeoutMs,
+      maxBufferBytes: opts?.maxBufferBytes ?? PYTHON_JSON_OUTPUT_MAX_BYTES
     })
-    child.stderr?.on('data', (d) => {
-      out += d.toString()
-    })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      let json: Record<string, unknown> | undefined
-      try {
-        const line = out.trim().split('\n').filter(Boolean).pop()
-        if (line) json = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        json = undefined
-      }
-      resolve({ code, json })
-    })
-  })
+    const out = r.stdout + r.stderr
+    let json: Record<string, unknown> | undefined
+    try {
+      const line = out.trim().split('\n').filter(Boolean).pop()
+      if (line) json = JSON.parse(line) as Record<string, unknown>
+    } catch {
+      json = undefined
+    }
+    return { code: r.code, json }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return {
+      code: 1,
+      json: { ok: false, error: 'python_run_failed', detail: msg }
+    }
+  }
 }

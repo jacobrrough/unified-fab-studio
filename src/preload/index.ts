@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AppSettings, ImportHistoryEntry, ProjectFile } from '../shared/project-schema'
 import type { MachineProfile } from '../shared/machine-schema'
+import type { CpsImportSummary } from '../main/machine-cps-import'
 import type {
   AssemblyComponent,
   AssemblyFile,
@@ -14,6 +15,7 @@ import type { PartFeaturesFile } from '../shared/part-features-schema'
 import type { ToolLibraryFile } from '../shared/tool-schema'
 import type { DrawingFile } from '../shared/drawing-sheet-schema'
 import type { MeshImportPlacement, MeshImportTransform, MeshImportUpAxis } from '../shared/mesh-import-placement'
+import type { MaterialRecord } from '../shared/material-schema'
 
 export type Api = {
   appGetVersion: () => Promise<string>
@@ -24,6 +26,8 @@ export type Api = {
   machinesImportJson: (text: string) => Promise<MachineProfile>
   machinesImportFile: (filePath: string) => Promise<MachineProfile>
   machinesExportUser: (machineId: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+  machinesImportCpsFile: (filePath: string) => Promise<CpsImportSummary>
+  machinesPickAndImportCps: () => Promise<CpsImportSummary | null>
   settingsGet: () => Promise<AppSettings>
   settingsSet: (partial: Partial<AppSettings>) => Promise<AppSettings>
   projectOpenDir: () => Promise<string | null>
@@ -48,6 +52,14 @@ export type Api = {
     | { ok: false; canceled?: boolean; error: string }
   >
   stlStage: (projectDir: string, stlPath: string) => Promise<string>
+  stlTransformForCam: (payload: {
+    stlPath: string
+    transform: {
+      position: { x: number; y: number; z: number }
+      rotation: { x: number; y: number; z: number }
+      scale: { x: number; y: number; z: number }
+    }
+  }) => Promise<string>
   sliceCura: (payload: {
     stlPath: string
     outPath: string
@@ -203,6 +215,89 @@ export type Api = {
     filename: string,
     base64: string
   ) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
+
+  // ── Post-processor management ─────────────────────────────────────────────
+
+  postsList: () => Promise<
+    Array<{ filename: string; path: string; source: 'bundled' | 'user'; preview: string }>
+  >
+  postsSave: (filename: string, content: string) => Promise<{
+    filename: string; path: string; source: 'bundled' | 'user'; preview: string
+  }>
+  postsRead: (filename: string) => Promise<string>
+  postsUploadFile: (filePath: string) => Promise<{
+    filename: string; path: string; source: 'bundled' | 'user'; preview: string
+  }>
+  postsPickAndUpload: () => Promise<{
+    filename: string; path: string; source: 'bundled' | 'user'; preview: string
+  } | null>
+
+  // ── Material library ──────────────────────────────────────────────────────
+
+  materialsList: () => Promise<MaterialRecord[]>
+  materialsSave: (record: MaterialRecord) => Promise<MaterialRecord>
+  materialsDelete: (id: string) => Promise<boolean>
+  materialsImportJson: (jsonText: string) => Promise<MaterialRecord[]>
+  materialsImportFile: (filePath: string) => Promise<MaterialRecord[]>
+  materialsPickAndImport: () => Promise<MaterialRecord[] | null>
+
+  // ── File system helpers ────────────────────────────────────────────────────
+
+  /**
+   * Read any local file and return its contents as a base64-encoded string.
+   * Use this in the renderer instead of fetch('file://...') which Chromium blocks.
+   */
+  fsReadBase64: (filePath: string) => Promise<string>
+  /** Show a native save-file dialog; returns the chosen path or null if cancelled. */
+  dialogSaveFile: (
+    filters: { name: string; extensions: string[] }[],
+    defaultPath?: string
+  ) => Promise<string | null>
+  /** Write UTF-8 text to a file path (obtained from dialogSaveFile or elsewhere). */
+  fsWriteText: (filePath: string, content: string) => Promise<void>
+
+  // ── Moonraker / Creality K2 Plus network push ──────────────────────────────
+
+  /**
+   * Upload a G-code file to a Moonraker (Klipper) printer over HTTP and
+   * optionally start the print. Uses the Creality K2 Plus Moonraker REST API.
+   *
+   * @param payload.printerUrl  e.g. "http://192.168.1.50" or "http://k2plus.local"
+   * @param payload.gcodePath   Absolute path to the generated .gcode file on disk
+   * @param payload.startAfterUpload  If true, send POST /printer/print/start
+   */
+  moonrakerPush: (payload: {
+    gcodePath: string
+    printerUrl: string
+    uploadPath?: string
+    startAfterUpload?: boolean
+    timeoutMs?: number
+  }) => Promise<
+    | { ok: true; filename: string; uploadedPath: string; printStarted: boolean; printerUrl: string }
+    | { ok: false; error: string; detail?: string }
+  >
+
+  /** Poll current print state from a Moonraker printer. */
+  moonrakerStatus: (
+    printerUrl: string,
+    timeoutMs?: number
+  ) => Promise<
+    | {
+        ok: true
+        state: 'standby' | 'printing' | 'paused' | 'complete' | 'cancelled' | 'error' | 'unknown'
+        filename?: string
+        progress?: number
+        etaSeconds?: number
+        rawState?: string
+      }
+    | { ok: false; error: string; detail?: string }
+  >
+
+  /** Cancel the current print job via Moonraker. */
+  moonrakerCancel: (
+    printerUrl: string,
+    timeoutMs?: number
+  ) => Promise<{ ok: boolean; error?: string }>
 }
 
 const api: Api = {
@@ -214,6 +309,8 @@ const api: Api = {
   machinesImportJson: (text) => ipcRenderer.invoke('machines:importJson', text),
   machinesImportFile: (filePath) => ipcRenderer.invoke('machines:importFile', filePath),
   machinesExportUser: (machineId) => ipcRenderer.invoke('machines:exportUser', machineId),
+  machinesImportCpsFile: (filePath) => ipcRenderer.invoke('machines:importCpsFile', filePath),
+  machinesPickAndImportCps: () => ipcRenderer.invoke('machines:pickAndImportCps'),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (partial) => ipcRenderer.invoke('settings:set', partial),
   projectOpenDir: () => ipcRenderer.invoke('project:openDir'),
@@ -225,6 +322,7 @@ const api: Api = {
   dialogOpenFiles: (filters, defaultPath) => ipcRenderer.invoke('dialog:openFiles', filters, defaultPath),
   drawingExport: (payload) => ipcRenderer.invoke('drawing:export', payload),
   stlStage: (projectDir, stlPath) => ipcRenderer.invoke('stl:stage', projectDir, stlPath),
+  stlTransformForCam: (payload) => ipcRenderer.invoke('stl:transformForCam', payload),
   sliceCura: (payload) => ipcRenderer.invoke('slice:cura', payload),
   camRun: (payload) => ipcRenderer.invoke('cam:run', payload),
   cadImportStl: (projectDir, stlPath) => ipcRenderer.invoke('cad:importStl', projectDir, stlPath),
@@ -277,7 +375,32 @@ const api: Api = {
   manufactureLoad: (projectDir) => ipcRenderer.invoke('manufacture:load', projectDir),
   manufactureSave: (projectDir, json) => ipcRenderer.invoke('manufacture:save', projectDir, json),
   drawingLoad: (projectDir) => ipcRenderer.invoke('drawing:load', projectDir),
-  drawingSave: (projectDir, json) => ipcRenderer.invoke('drawing:save', projectDir, json)
+  drawingSave: (projectDir, json) => ipcRenderer.invoke('drawing:save', projectDir, json),
+
+  // ── Post-processor management ──────────────────────────────────────────────
+  postsList: () => ipcRenderer.invoke('posts:list'),
+  postsSave: (filename, content) => ipcRenderer.invoke('posts:save', filename, content),
+  postsRead: (filename) => ipcRenderer.invoke('posts:read', filename),
+  postsUploadFile: (filePath) => ipcRenderer.invoke('posts:uploadFile', filePath),
+  postsPickAndUpload: () => ipcRenderer.invoke('posts:pickAndUpload'),
+
+  // ── Material library ──────────────────────────────────────────────────────
+  materialsList: () => ipcRenderer.invoke('materials:list'),
+  materialsSave: (record) => ipcRenderer.invoke('materials:save', record),
+  materialsDelete: (id) => ipcRenderer.invoke('materials:delete', id),
+  materialsImportJson: (jsonText) => ipcRenderer.invoke('materials:importJson', jsonText),
+  materialsImportFile: (filePath) => ipcRenderer.invoke('materials:importFile', filePath),
+  materialsPickAndImport: () => ipcRenderer.invoke('materials:pickAndImport'),
+
+  // ── File system helpers ────────────────────────────────────────────────────
+  fsReadBase64: (filePath) => ipcRenderer.invoke('fs:readBase64', filePath),
+  dialogSaveFile: (filters, defaultPath) => ipcRenderer.invoke('dialog:saveFile', filters, defaultPath),
+  fsWriteText: (filePath, content) => ipcRenderer.invoke('file:writeText', filePath, content),
+
+  // ── Moonraker / Creality K2 Plus network push ──────────────────────────────
+  moonrakerPush: (payload) => ipcRenderer.invoke('moonraker:push', payload),
+  moonrakerStatus: (printerUrl, timeoutMs) => ipcRenderer.invoke('moonraker:status', printerUrl, timeoutMs),
+  moonrakerCancel: (printerUrl, timeoutMs) => ipcRenderer.invoke('moonraker:cancel', printerUrl, timeoutMs)
 }
 
 contextBridge.exposeInMainWorld('fab', api)

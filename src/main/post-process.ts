@@ -18,6 +18,9 @@ function dialectSnippets(dialect: MachineProfile['dialect']): { on: string; off:
   switch (dialect) {
     case 'grbl':
       return { on: 'M3 S12000', off: 'M5', units: 'G21' }
+    case 'grbl_4axis':
+      // Carvera with 4th-axis: confirm actual RPM range in Makera docs
+      return { on: 'M3 S18000', off: 'M5', units: 'G21' }
     case 'mach3':
       return { on: 'M3', off: 'M5', units: 'G21' }
     default:

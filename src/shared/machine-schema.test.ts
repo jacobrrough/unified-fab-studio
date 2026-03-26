@@ -40,4 +40,37 @@ describe('machineProfileSchema', () => {
     })
     expect(m.meta).toMatchObject({ importedFromCps: true, cpsOriginalBasename: 'foo.cps' })
   })
+
+  it('parses 4-axis machine profile with axisCount and aAxisRangeDeg', () => {
+    const fourAxis = {
+      ...minimalCnc,
+      id: 'makera-carvera-4axis',
+      name: 'Makera Carvera (4th Axis)',
+      postTemplate: 'cnc_4axis_grbl.hbs',
+      dialect: 'grbl_4axis' as const,
+      axisCount: 4,
+      aAxisRangeDeg: 360,
+      aAxisOrientation: 'x' as const
+    }
+    const m = machineProfileSchema.parse(fourAxis)
+    expect(m.axisCount).toBe(4)
+    expect(m.aAxisRangeDeg).toBe(360)
+    expect(m.aAxisOrientation).toBe('x')
+    expect(m.dialect).toBe('grbl_4axis')
+  })
+
+  it('rejects axisCount below 3', () => {
+    expect(() => machineProfileSchema.parse({ ...minimalCnc, axisCount: 2 })).toThrow()
+  })
+
+  it('rejects unknown aAxisOrientation', () => {
+    expect(() =>
+      machineProfileSchema.parse({ ...minimalCnc, axisCount: 4, aAxisOrientation: 'z' as never })
+    ).toThrow()
+  })
+
+  it('allows grbl_4axis dialect', () => {
+    const m = machineProfileSchema.parse({ ...minimalCnc, dialect: 'grbl_4axis' as const })
+    expect(m.dialect).toBe('grbl_4axis')
+  })
 })

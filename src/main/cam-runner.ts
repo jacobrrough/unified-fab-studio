@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawnBounded } from './subprocess-bounded'
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { MachineProfile } from '../shared/machine-schema'
@@ -15,6 +15,18 @@ import { resolvePencilStepoverMm } from '../shared/cam-cut-params'
 import { getEnginesRoot } from './paths'
 import { renderPost } from './post-process'
 import { collectBinaryStlTriangles, isLikelyAsciiStl, parseBinaryStl } from './stl'
+
+function createCamDebugPhaseLogger(): (label: string) => void {
+  const on = process.env.DEBUG_CAM === '1' || process.env.DEBUG_CAM === 'true'
+  if (!on) return () => {}
+  const t0 = Date.now()
+  let last = t0
+  return (label: string) => {
+    const now = Date.now()
+    console.error(`[DEBUG_CAM] ${label}: +${now - last}ms (total ${now - t0}ms)`)
+    last = now
+  }
+}
 
 export type CamJobConfig = {
   stlPath: string
@@ -122,8 +134,8 @@ export async function readStlBufferForCam(stlPath: string): Promise<ReadStlBuffe
 /** OpenCAMLib strategy string passed to `engines/cam/ocl_toolpath.py`. */
 export function manufactureKindUsesOclStrategy(kind: string | undefined): 'waterline' | 'adaptive_waterline' | 'raster' | null {
   if (kind === 'cnc_waterline') return 'waterline'
-  if (kind === 'cnc_adaptive') return 'adaptive_waterline'
-  if (kind === 'cnc_raster' || kind === 'cnc_pencil') return 'raster'
+  if (kind === 'cnc_adaptive' || kind === 'cnc_3d_rough') return 'adaptive_waterline'
+  if (kind === 'cnc_raster' || kind === 'cnc_pencil' || kind === 'cnc_3d_finish') return 'raster'
   return null
 }
 
@@ -278,31 +290,39 @@ export function shouldAppendFinalPocketFinishPass(input: { finishPass: boolean; 
   return input.finishPass && !input.finishEachDepth
 }
 
+const CAM_PYTHON_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
+
 async function runPythonScript(
   scriptRelative: string,
   cfgPath: string,
   pythonPath: string,
-  appRoot: string
+  appRoot: string,
+  timeoutMs = 60_000
 ): Promise<{ code: number | null; stdout: string }> {
   const script = join(getEnginesRoot(), 'cam', scriptRelative)
-  return new Promise((resolve, reject) => {
-    const child = spawn(pythonPath, [script, cfgPath], {
+  try {
+    const r = await spawnBounded(pythonPath, [script, cfgPath], {
       cwd: appRoot,
-      shell: false
+      timeoutMs,
+      maxBufferBytes: CAM_PYTHON_OUTPUT_MAX_BYTES
     })
-    let stdout = ''
-    let stderr = ''
-    child.stdout?.on('data', (d) => {
-      stdout += d.toString()
-    })
-    child.stderr?.on('data', (d) => {
-      stderr += d.toString()
-    })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      resolve({ code, stdout: stdout + stderr })
-    })
-  })
+    return { code: r.code, stdout: r.stdout + r.stderr }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('timed out')) {
+      throw new Error(
+        `Python script '${scriptRelative}' timed out after ${timeoutMs / 1000}s. ` +
+          `Check that '${pythonPath}' is a valid Python 3 executable (set it in Utilities → Settings → Paths).`
+      )
+    }
+    if (msg.includes('maxBufferBytes')) {
+      throw new Error(
+        `Python script '${scriptRelative}' produced excessive output; CAM aborted. ` +
+          `If this persists, check for debug prints in the engine script.`
+      )
+    }
+    throw e
+  }
 }
 
 async function tryOclToolpath(job: CamJobConfig, strategy: string): Promise<{
@@ -477,12 +497,125 @@ function point2dList(v: unknown): [number, number][] {
 }
 
 /**
+ * Whether the operation kind routes to the 4-axis Python engine (`axis4_toolpath.py`).
+ * These ops require `axisCount >= 4` on the machine profile.
+ */
+export function manufactureKindUses4AxisEngine(kind: string | undefined): boolean {
+  return kind === 'cnc_4axis_wrapping' || kind === 'cnc_4axis_indexed'
+}
+
+/**
  * CAM pipeline: for `cnc_waterline` / `cnc_adaptive` / `cnc_raster` / `cnc_pencil`, try OpenCAMLib → toolpath lines → post.
  * `cnc_pencil` uses the **raster** OCL strategy with a tighter stepover (`resolvePencilStepoverMm`).
+ * `cnc_4axis_wrapping` / `cnc_4axis_indexed` route to the dedicated `axis4_toolpath.py` engine.
  * Fallbacks: parallel finish (waterline/adaptive) or mesh / ortho raster (raster + pencil); other kinds use parallel finish.
  */
 export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
+  const dbg = createCamDebugPhaseLogger()
+  dbg('runCamPipeline:start')
   await mkdir(dirname(job.outputGcodePath), { recursive: true })
+
+  // ── 4-axis operations ──────────────────────────────────────────────────────
+  if (manufactureKindUses4AxisEngine(job.operationKind)) {
+    const p = job.operationParams ?? {}
+    const axis4Strategy = job.operationKind === 'cnc_4axis_wrapping' ? '4axis_wrapping' : '4axis_indexed'
+
+    // Validate machine supports 4-axis
+    const axisCount = (job.machine as { axisCount?: number }).axisCount ?? 3
+    if (axisCount < 4) {
+      return {
+        ok: false,
+        error: `Operation '${job.operationKind}' requires a machine with axisCount ≥ 4.`,
+        hint: `The selected machine profile '${job.machine.name}' is configured as a ${axisCount}-axis machine. Switch to the 'Makera Carvera (4th Axis)' profile or another profile with axisCount: 4.`
+      }
+    }
+
+    // Write axis4 config JSON
+    const axis4CfgPath = job.outputGcodePath.replace(/\.gcode$/i, '-axis4-cfg.json')
+    const axis4OutPath = job.outputGcodePath.replace(/\.gcode$/i, '-axis4-out.json')
+
+    const axis4Cfg: Record<string, unknown> = {
+      strategy: axis4Strategy,
+      toolpathJsonPath: axis4OutPath,
+      cylinderDiameterMm: typeof p['cylinderDiameterMm'] === 'number' ? p['cylinderDiameterMm'] : 50,
+      cylinderLengthMm: typeof p['cylinderLengthMm'] === 'number' ? p['cylinderLengthMm'] : 100,
+      zPassMm: job.zPassMm,
+      stepoverDeg: typeof p['stepoverDeg'] === 'number' ? p['stepoverDeg'] : 5,
+      feedMmMin: job.feedMmMin,
+      plungeMmMin: job.plungeMmMin,
+      safeZMm: job.safeZMm,
+      toolDiameterMm: job.toolDiameterMm ?? 3.175,
+      aAxisOrientation: (job.machine as { aAxisOrientation?: string }).aAxisOrientation ?? 'x',
+      wrapMode: typeof p['wrapMode'] === 'string' ? p['wrapMode'] : 'parallel',
+      ...(p['contourPoints'] ? { contourPoints: p['contourPoints'] } : {}),
+      ...(p['indexAnglesDeg'] ? { indexAnglesDeg: p['indexAnglesDeg'] } : {})
+    }
+    await writeFile(axis4CfgPath, JSON.stringify(axis4Cfg), 'utf-8')
+
+    let pyResult: { code: number | null; stdout: string }
+    try {
+      dbg('4axis:python_start')
+      pyResult = await runPythonScript('axis4_toolpath.py', axis4CfgPath, job.pythonPath, job.appRoot)
+      dbg('4axis:python_end')
+    } catch (spawnErr) {
+      const spawnMsg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr)
+      return {
+        ok: false,
+        error: spawnMsg.includes('timed out') ? spawnMsg : `Failed to spawn Python for 4-axis toolpath: ${spawnMsg}`,
+        hint: `Check that '${job.pythonPath}' is a valid Python 3 executable. On Windows use 'python' (not 'python3') or set the full path in Utilities → Settings → Paths.`
+      }
+    }
+
+    if (pyResult.code !== 0) {
+      let detail = pyResult.stdout.trim()
+      try {
+        const parsed = JSON.parse(pyResult.stdout.split('\n').find(l => l.trim().startsWith('{')) ?? '{}')
+        detail = parsed.detail ?? parsed.error ?? detail
+      } catch { /* ignore */ }
+      return {
+        ok: false,
+        error: `4-axis engine failed (exit ${pyResult.code}).`,
+        hint: detail || 'Check Python path, cylinder diameter, and operation params in manufacture.json.'
+      }
+    }
+
+    let axis4Lines: string[] = []
+    try {
+      const outJson = await readFile(axis4OutPath, 'utf-8')
+      const parsed = JSON.parse(outJson) as { ok: boolean; toolpathLines?: string[] }
+      if (parsed.ok && Array.isArray(parsed.toolpathLines)) {
+        axis4Lines = parsed.toolpathLines
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        error: 'Could not read 4-axis toolpath output.',
+        hint: e instanceof Error ? e.message : String(e)
+      }
+    }
+
+    if (axis4Lines.length === 0) {
+      return {
+        ok: false,
+        error: '4-axis toolpath is empty.',
+        hint: 'Check cylinderDiameterMm, cylinderLengthMm, and zPassMm. For indexed mode ensure indexAnglesDeg is a non-empty array.'
+      }
+    }
+
+    dbg('4axis:post_start')
+    const gcode = await renderPost(job.resourcesRoot, job.machine, axis4Lines, {
+      workCoordinateIndex: job.workCoordinateIndex
+    })
+    await writeFile(job.outputGcodePath, gcode, 'utf-8')
+    dbg('4axis:done')
+    return {
+      ok: true,
+      gcode,
+      usedEngine: 'builtin',
+      engine: { requestedEngine: 'builtin', usedEngine: 'builtin', fallbackApplied: false },
+      hint: `4-axis toolpath (${axis4Strategy}) posted. ${UNVERIFIED} Run an air cut with spindle OFF before any real cut. Confirm cylinder diameter and A WCS home (docs/MACHINES.md).`
+    }
+  }
 
   if (job.operationKind === 'cnc_contour' || job.operationKind === 'cnc_pocket' || job.operationKind === 'cnc_drill') {
     const valid = validate2dOperationGeometry(job.operationKind, job.operationParams)
@@ -598,10 +731,12 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
         }
       }
     }
+    dbg('2d:post_start')
     const gcode = await renderPost(job.resourcesRoot, job.machine, lines, {
       workCoordinateIndex: job.workCoordinateIndex
     })
     await writeFile(job.outputGcodePath, gcode, 'utf-8')
+    dbg('2d:done')
     const base2dHint =
       '2D path posted from operation geometry params (`contourPoints` / `drillPoints`). G-code is unverified until post/machine checks (docs/MACHINES.md).'
     return {
@@ -617,7 +752,9 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
     }
   }
 
+  dbg('stl:read_start')
   const stlLoad = await readStlBufferForCam(job.stlPath)
+  dbg('stl:read_done')
   if (!stlLoad.ok) return stlLoad
   const meshBuf = stlLoad.buf
 
@@ -631,16 +768,29 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
             operationParams: job.operationParams
           })
         }
+      : job.operationKind === 'cnc_3d_finish'
+      ? {
+          // 3D finish: use finishStepoverMm if provided (overrides stepoverMm for tighter passes)
+          ...job,
+          stepoverMm:
+            typeof job.operationParams?.finishStepoverMm === 'number' && job.operationParams.finishStepoverMm > 0
+              ? job.operationParams.finishStepoverMm
+              : job.stepoverMm
+        }
       : job
 
   const oclStrategy = manufactureKindUsesOclStrategy(camJob.operationKind)
   if (oclStrategy) {
+    dbg('ocl:start')
     const ocl = await tryOclToolpath(camJob, oclStrategy)
+    dbg(ocl.ok && ocl.toolpathLines && ocl.toolpathLines.length > 0 ? 'ocl:success' : 'ocl:fallback')
     if (ocl.ok && ocl.toolpathLines && ocl.toolpathLines.length > 0) {
+      dbg('ocl:post_start')
       const gcode = await renderPost(job.resourcesRoot, job.machine, ocl.toolpathLines, {
         workCoordinateIndex: job.workCoordinateIndex
       })
       await writeFile(job.outputGcodePath, gcode, 'utf-8')
+      dbg('ocl:done')
       const stratLabel =
         oclStrategy === 'adaptive_waterline'
           ? 'AdaptiveWaterline'
@@ -666,6 +816,7 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
     const bounds = parseBinaryStl(meshBuf)
 
     if (oclStrategy === 'raster') {
+      dbg('fallback:mesh_raster_start')
       const mesh = collectBinaryStlTriangles(meshBuf)
       const sampleStepMm = Math.max(0.2, Math.min(camJob.stepoverMm, 2))
       let lines = generateMeshHeightRasterLines({
@@ -680,6 +831,7 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
         plungeMmMin: job.plungeMmMin,
         safeZMm: job.safeZMm
       })
+      dbg('fallback:mesh_raster_end')
       const extras: string[] = []
       if (mesh.truncated) {
         extras.push(`STL sampled with first ${mesh.triangles.length} triangles only (cap).`)
@@ -704,10 +856,12 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
       if (job.operationKind === 'cnc_pencil') {
         extras.push('Pencil op: built-in raster uses reduced stepover vs standard raster.')
       }
+      dbg('fallback:raster_post_start')
       const gcode = await renderPost(job.resourcesRoot, job.machine, lines, {
         workCoordinateIndex: job.workCoordinateIndex
       })
       await writeFile(job.outputGcodePath, gcode, 'utf-8')
+      dbg('fallback:raster_done')
       const tail = extras.length ? ` ${extras.join(' ')}` : ''
       return {
         ok: true,
@@ -724,6 +878,7 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
       }
     }
 
+    dbg('fallback:parallel_finish_start')
     const lines = generateParallelFinishLines({
       bounds,
       zPassMm: job.zPassMm,
@@ -732,10 +887,12 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
       plungeMmMin: job.plungeMmMin,
       safeZMm: job.safeZMm
     })
+    dbg('fallback:parallel_finish_end')
     const gcode = await renderPost(job.resourcesRoot, job.machine, lines, {
       workCoordinateIndex: job.workCoordinateIndex
     })
     await writeFile(job.outputGcodePath, gcode, 'utf-8')
+    dbg('fallback:parallel_done')
     return {
       ok: true,
       gcode,
@@ -750,6 +907,7 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
     }
   }
 
+  dbg('builtin_parallel:start')
   const bounds = parseBinaryStl(meshBuf)
   const lines = generateParallelFinishLines({
     bounds,
@@ -759,10 +917,12 @@ export async function runCamPipeline(job: CamJobConfig): Promise<CamRunResult> {
     plungeMmMin: job.plungeMmMin,
     safeZMm: job.safeZMm
   })
+  dbg('builtin_parallel:post_start')
   const gcode = await renderPost(job.resourcesRoot, job.machine, lines, {
     workCoordinateIndex: job.workCoordinateIndex
   })
   await writeFile(job.outputGcodePath, gcode, 'utf-8')
+  dbg('builtin_parallel:done')
   return {
     ok: true,
     gcode,

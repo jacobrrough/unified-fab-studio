@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url'
 import { registerCoreIpc } from './ipc-core'
 import { registerFabricationIpc } from './ipc-fabrication'
 import { registerModelingIpc } from './ipc-modeling'
+import { registerMainProcessDiagnostics } from './main-process-diagnostics'
 import { getAppProductFromBuild, getAppWindowTitle } from '../shared/app-product'
+
+registerMainProcessDiagnostics()
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 

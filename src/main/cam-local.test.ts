@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  chooseMeshRasterGridCaps,
   computeNegativeZDepthPasses,
   generateContour2dLines,
   generateDrill2dLines,
@@ -8,7 +9,9 @@ import {
   generateParallelFinishLines,
   generatePocket2dLines,
   heightAtXyFromTriangles,
-  minRampRunForMaxAngleMm
+  MESH_RASTER_INNER_OP_BUDGET,
+  minRampRunForMaxAngleMm,
+  resolveMeshRasterSampleBudget
 } from './cam-local'
 
 describe('computeNegativeZDepthPasses', () => {
@@ -74,6 +77,62 @@ describe('generateMeshHeightRasterLines', () => {
       safeZMm: 5
     })
     expect(lines.some((l) => /^G1 X[\d.]+ Y[\d.]+ Z[\d.]+ F/.test(l))).toBe(true)
+  })
+
+  it('tightens sample budget when triangle count is huge', () => {
+    expect(resolveMeshRasterSampleBudget(250_000)).toBe(240)
+    expect(resolveMeshRasterSampleBudget(1)).toBe(180_000)
+    expect(resolveMeshRasterSampleBudget(250_000) * 250_000).toBeLessThanOrEqual(MESH_RASTER_INNER_OP_BUDGET)
+  })
+
+  it('chooses grid caps within sample budget', () => {
+    const { maxRows, maxCols } = chooseMeshRasterGridCaps(100, 100, 500)
+    expect(maxRows * maxCols).toBeLessThanOrEqual(500)
+    expect(maxRows).toBeGreaterThanOrEqual(4)
+    expect(maxCols).toBeGreaterThanOrEqual(4)
+  })
+
+  it('completes quickly with many small triangles (bucket path)', () => {
+    const tris: [[number, number, number], [number, number, number], [number, number, number]][] = []
+    const nx = 28
+    const ny = 28
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < ny; j++) {
+        const x0 = (i / nx) * 10
+        const y0 = (j / ny) * 10
+        const x1 = ((i + 1) / nx) * 10
+        const y1 = ((j + 1) / ny) * 10
+        tris.push(
+          [
+            [x0, y0, 1],
+            [x1, y0, 1],
+            [x0, y1, 1]
+          ],
+          [
+            [x1, y0, 1],
+            [x1, y1, 1],
+            [x0, y1, 1]
+          ]
+        )
+      }
+    }
+    expect(tris.length).toBeGreaterThanOrEqual(400)
+    const t0 = performance.now()
+    const lines = generateMeshHeightRasterLines({
+      triangles: tris,
+      minX: 0,
+      maxX: 10,
+      minY: 0,
+      maxY: 10,
+      stepoverMm: 1,
+      sampleStepMm: 1,
+      feedMmMin: 800,
+      plungeMmMin: 200,
+      safeZMm: 5
+    })
+    const ms = performance.now() - t0
+    expect(ms).toBeLessThan(8000)
+    expect(lines.some((l) => /Z1\.000/.test(l))).toBe(true)
   })
 })
 

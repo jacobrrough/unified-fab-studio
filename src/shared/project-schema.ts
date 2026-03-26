@@ -90,7 +90,9 @@ export const appSettingsSchema = z.object({
    * WorkTrackCAM: user acknowledged that generated G-code is unverified until post, units, and
    * machine clearances are checked (see docs/MACHINES.md).
    */
-  camGcodeSafetyAcknowledged: z.boolean().optional()
+  camGcodeSafetyAcknowledged: z.boolean().optional(),
+  /** Last machine selected on the splash screen — restored as the default selection next launch. */
+  lastMachineId: z.string().optional()
 })
 
 export type AppSettings = z.infer<typeof appSettingsSchema>

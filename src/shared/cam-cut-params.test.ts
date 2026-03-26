@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ManufactureOperation } from './manufacture-schema'
+import type { MaterialRecord } from './material-schema'
+import type { ToolRecord } from './tool-schema'
 import {
   CAM_CUT_DEFAULTS,
   resolveCamCutParams,
+  resolveCamCutParamsWithMaterial,
   resolveManufactureSetupForCam,
   resolvePencilStepoverMm
 } from './cam-cut-params'
@@ -136,5 +139,73 @@ describe('resolveManufactureSetupForCam', () => {
     }
     expect(resolveManufactureSetupForCam(mfg, 'unknown')?.id).toBe('a')
     expect(resolveManufactureSetupForCam(mfg, undefined)?.id).toBe('a')
+  })
+})
+
+describe('resolveCamCutParamsWithMaterial', () => {
+  const materials: MaterialRecord[] = [
+    {
+      id: 'al6061',
+      name: 'Aluminum 6061',
+      category: 'aluminum_6061',
+      cutParams: {
+        default: {
+          surfaceSpeedMMin: 120,
+          chiploadMm: 0.03,
+          docFactor: 0.4,
+          stepoverFactor: 0.35,
+          plungeFactor: 0.25
+        }
+      }
+    }
+  ]
+  const tools: ToolRecord[] = [
+    {
+      id: 'tool-6mm',
+      name: '6mm endmill',
+      diameterMm: 6,
+      fluteCount: 3,
+      type: 'endmill'
+    }
+  ]
+
+  it('keeps default-op params when no material id is selected', () => {
+    const op: ManufactureOperation = {
+      id: '1',
+      kind: 'cnc_parallel',
+      label: 'parallel',
+      params: { feedMmMin: 800 }
+    }
+    expect(
+      resolveCamCutParamsWithMaterial({
+        operation: op,
+        materialId: null,
+        materials,
+        tools
+      }).feedMmMin
+    ).toBe(800)
+  })
+
+  it('overrides feed/plunge/stepover/zPass from material and tool selection', () => {
+    const op: ManufactureOperation = {
+      id: '2',
+      kind: 'cnc_contour',
+      label: 'contour',
+      params: { toolId: 'tool-6mm', safeZMm: 12 }
+    }
+    const resolved = resolveCamCutParamsWithMaterial({
+      operation: op,
+      materialId: 'al6061',
+      materials,
+      tools
+    })
+    // Expected: rpm~6366, feed~573, plunge~143, stepover=2.1, zPass=-2.4
+    expect(resolved.feedMmMin).toBeGreaterThan(560)
+    expect(resolved.feedMmMin).toBeLessThan(590)
+    expect(resolved.plungeMmMin).toBeGreaterThan(130)
+    expect(resolved.plungeMmMin).toBeLessThan(160)
+    expect(resolved.stepoverMm).toBeCloseTo(2.1, 5)
+    expect(resolved.zPassMm).toBeCloseTo(-2.4, 5)
+    expect(resolved.safeZMm).toBe(12)
   })
 })

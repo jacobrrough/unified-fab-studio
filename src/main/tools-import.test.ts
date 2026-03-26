@@ -137,4 +137,24 @@ describe('inferToolRecordsFromFileBuffer', () => {
     expect(tools).toHaveLength(1)
     expect(tools[0]!.diameterMm).toBe(6)
   })
+
+  it('reads gzip-compressed Fusion .tools JSON', () => {
+    const json = JSON.stringify({
+      data: {
+        tools: [
+          {
+            type: 'flat end mill',
+            description: 'Gzip tool',
+            NFLUTES: 2,
+            geometry: { DC: 3.0, OAL: 40, LCF: 12 }
+          }
+        ]
+      }
+    })
+    const buf = gzipSync(Buffer.from(json, 'utf-8'))
+    const tools = inferToolRecordsFromFileBuffer('Example Tools.tools', buf)
+    expect(tools).toHaveLength(1)
+    expect(tools[0]!.name).toContain('Gzip')
+    expect(tools[0]!.diameterMm).toBe(3)
+  })
 })

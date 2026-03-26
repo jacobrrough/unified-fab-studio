@@ -1,0 +1,16 @@
+{
+  "id": "makera-carvera-4axis",
+  "name": "Makera Carvera (4th Axis)",
+  "kind": "cnc",
+  "workAreaMm": { "x": 300, "y": 160, "z": 65 },
+  "maxFeedMmMin": 2400,
+  "postTemplate": "cnc_4axis_grbl.hbs",
+  "dialect": "grbl_4axis",
+  "axisCount": 4,
+  "aAxisRangeDeg": 360,
+  "aAxisOrientation": "x",
+  "meta": {
+    "manufacturer": "Makera",
+    "model": "Carvera Desktop CNC + 4th Axis Rotary Attachment — A-axis rotates around X. Confirm spindle speed range (6000–24000 RPM), feed limits, and A-axis max RPM before running. Generated G-code uses grbl_4axis dialect (A-word rotary). Verify against Makera firmware docs and run an air cut first. See docs/MACHINES.md."
+  }
+}
