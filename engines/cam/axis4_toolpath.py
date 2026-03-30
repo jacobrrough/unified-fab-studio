@@ -177,19 +177,31 @@ def _mesh_informed_z_depths(
 # ─── STL loading (binary) for mesh-aware Python passes ──────────────────────
 
 def _load_binary_stl_triangles(stl_path: str, max_tris: int = 200_000) -> list[tuple[tuple[float,float,float], tuple[float,float,float], tuple[float,float,float]]] | None:
-    """Load triangles from a binary STL file. Returns None on failure."""
+    """Load triangles from a binary STL file. Returns None on failure or ASCII STL."""
     try:
         data = Path(stl_path).read_bytes()
     except (OSError, FileNotFoundError):
         return None
     if len(data) < 84:
         return None
+    # Reject ASCII STL files (start with 'solid' and contain 'facet')
+    try:
+        head = data[:80].decode('ascii', errors='ignore').lower()
+        if head.startswith('solid') and b'facet' in data[:1000].lower():
+            return None
+    except Exception:
+        pass
     n_tris = struct.unpack_from('<I', data, 80)[0]
     if n_tris == 0:
         n_tris = (len(data) - 84) // 50
+    # Sanity: reject files with implausible triangle count
+    if n_tris < 1 or n_tris > 50_000_000:
+        return None
     n_tris = min(n_tris, max_tris)
     if len(data) < 84 + n_tris * 50:
         n_tris = (len(data) - 84) // 50
+    if n_tris < 1:
+        return None
     tris = []
     off = 84
     for _ in range(n_tris):
@@ -443,7 +455,7 @@ def _gen_parallel_wrapping(
         tris = _load_binary_stl_triangles(stl_path)
 
     if tris and len(tris) > 0:
-        return _gen_mesh_aware_parallel(
+        mesh_lines = _gen_mesh_aware_parallel(
             tris=tris,
             radius=radius,
             mach_x_start_mm=mach_x_start_mm,
@@ -456,6 +468,11 @@ def _gen_parallel_wrapping(
             tool_r=tool_r,
             overcut_mm=oc_mm,
         )
+        # Validate: mesh-aware output must have meaningful cutting moves
+        g1_count = sum(1 for l in mesh_lines if l.startswith('G1'))
+        if g1_count >= 4:
+            return mesh_lines
+        # else fall through to pattern-based fallback
 
     # Fallback: pattern-based (no mesh) with overcut extension
     bands = _axial_bands(mach_x_start_mm, mach_x_end_mm, axial_band_count)

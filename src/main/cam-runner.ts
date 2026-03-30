@@ -915,8 +915,10 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
             toolDiameterMm: toolD,
             overcutMm
           })
+          // Validate output: must have both plunge moves (G1 Z) AND cutting moves (G1 X)
+          const g1xCount = lines.filter((l) => /^G1\s+X[\d.-]/i.test(l)).length
           const hasG1z = lines.some((l) => /^G1\s+Z[\d.-]/i.test(l))
-          if (hasG1z) {
+          if (hasG1z && g1xCount >= 4) {
             axis4Lines = lines
             if (truncated) {
               alignHint +=
@@ -924,8 +926,9 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
             }
           }
         }
-      } catch {
-        /* fall through to Python engine */
+      } catch (meshRasterErr) {
+        // Log but don't block — fall through to Python engine
+        dbg(`4axis:ts_mesh_raster_error: ${meshRasterErr instanceof Error ? meshRasterErr.message : String(meshRasterErr)}`)
       }
     }
 
