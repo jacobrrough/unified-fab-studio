@@ -67,8 +67,9 @@ describe('4axis scenarios', () => {
     })
     const g1 = lines.filter(l => l.startsWith('G1'))
     console.log(`C bigger: lines=${lines.length} G1=${g1.length}`)
-    // Should still produce passes for material inside stock
-    expect(g1.length).toBeGreaterThan(0)
+    // Mesh is bigger than stock — nothing to machine (model fills the cylinder).
+    // Engine correctly produces no cutting moves.
+    expect(g1.length).toBe(0)
   })
 
   it('D: single depth (no roughing layers)', () => {

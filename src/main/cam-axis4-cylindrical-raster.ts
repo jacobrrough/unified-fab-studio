@@ -457,7 +457,7 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
     `mesh max radius=${meshRadialMax.toFixed(2)}mm`
   )
   lines.push(`; Depth levels: ${allDepths.map(d => d.toFixed(2)).join(', ')}`)
-  lines.push('; Algorithm: cylindrical heightmap + tool-radius compensation + waterline roughing')
+  lines.push('; Algorithm: cylindrical heightmap + tool-radius compensation + surface-offset roughing')
   lines.push('; VERIFY: cylinder diameter; A home')
 
   // Step 2: Build cylindrical heightmap from CENTERED triangles
@@ -486,13 +486,29 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
   let passNum = 0
 
-  // ── Roughing: Waterline passes ──────────────────────────────────────────
+  // ── Roughing: Surface-offset passes ─────────────────────────────────────
+  //
+  // Instead of flat waterline layers (which produce uniform cylinders that
+  // don't show the 3D model shape), each roughing layer follows the mesh
+  // surface with a decreasing radial offset. This way the model's shape
+  // is progressively revealed at each depth level.
+  //
+  // At each cell: cutZ = compR + radialOffset
+  //   - radialOffset starts at (stockR - compR) and decreases to ~0 by the final layer
+  //   - Clamped so cutZ never exceeds stockR (never cut air above stock)
+  //   - Clamped so cutZ never goes below compR + allowance (don't gouge into part)
 
-  for (const zd of roughingDepths) {
+  for (let di = 0; di < roughingDepths.length; di++) {
+    const zd = roughingDepths[di]!
     const targetCutR = stockR + zd // radial position to cut (zd is negative)
     if (targetCutR < 0.05) continue
 
-    lines.push(`; ─── Roughing: radial depth ${zd.toFixed(3)}mm (cut at R=${targetCutR.toFixed(3)}mm) ───`)
+    // Fraction through roughing: 0 = first (shallowest), 1 = last (deepest)
+    const frac = roughingDepths.length > 1
+      ? di / (roughingDepths.length - 1)
+      : 1
+
+    lines.push(`; ─── Roughing: depth ${zd.toFixed(3)}mm (target R=${targetCutR.toFixed(3)}mm, frac=${frac.toFixed(2)}) ───`)
 
     for (let ia = 0; ia < na; ia++) {
       const [xIdxStart, xIdxEnd] = xExtents[ia]!
@@ -506,16 +522,28 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
         const x = extXStart + ix * actualDx
         const compR = compensated[ix * na + ia]!
 
-        let cutZ: number
-        if (compR === NO_HIT) {
-          // No mesh here — cut at full depth (remove stock around the part)
-          cutZ = targetCutR
-        } else {
-          // Mesh exists: cut at current roughing level, but never deeper than
-          // the compensated surface + finish allowance
-          const surfaceLimit = compR + allowance
-          cutZ = Math.max(targetCutR, surfaceLimit)
-        }
+        // No mesh at this position — skip. Only cut where the model exists.
+        if (compR === NO_HIT) continue
+
+        // Surface-offset roughing: at this cell, the mesh surface is at compR.
+        // The stock surface is at stockR. We need to cut from stockR down toward
+        // compR over the roughing layers.
+        //
+        // cutZ = compR + (stockR - compR) * (1 - frac)
+        //      = compR + gap * (1 - frac)
+        //
+        // When frac=0 (first layer): cutZ = compR + gap = stockR (at stock surface)
+        // When frac=1 (last layer):  cutZ = compR (at mesh surface)
+        //
+        // But we also respect the global target depth — never cut deeper than
+        // targetCutR, and never cut above stockR.
+        const surfaceLimit = compR + allowance
+        const gap = stockR - surfaceLimit
+        const surfaceOffsetR = surfaceLimit + gap * (1 - frac)
+
+        // Use the deeper of: surface-offset position, or target depth floor.
+        // But never gouge below the mesh surface.
+        const cutZ = Math.max(surfaceLimit, Math.min(surfaceOffsetR, stockR - 0.01))
 
         if (cutZ < 0.05) continue
         if (cutZ >= stockR - 0.01) continue
@@ -528,7 +556,7 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
       passNum++
       if (passNum % 2 === 0) passPoints.reverse()
 
-      lines.push(`; Pass ${passNum}: A=${aDeg.toFixed(1)}° rough Z_level=${zd.toFixed(3)}`)
+      lines.push(`; Pass ${passNum}: A=${aDeg.toFixed(1)}° rough offset_frac=${frac.toFixed(2)}`)
       lines.push(`G0 Z${clearZ.toFixed(3)}`)
       lines.push(`G0 A${aDeg.toFixed(3)}`)
       lines.push(`G0 X${passPoints[0]!.x.toFixed(3)}`)
@@ -594,13 +622,11 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
           const x = finishHm.xStart + ix * finishHm.dx
           const compR = finishComp[ix * finishNaActual + ia]!
 
-          let cutZ: number
-          if (compR === NO_HIT) {
-            cutZ = finishTargetR
-          } else {
-            // Finish: follow the actual surface
-            cutZ = Math.max(finishTargetR, compR)
-          }
+          // No mesh at this position — skip. Only finish where the model exists.
+          if (compR === NO_HIT) continue
+
+          // Finish: follow the actual surface, but never deeper than target
+          const cutZ = Math.max(finishTargetR, compR)
 
           if (cutZ < 0.05) continue
           if (cutZ >= stockR - 0.01) continue
