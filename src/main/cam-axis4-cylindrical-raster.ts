@@ -318,24 +318,24 @@ function computePerAngleXExtents(
 
 /**
  * Compute radial depth levels that go from stock OD all the way down to the
- * mesh surface. This ensures the toolpath actually reaches the model, not
- * just skimming the top few mm of stock.
+ * deepest point on the mesh surface. This ensures the toolpath reaches every
+ * part of the model, including concavities and areas close to the rotation axis.
  *
- * @param meshRadialMax Maximum radial extent of the centered mesh
+ * @param meshRadialMin Minimum radial extent of the mesh (closest to axis)
  * @param stockRadius Stock cylinder radius
  * @param zStepMm Step-down per layer (mm radial)
  * @param userZPassMm User-requested total depth (negative = from stock surface)
  * @returns Array of negative depth values (relative to stock surface)
  */
 function computeMeshAwareDepths(
-  meshRadialMax: number,
+  meshRadialMin: number,
   stockRadius: number,
   zStepMm: number,
   userZPassMm: number
 ): number[] {
-  // How deep we need to go: from stock OD to the mesh surface
-  // Plus a small margin to ensure we reach the model
-  const meshDepth = -(stockRadius - Math.max(0.5, meshRadialMax - 0.5))
+  // How deep we need to go: from stock OD to the DEEPEST point on the mesh
+  // Use meshRadialMin (closest point to axis), with a small margin past it
+  const meshDepth = -(stockRadius - Math.max(0.5, meshRadialMin - 0.5))
 
   // Use the deeper of: user-requested depth, or depth to reach mesh
   const targetDepth = Math.min(userZPassMm, meshDepth)
@@ -429,18 +429,45 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
   const actualStepADeg = 360 / na
   const actualDx = extSpanX / Math.max(1, nx - 1)
 
-  // Step 1: Compute mesh-aware depth levels
-  // Default zStepMm from the spacing of provided depths, or auto
+  // Step 1: Build cylindrical heightmap from CENTERED triangles
+  const hm = buildCylindricalHeightmap(
+    centered, stockR, extXStart, extXEnd, nx, na
+  )
+
+  // Verify we got hits and find min/max mesh radii
+  let hitCount = 0
+  let meshRadialMin = Infinity
+  for (let i = 0; i < hm.radii.length; i++) {
+    if (hm.radii[i]! !== NO_HIT) {
+      hitCount++
+      if (hm.radii[i]! < meshRadialMin) meshRadialMin = hm.radii[i]!
+    }
+  }
+  if (meshRadialMin === Infinity) meshRadialMin = 0
+
+  // Step 2: Apply tool radius compensation
+  const compensated = applyToolRadiusCompensation(hm, toolR, stockR)
+
+  // Find minimum compensated radius (deepest point the tool center must reach)
+  let minCompR = Infinity
+  for (let i = 0; i < compensated.length; i++) {
+    if (compensated[i]! !== NO_HIT && compensated[i]! < minCompR) {
+      minCompR = compensated[i]!
+    }
+  }
+  if (minCompR === Infinity) minCompR = meshRadialMin
+
+  // Step 3: Compute mesh-aware depth levels using the DEEPEST mesh point
   const providedStep = p.zDepthsMm.length >= 2
     ? Math.abs(p.zDepthsMm[0]! - p.zDepthsMm[1]!)
     : 0
   const userZPass = Math.min(...p.zDepthsMm) // deepest requested depth
   const zStepMm = providedStep > 0.1 ? providedStep : 2
 
-  // If mesh is inside stock, auto-compute depths to reach it
   let allDepths: number[]
-  if (meshRadialMax > 0.1 && meshRadialMax < stockR - 0.1) {
-    allDepths = computeMeshAwareDepths(meshRadialMax, stockR, zStepMm, userZPass)
+  if (meshRadialMin < stockR - 0.1 && hitCount > 0) {
+    // Use minCompR (deepest compensated point) so depths reach the full mesh
+    allDepths = computeMeshAwareDepths(minCompR, stockR, zStepMm, userZPass)
   } else {
     // Fallback: use provided depths
     allDepths = [...p.zDepthsMm].sort((a, b) => b - a)
@@ -454,26 +481,13 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
   )
   lines.push(
     `; Auto-centered mesh: offset Y=${offsetY.toFixed(2)} Z=${offsetZ.toFixed(2)}, ` +
-    `mesh max radius=${meshRadialMax.toFixed(2)}mm`
+    `mesh radial range=${meshRadialMin.toFixed(2)}..${meshRadialMax.toFixed(2)}mm, ` +
+    `min compensated R=${minCompR.toFixed(2)}mm`
   )
   lines.push(`; Depth levels: ${allDepths.map(d => d.toFixed(2)).join(', ')}`)
   lines.push('; Algorithm: cylindrical heightmap + tool-radius compensation + surface-offset roughing')
   lines.push('; VERIFY: cylinder diameter; A home')
-
-  // Step 2: Build cylindrical heightmap from CENTERED triangles
-  const hm = buildCylindricalHeightmap(
-    centered, stockR, extXStart, extXEnd, nx, na
-  )
-
-  // Verify we got hits
-  let hitCount = 0
-  for (let i = 0; i < hm.radii.length; i++) {
-    if (hm.radii[i]! !== NO_HIT) hitCount++
-  }
   lines.push(`; Heightmap: ${hitCount}/${hm.radii.length} cells hit (${(hitCount / hm.radii.length * 100).toFixed(1)}%)`)
-
-  // Step 3: Apply tool radius compensation
-  const compensated = applyToolRadiusCompensation(hm, toolR, stockR)
 
   // Step 4: Compute per-angle X extents with overcut (used for finishing only)
   const overcutCells = Math.max(1, Math.ceil(overcutMm / actualDx))
@@ -630,7 +644,10 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
           if (compR === NO_HIT) {
             cutZ = finishTargetR
           } else {
-            cutZ = Math.max(finishTargetR, compR)
+            // Follow the actual compensated mesh surface — no floor clamp.
+            // The compensated value already accounts for tool radius, so cutting
+            // here gives the correct surface finish at any depth.
+            cutZ = compR
           }
 
           if (cutZ < 0.05) continue
