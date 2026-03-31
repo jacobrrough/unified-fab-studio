@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildPriorRoughFloorSamplerFromGcode,
   chooseMeshRasterGridCaps,
   computeNegativeZDepthPasses,
   generateContour2dLines,
@@ -54,6 +55,106 @@ describe('heightAtXyFromTriangles', () => {
       [0, 10, 3]
     ]
     expect(heightAtXyFromTriangles([t], 5, 5)).toBeCloseTo(3, 5)
+  })
+})
+
+describe('buildPriorRoughFloorSamplerFromGcode', () => {
+  it('returns null when no feed moves', () => {
+    expect(
+      buildPriorRoughFloorSamplerFromGcode({
+        gcode: 'G0 X0 Y0 Z5\n',
+        minX: 0,
+        maxX: 10,
+        minY: 0,
+        maxY: 10,
+        toolRadiusMm: 3
+      })
+    ).toBeNull()
+  })
+
+  it('samples min Z from prior feed and mesh raster skips machined columns', () => {
+    const gcode = `
+G0 X5 Y5 Z2
+G1 X5 Y5 Z-4 F500
+`
+    const sampler = buildPriorRoughFloorSamplerFromGcode({
+      gcode,
+      minX: 0,
+      maxX: 10,
+      minY: 0,
+      maxY: 10,
+      toolRadiusMm: 5,
+      maxGridCols: 16,
+      maxGridRows: 16
+    })
+    expect(sampler).not.toBeNull()
+    const tri: [[number, number, number], [number, number, number], [number, number, number]] = [
+      [0, 0, -1],
+      [10, 0, -1],
+      [0, 10, -1]
+    ]
+    const withFloor = generateMeshHeightRasterLines({
+      triangles: [tri],
+      minX: 0,
+      maxX: 10,
+      minY: 0,
+      maxY: 10,
+      stepoverMm: 5,
+      sampleStepMm: 5,
+      feedMmMin: 800,
+      plungeMmMin: 200,
+      safeZMm: 5,
+      priorRoughFloorSampler: sampler!
+    })
+    const noFloor = generateMeshHeightRasterLines({
+      triangles: [tri],
+      minX: 0,
+      maxX: 10,
+      minY: 0,
+      maxY: 10,
+      stepoverMm: 5,
+      sampleStepMm: 5,
+      feedMmMin: 800,
+      plungeMmMin: 200,
+      safeZMm: 5
+    })
+    expect(withFloor.length).toBeLessThan(noFloor.length)
+  })
+
+  it('meshAnalyticPriorRoughStockMm skips samples when simulated rough is already at finish rest (no G-code sampler)', () => {
+    const tri: [[number, number, number], [number, number, number], [number, number, number]] = [
+      [0, 0, -1],
+      [10, 0, -1],
+      [0, 10, -1]
+    ]
+    const baseline = generateMeshHeightRasterLines({
+      triangles: [tri],
+      minX: 0,
+      maxX: 10,
+      minY: 0,
+      maxY: 10,
+      stepoverMm: 5,
+      sampleStepMm: 5,
+      feedMmMin: 800,
+      plungeMmMin: 200,
+      safeZMm: 5,
+      rasterRestStockMm: 0.1
+    })
+    const withAnalytic = generateMeshHeightRasterLines({
+      triangles: [tri],
+      minX: 0,
+      maxX: 10,
+      minY: 0,
+      maxY: 10,
+      stepoverMm: 5,
+      sampleStepMm: 5,
+      feedMmMin: 800,
+      plungeMmMin: 200,
+      safeZMm: 5,
+      rasterRestStockMm: 0.1,
+      meshAnalyticPriorRoughStockMm: 0.05
+    })
+    expect(withAnalytic.length).toBeLessThan(baseline.length)
   })
 })
 

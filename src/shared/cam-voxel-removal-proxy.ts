@@ -6,12 +6,31 @@ export type BuildVoxelRemovalOptions = {
   maxRows?: number
   maxLayers?: number
   stockTopZ?: number
+  /**
+   * When set (mm, CNC Z), extends the carved stock block downward to this Z so the voxel grid
+   * includes nominal rectangular stock below the toolpath (WCS: top of stock = `stockTopZ`, typical cut Z negative).
+   */
+  stockBottomZ?: number
+  /** Expand XY voxel bounds to include nominal rectangular stock (WCS mm). */
+  stockRectXYMm?: { minX: number; maxX: number; minY: number; maxY: number }
   cuttingZThreshold?: number
   marginMm?: number
   /** Cap total sphere stamps (performance). */
   maxStamps?: number
   /** Max points in `samplePositions` for visualization (×3 floats). */
   maxSamplePoints?: number
+}
+
+/** Tier-3 voxel sim quality presets (grid resolution + stamp budget). Not boolean-exact. */
+export type VoxelSimQualityPreset = 'fast' | 'balanced' | 'detailed'
+
+export const VOXEL_SIM_QUALITY_PRESETS: Record<
+  VoxelSimQualityPreset,
+  Pick<BuildVoxelRemovalOptions, 'maxCols' | 'maxRows' | 'maxLayers' | 'maxStamps' | 'maxSamplePoints'>
+> = {
+  fast: { maxCols: 22, maxRows: 22, maxLayers: 14, maxStamps: 3500, maxSamplePoints: 1400 },
+  balanced: { maxCols: 34, maxRows: 34, maxLayers: 20, maxStamps: 8000, maxSamplePoints: 2400 },
+  detailed: { maxCols: 44, maxRows: 44, maxLayers: 28, maxStamps: 14000, maxSamplePoints: 4200 }
 }
 
 export type VoxelRemovalPreview = {
@@ -80,7 +99,25 @@ export function buildVoxelRemovalFromCuttingSegments(
   minY -= marginMm
   maxX += marginMm
   maxY += marginMm
-  const zBottom = Math.min(minZ - marginMm, stockTopZ - toolR * 2)
+  const rect = opts.stockRectXYMm
+  if (
+    rect &&
+    Number.isFinite(rect.minX) &&
+    Number.isFinite(rect.maxX) &&
+    Number.isFinite(rect.minY) &&
+    Number.isFinite(rect.maxY) &&
+    rect.maxX > rect.minX &&
+    rect.maxY > rect.minY
+  ) {
+    minX = Math.min(minX, rect.minX - marginMm)
+    maxX = Math.max(maxX, rect.maxX + marginMm)
+    minY = Math.min(minY, rect.minY - marginMm)
+    maxY = Math.max(maxY, rect.maxY + marginMm)
+  }
+  let zBottom = Math.min(minZ - marginMm, stockTopZ - toolR * 2)
+  if (opts.stockBottomZ != null && Number.isFinite(opts.stockBottomZ)) {
+    zBottom = Math.min(zBottom, opts.stockBottomZ)
+  }
 
   const spanX = maxX - minX
   const spanY = maxY - minY

@@ -54,7 +54,8 @@ async function buildFlatPatternGeometry(projectDir: string): Promise<{
 
 async function tryProjectedModelViews(
   projectDir: string | undefined,
-  placeholders: DrawingViewPlaceholder[] | undefined
+  placeholders: DrawingViewPlaceholder[] | undefined,
+  meshProjectionTier?: 'A' | 'B' | 'C'
 ): Promise<ProjectedModelViewForExport[] | undefined> {
   if (!projectDir || !placeholders?.length) return undefined
   const settings = await loadSettings()
@@ -63,7 +64,8 @@ async function tryProjectedModelViews(
     projectDir,
     placeholders,
     pythonPath,
-    appRoot: app.getAppPath()
+    appRoot: app.getAppPath(),
+    meshProjectionTier
   })
   if (!r.ok) return undefined
   return r.views.map((v) => {
@@ -112,6 +114,7 @@ export async function runDrawingExport(
 
   let sheetTitle: string | undefined
   let sheetScale: string | undefined
+  let meshTier: 'A' | 'B' | 'C' | undefined
   let viewPlaceholders: { kind: string; label: string; detailLine?: string }[] | undefined
   let rawPlaceholders: DrawingViewPlaceholder[] | undefined
   if (payload.projectDir) {
@@ -121,6 +124,7 @@ export async function runDrawingExport(
       if (sh) {
         sheetTitle = sh.name
         sheetScale = sh.scale
+        meshTier = sh.meshProjectionTier
         if (sh.viewPlaceholders?.length) {
           rawPlaceholders = sh.viewPlaceholders
           viewPlaceholders = resolveExportViewRows(sh.viewPlaceholders)
@@ -131,7 +135,11 @@ export async function runDrawingExport(
     }
   }
 
-  const projectedModelViews = await tryProjectedModelViews(payload.projectDir, rawPlaceholders)
+  const projectedModelViews = await tryProjectedModelViews(
+    payload.projectDir,
+    rawPlaceholders,
+    meshTier
+  )
 
   try {
     if (payload.kind === 'dxf') {

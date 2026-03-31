@@ -92,7 +92,17 @@ export const appSettingsSchema = z.object({
    */
   camGcodeSafetyAcknowledged: z.boolean().optional(),
   /** Last machine selected on the splash screen — restored as the default selection next launch. */
-  lastMachineId: z.string().optional()
+  lastMachineId: z.string().optional(),
+  /**
+   * Makera Carvera: executable for community carvera-cli (or `carvera-cli` on PATH when empty).
+   * See docs/MACHINES.md — Carvera upload.
+   */
+  carveraCliPath: z.string().optional(),
+  /**
+   * Optional JSON array of extra argv inserted after the executable, e.g. `["-m","carvera_cli"]`
+   * when using `python.exe` as carveraCliPath.
+   */
+  carveraCliExtraArgsJson: z.string().optional()
 })
 
 export type AppSettings = z.infer<typeof appSettingsSchema>

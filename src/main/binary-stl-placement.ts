@@ -1,4 +1,4 @@
-import { isLikelyAsciiStl, iterateBinaryStlTriangles, type Vec3 } from "./stl"
+import { isBinaryStlLayout, isLikelyAsciiStl, iterateBinaryStlTriangles, type Vec3 } from "./stl"
 
 type PlacementMode = "as_is" | "center_origin" | "center_xy_ground_z"
 type UpAxisMode = "y_up" | "z_up"
@@ -94,7 +94,7 @@ export function transformBinaryStlWithPlacement(
   if (buffer.length < 84) {
     return { ok: false, error: "stl_too_small" }
   }
-  if (isLikelyAsciiStl(buffer)) {
+  if (isLikelyAsciiStl(buffer) && !isBinaryStlLayout(buffer)) {
     return {
       ok: false,
       error: "ascii_stl_placement",

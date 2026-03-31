@@ -122,6 +122,22 @@ export function SplashSettingsModal({
                     />
                   </label>
                 </div>
+                <div className="row">
+                  <label htmlFor="splash-carvera-cli">
+                    Carvera CLI (optional)
+                    <input
+                      id="splash-carvera-cli"
+                      value={settings.carveraCliPath ?? ''}
+                      onChange={(e) =>
+                        void onSaveSettingsField({
+                          carveraCliPath: e.target.value.trim() ? e.target.value : undefined
+                        })
+                      }
+                      placeholder="carvera-cli"
+                      autoComplete="off"
+                    />
+                  </label>
+                </div>
               </fieldset>
               <h3 className="subh util-section-heading" id="splash-projects-root-heading">
                 Default projects folder

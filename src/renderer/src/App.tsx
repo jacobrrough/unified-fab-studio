@@ -14,9 +14,11 @@ import {
 import { mergeMachineFirstProjectTools } from '../../shared/tool-merge'
 import type { ToolLibraryFile } from '../../shared/tool-schema'
 import { resolveCamCutParams, resolveManufactureSetupForCam } from '../../shared/cam-cut-params'
+import { rotaryDimsFromSetupStock, setupStockThicknessZMm } from '../../shared/cam-setup-defaults'
 import { mergeCuraSliceInvocationSettings } from '../../shared/cura-slice-defaults'
 import { resolveCamToolDiameterMm } from '../../shared/cam-tool-resolve'
 import { getManufactureCamRunBlock } from '../../shared/manufacture-cam-gate'
+import { resolveManufactureCamDrivingOperation } from '../../shared/manufacture-cam-driving-op'
 import { evaluateManufactureReadiness } from '../../shared/manufacture-readiness'
 import { formatLoadRejection } from '../../shared/file-parse-errors'
 import {
@@ -180,7 +182,13 @@ export function App() {
   }, [projectTools, machineTools, project?.activeMachineId])
 
   const patchDrawingFirstSheet = useCallback(
-    (partial: { name?: string; scale?: string; viewPlaceholders?: DrawingViewPlaceholder[] }) => {
+    (partial: {
+      name?: string
+      scale?: string
+      sheetTemplateHint?: string
+      meshProjectionTier?: 'A' | 'B' | 'C'
+      viewPlaceholders?: DrawingViewPlaceholder[]
+    }) => {
       setDrawingFile((df) => {
         const cur = df.sheets[0]
         const name = partial.name !== undefined ? partial.name : (cur?.name ?? '')
@@ -189,6 +197,17 @@ export function App() {
           partial.viewPlaceholders !== undefined ? partial.viewPlaceholders : cur?.viewPlaceholders
         const trimmedName = name.trim()
         const trimmedScale = scale.trim()
+        let templateHint: string | undefined
+        if (partial.sheetTemplateHint !== undefined) {
+          const th = partial.sheetTemplateHint.trim()
+          templateHint = th || undefined
+        } else {
+          templateHint = cur?.sheetTemplateHint
+        }
+        const meshTier =
+          partial.meshProjectionTier !== undefined
+            ? partial.meshProjectionTier
+            : cur?.meshProjectionTier
         if (!trimmedName) {
           if (!cur) return df
           return { version: 1, sheets: df.sheets.slice(1) }
@@ -197,7 +216,9 @@ export function App() {
         const sheet: DrawingSheet = {
           id,
           name: trimmedName,
-          scale: trimmedScale || undefined
+          scale: trimmedScale || undefined,
+          ...(templateHint ? { sheetTemplateHint: templateHint } : {}),
+          ...(meshTier ? { meshProjectionTier: meshTier } : {})
         }
         if (vps != null && vps.length > 0) {
           sheet.viewPlaceholders = vps
@@ -554,26 +575,35 @@ export function App() {
     writePersistedManufactureLastSourceStl(stl)
   }
 
-  async function runCam(): Promise<void> {
+  async function runCam(ctx?: { mfg: ManufactureFile; selectedOpIndex: number }): Promise<void> {
+    const mfgPlan = ctx?.mfg ?? sideMfg
+    const selectedIdx = ctx?.selectedOpIndex ?? 0
     const readiness = evaluateManufactureReadiness({
       project,
       settings,
       machines,
-      manufacture: sideMfg
+      manufacture: mfgPlan
     })
     if (!readiness.canCam || !projectDir || !project) {
       setStatus('CAM is not ready. Check machine and operation setup in Manufacture Plan.')
       return
     }
-    const planDrive = sideMfg?.operations.find((o) => !o.suppressed)
-    const camBlock = getManufactureCamRunBlock(planDrive?.kind)
+    const drive = mfgPlan ? resolveManufactureCamDrivingOperation(mfgPlan, selectedIdx) : { ok: false as const, error: 'No plan.', hint: '' }
+    if (!drive.ok) {
+      setCamLastHint('')
+      setCamOut(`${drive.error}\n\n${drive.hint}`)
+      setStatus('CAM skipped — no runnable CNC operation. See output panel.')
+      return
+    }
+    const planDrive = drive.op
+    const camBlock = getManufactureCamRunBlock(planDrive.kind)
     if (camBlock) {
       setCamLastHint('')
       setCamOut(`${camBlock.error}\n\n${camBlock.hint}`)
-      setStatus('CAM skipped — first operation cannot use Generate CAM. See output panel.')
+      setStatus('CAM skipped — selected operation cannot use Generate CAM. See output panel.')
       return
     }
-    const camSourceRel = sideMfg?.operations.find((o) => !o.suppressed && o.kind.startsWith('cnc_'))?.sourceMesh?.trim()
+    const camSourceRel = planDrive.sourceMesh?.trim()
     const remembered = readPersistedManufactureLastRunMode('cam') === 'cam' ? readPersistedManufactureLastSourceStl('') : ''
     const defaultStl = camSourceRel ? `${projectDir}\\${camSourceRel.replace(/\//g, '\\')}` : remembered || null
     let stl = defaultStl || (await fab.dialogOpenFile([{ name: 'STL', extensions: ['stl'] }]))
@@ -595,10 +625,27 @@ export function App() {
     }
     const py = settings?.pythonPath ?? 'python'
     const out = `${projectDir}\\output\\cam.nc`
-    const planCnc = sideMfg?.operations.find((o) => !o.suppressed && o.kind.startsWith('cnc_'))
-    const setupForCam = sideMfg ? resolveManufactureSetupForCam(sideMfg, machineId) : undefined
-    const toolDiameterMm = resolveCamToolDiameterMm({ operation: planCnc, tools })
-    const cut = resolveCamCutParams(planCnc)
+    const setupForCam = mfgPlan ? resolveManufactureSetupForCam(mfgPlan, machineId) : undefined
+    const toolDiameterMm = resolveCamToolDiameterMm({ operation: planDrive, tools })
+    const cut = resolveCamCutParams(planDrive, setupForCam)
+    const stockZ = setupStockThicknessZMm(setupForCam?.stock)
+    const st = setupForCam?.stock
+    const boxX = st?.kind === 'box' && typeof st.x === 'number' && st.x > 0 ? st.x : undefined
+    const boxY = st?.kind === 'box' && typeof st.y === 'number' && st.y > 0 ? st.y : undefined
+    const rot =
+      planDrive?.kind === 'cnc_4axis_roughing' || planDrive?.kind === 'cnc_4axis_finishing' || planDrive?.kind === 'cnc_4axis_contour' || planDrive?.kind === 'cnc_4axis_indexed'
+        ? rotaryDimsFromSetupStock(setupForCam?.stock)
+        : {}
+    let priorPostedGcode: string | undefined
+    const planParams = planDrive.params as Record<string, unknown> | undefined
+    if (planParams?.['usePriorPostedGcodeRest'] === true && projectDir) {
+      try {
+        const priorPath = `${projectDir.replace(/\//g, '\\')}\\output\\cam.nc`
+        priorPostedGcode = await fab.readTextFile(priorPath)
+      } catch {
+        priorPostedGcode = undefined
+      }
+    }
     const r = await fab.camRun({
       stlPath: staged,
       outPath: out,
@@ -609,10 +656,26 @@ export function App() {
       plungeMmMin: cut.plungeMmMin,
       safeZMm: cut.safeZMm,
       pythonPath: py,
-      operationKind: planDrive?.kind,
+      operationKind: planDrive.kind,
       workCoordinateIndex: setupForCam?.workCoordinateIndex,
       ...(toolDiameterMm != null ? { toolDiameterMm } : {}),
-      ...(planDrive?.params && typeof planDrive.params === 'object' ? { operationParams: planDrive.params } : {})
+      ...(planDrive.params && typeof planDrive.params === 'object' ? { operationParams: planDrive.params } : {}),
+      ...(stockZ != null ? { stockBoxZMm: stockZ } : {}),
+      ...(boxX != null && boxY != null ? { stockBoxXMm: boxX, stockBoxYMm: boxY } : {}),
+      ...(rot.lengthMm != null ? { rotaryStockLengthMm: rot.lengthMm } : {}),
+      ...(rot.diameterMm != null ? { rotaryStockDiameterMm: rot.diameterMm } : {}),
+      ...(setupForCam?.rotaryChuckDepthMm != null &&
+      Number.isFinite(setupForCam.rotaryChuckDepthMm) &&
+      setupForCam.rotaryChuckDepthMm >= 0
+        ? { rotaryChuckDepthMm: setupForCam.rotaryChuckDepthMm }
+        : {}),
+      ...(setupForCam?.rotaryClampOffsetMm != null &&
+      Number.isFinite(setupForCam.rotaryClampOffsetMm) &&
+      setupForCam.rotaryClampOffsetMm >= 0
+        ? { rotaryClampOffsetMm: setupForCam.rotaryClampOffsetMm }
+        : {}),
+      ...(planParams?.['useMeshMachinableXClamp'] === false ? { useMeshMachinableXClamp: false } : {}),
+      ...(priorPostedGcode?.trim() ? { priorPostedGcode } : {})
     })
     if (!r.ok) {
       setCamLastHint('')
@@ -635,6 +698,14 @@ export function App() {
     setStatus(`${primary} Unverified for real machines — docs/MACHINES.md.`)
     writePersistedManufactureLastRunMode('cam')
     writePersistedManufactureLastSourceStl(stl)
+    if (ctx?.mfg && projectDir) {
+      try {
+        await fab.manufactureSave(projectDir, JSON.stringify(ctx.mfg))
+        await reloadSidecars()
+      } catch {
+        /* persist optional — CAM output already written */
+      }
+    }
   }
 
   function pathNeedsPythonForMeshImport(filePath: string): boolean {

@@ -518,6 +518,57 @@ body {
 .shop-log-body::-webkit-scrollbar { width: 4px; }
 .shop-log-body::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 2px; }
 
+/* ── G-code viewer (modal) ───────────────────────────────── */
+.shop-gcode-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  box-sizing: border-box;
+}
+.shop-gcode-sheet {
+  width: min(920px, 96vw);
+  height: min(78vh, 720px);
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+.shop-gcode-sheet-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.shop-gcode-sheet-body {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--txt0);
+  background: var(--bg0);
+}
+.shop-gcode-sheet-body::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.shop-gcode-sheet-body::-webkit-scrollbar-thumb {
+  background: var(--bg4);
+  border-radius: 4px;
+}
+
 /* ── Library / Settings full-panel views ──────────────────── */
 .shop-full-view {
   flex: 1;

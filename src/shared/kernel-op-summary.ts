@@ -20,7 +20,7 @@ export function kernelOpSummary(op: KernelPostSolidOp): string {
     case 'pattern_linear_3d':
       return `linear 3D n=${op.count} step(${op.dxMm},${op.dyMm},${op.dzMm})`
     case 'pattern_path':
-      return `path pattern n=${op.count} pts=${op.pathPoints.length}${op.closedPath ? ' closed' : ''}`
+      return `path pattern n=${op.count} pts=${op.pathPoints.length}${op.closedPath ? ' closed' : ''}${op.alignToPathTangent ? ' tangent' : ''}`
     case 'boolean_subtract_cylinder':
       return `−cyl @(${op.centerXMm},${op.centerYMm}) r=${op.radiusMm} Z[${op.zMinMm},${op.zMaxMm}]`
     case 'boolean_union_box':
@@ -30,7 +30,7 @@ export function kernelOpSummary(op: KernelPostSolidOp): string {
     case 'boolean_intersect_box':
       return `∩ box AABB`
     case 'boolean_combine_profile':
-      return `${op.mode} profile#${op.profileIndex} depth=${op.extrudeDepthMm} z0=${op.zStartMm}`
+      return `${op.mode} profile#${op.profileIndex} depth=${op.extrudeDepthMm} z0=${op.zStartMm} ${op.extrudeDirection ?? '+Z'}`
     case 'split_keep_halfspace':
       return `split ${op.axis}@${op.offsetMm} keep ${op.keep}`
     case 'hole_from_profile':

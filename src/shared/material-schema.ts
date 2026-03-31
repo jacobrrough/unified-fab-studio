@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CAM_FEED_PLUNGE_FLOOR_MM_MIN } from './cam-numeric-floors'
 
 /**
  * CNC cut parameters for a given material.
@@ -105,18 +106,32 @@ export function calcCutParams(
   stepoverMm: number
   zPassMm: number
   rpm: number
+  /** Chipload formula before {@link CAM_FEED_PLUNGE_FLOOR_MM_MIN} clamp (mm/min). */
+  recommendedFeedMmMin: number
+  /** True when feed was raised to the shared CAM floor. */
+  feedClampedToFloor: boolean
 } {
   const cp = mat.cutParams[toolType] ?? mat.cutParams['default']
   if (!cp) {
     // bare fallback — shouldn't happen with good data
-    return { feedMmMin: 1000, plungeMmMin: 300, stepoverMm: toolDiamMm * 0.4, zPassMm: -(toolDiamMm * 0.5), rpm: 18000 }
+    return {
+      feedMmMin: 1000,
+      plungeMmMin: 300,
+      stepoverMm: toolDiamMm * 0.4,
+      zPassMm: -(toolDiamMm * 0.5),
+      rpm: 18000,
+      recommendedFeedMmMin: 1000,
+      feedClampedToFloor: false
+    }
   }
 
   const rpm = cp.rpmOverride ?? Math.round((cp.surfaceSpeedMMin * 1000) / (Math.PI * toolDiamMm))
-  const feedMmMin = cp.feedOverrideMmMin ?? Math.round(rpm * fluteCount * cp.chiploadMm)
-  const plungeMmMin = Math.round(feedMmMin * cp.plungeFactor)
+  const recommendedFeedMmMin = cp.feedOverrideMmMin ?? Math.round(rpm * fluteCount * cp.chiploadMm)
+  const feedMmMin = Math.max(CAM_FEED_PLUNGE_FLOOR_MM_MIN, recommendedFeedMmMin)
+  const feedClampedToFloor = recommendedFeedMmMin < CAM_FEED_PLUNGE_FLOOR_MM_MIN
+  const plungeMmMin = Math.max(CAM_FEED_PLUNGE_FLOOR_MM_MIN, Math.round(feedMmMin * cp.plungeFactor))
   const stepoverMm = Math.round(toolDiamMm * cp.stepoverFactor * 10) / 10
   const zPassMm = -(Math.round(toolDiamMm * cp.docFactor * 10) / 10)
 
-  return { feedMmMin, plungeMmMin, stepoverMm, zPassMm, rpm }
+  return { feedMmMin, plungeMmMin, stepoverMm, zPassMm, rpm, recommendedFeedMmMin, feedClampedToFloor }
 }

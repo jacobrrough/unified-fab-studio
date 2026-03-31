@@ -15,8 +15,10 @@ The **stretch** rows in [`PARITY_REMAINING_ROADMAP.md`](PARITY_REMAINING_ROADMAP
 | Assembly | **Hierarchical BOM** text: `output/bom-hierarchical.txt` from `parentId` tree (`assembly:exportBomHierarchical`, `buildHierarchicalBomText`). |
 | Assembly | **Hierarchical BOM JSON** (active rows only): `output/bom-hierarchy.json` via `assembly:exportBomHierarchyJson` + `buildBomHierarchy`. |
 | Design | **Parameters file I/O**: `design:exportParameters` → `output/design-parameters.json`; `design:mergeParameters` merges `{ parameters }` into `design/sketch.json` (Utilities → Project). |
-| Drawings | **`drawing/drawing.json`** + Project **Drawing manifest** (sheet + view slots). PDF/DXF run **Tier A** mesh-edge projection via `engines/occt/project_views.py` when **`output/kernel-part.stl`** + Python succeed (**no HLR**); otherwise title block + placeholder copy. |
-| Manufacture | **Simulation (`mf_simulate` partial):** Manufacture tab **Tier 1** G0/G1 path preview + **Tier 2** coarse 2.5D removal proxy + optional **Tier 3** experimental voxel carve — **not** swept-volume boolean, **not** collision-safe, **not** machine kinematics. Utilities → **CAM** keeps **G-code text analysis** (bounds/motion cues). See `docs/VERIFICATION.md`. |
+| Drawings | **`drawing/drawing.json`** + Project **Drawing manifest** (sheet + view slots + optional **`meshProjectionTier` A/B/C**). PDF/DXF via `engines/occt/project_views.py`: Tier A edges (+ optional hull); Tier B adds mesh section segments; Tier C adds BRep section from kernel STEP when available — **not** certified HLR. |
+| Kernel | **`splitKeepHalfspace`** on manifest after `split_keep_halfspace`; optional **`splitDiscardedStepPath`** / **`splitDiscardedStlPath`** when the discarded half exports. **`loftGuideRailsKernelMode`** `marker` or **`sketch_xy_align`** when `loft_guide_rails` present. **`inspectBackend: kernel_stl_tessellation`**; optional **`stlMeshAngularToleranceDeg`** when the build payload sets STL angular tolerance (Design inspect copy). |
+| Manufacture | **`meshAnalyticPriorRoughStockMm`** (mesh raster fallback, no G-code rest sampler), **`cnc_lathe_turn`** planning row (blocked in **Generate CAM** until lathe posts), **sim** Tier 1–3 with documented Tier 2 grid (~88×88) + Tier 3 preset scaling — **not** collision-safe (`docs/VERIFICATION.md`, `docs/MACHINES.md`). |
+| Rib / web | **Scope gate** — [`docs/RIB_WEB_SCOPE_GATE.md`](RIB_WEB_SCOPE_GATE.md) (**no-go** this batch; deferrals in `GEOMETRY_KERNEL.md`). |
 
 ## Roadmap vs catalog
 

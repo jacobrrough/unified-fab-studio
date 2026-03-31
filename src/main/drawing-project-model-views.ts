@@ -23,11 +23,14 @@ export async function projectDrawingViewsFromKernelStl(params: {
   placeholders: DrawingViewPlaceholder[]
   pythonPath: string
   appRoot: string
+  /** Default A — B/C add section segments; C adds STEP BRep section when STEP exists (see `project_views.py`). */
+  meshProjectionTier?: 'A' | 'B' | 'C'
 }): Promise<
   | { ok: true; views: ProjectedDrawingView[] }
   | { ok: false; error: string; detail?: string }
 > {
   const stlPath = join(params.projectDir, 'output', 'kernel-part.stl')
+  const stepPath = join(params.projectDir, 'output', 'kernel-part.step')
   try {
     await readFile(stlPath)
   } catch {
@@ -46,9 +49,32 @@ export async function projectDrawingViewsFromKernelStl(params: {
   const outDir = join(params.projectDir, 'output')
   await mkdir(outDir, { recursive: true })
   const payloadPath = join(outDir, '.drawing-project-payload.json')
+  const tier =
+    params.meshProjectionTier === 'C' ? 'C' : params.meshProjectionTier === 'B' ? 'B' : 'A'
+  let stepForPayload: string | undefined
+  if (tier === 'C') {
+    try {
+      await readFile(stepPath)
+      stepForPayload = stepPath
+    } catch {
+      /* Tier C falls back to A+B linework in Python when STEP missing */
+    }
+  }
   await writeFile(
     payloadPath,
-    JSON.stringify({ stlPath, views, snapTolMm: 0.025, maxSegments: 22000 }, null, 2),
+    JSON.stringify(
+      {
+        stlPath,
+        ...(stepForPayload ? { stepPath: stepForPayload } : {}),
+        views,
+        snapTolMm: 0.025,
+        maxSegments: 22000,
+        includeConvexHull: true,
+        meshProjectionTier: tier
+      },
+      null,
+      2
+    ),
     'utf-8'
   )
 

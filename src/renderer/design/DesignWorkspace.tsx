@@ -151,6 +151,7 @@ export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
   const [kernelLin3dDz, setKernelLin3dDz] = useState(0)
   const [kernelPathPatternCount, setKernelPathPatternCount] = useState(5)
   const [kernelPathPatternEntityId, setKernelPathPatternEntityId] = useState('')
+  const [kernelPathPatternAlignTangent, setKernelPathPatternAlignTangent] = useState(false)
   const [kernelMirrorPlane, setKernelMirrorPlane] = useState<'YZ' | 'XZ' | 'XY'>('YZ')
   const [kernelMirrorPivotMm, setKernelMirrorPivotMm] = useState(0)
   const [kernelIxMin, setKernelIxMin] = useState(-12)
@@ -163,6 +164,7 @@ export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
   const [kernelCombineProfileIndex, setKernelCombineProfileIndex] = useState(0)
   const [kernelCombineDepthMm, setKernelCombineDepthMm] = useState(8)
   const [kernelCombineZStartMm, setKernelCombineZStartMm] = useState(0)
+  const [kernelCombineExtrudeDirection, setKernelCombineExtrudeDirection] = useState<'+Z' | '-Z'>('+Z')
   const [kernelSplitAxis, setKernelSplitAxis] = useState<'X' | 'Y' | 'Z'>('Z')
   const [kernelSplitOffsetMm, setKernelSplitOffsetMm] = useState(0)
   const [kernelSplitKeep, setKernelSplitKeep] = useState<'positive' | 'negative'>('positive')
@@ -1463,12 +1465,21 @@ export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
                 void appendKernelOp({
                   kind: 'pattern_path',
                   count: kernelPathPatternCount,
-                  pathPoints
+                  pathPoints,
+                  ...(kernelPathPatternAlignTangent ? { alignToPathTangent: true } : {})
                 } satisfies KernelPostSolidOp)
               }}
             >
               + path pattern
             </button>
+            <label title="Rotate each instance about +Z at the path start so +X follows path tangent (MVP)">
+              <input
+                type="checkbox"
+                checked={kernelPathPatternAlignTangent}
+                onChange={(e) => setKernelPathPatternAlignTangent(e.target.checked)}
+              />
+              Path align tangent
+            </label>
             <label title="Mirror plane: YZ flips X about pivot; XZ flips Y; XY flips Z">
               Mir plane
               <select
@@ -1625,6 +1636,17 @@ export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
                 onChange={(e) => setKernelCombineZStartMm(Number(e.target.value) || 0)}
               />
             </label>
+            <label title="Profile extrusion direction from z0 (+Z up, −Z down)">
+              Extr dir
+              <select
+                value={kernelCombineExtrudeDirection}
+                onChange={(e) => setKernelCombineExtrudeDirection(e.target.value as '+Z' | '-Z')}
+                className="ml-6"
+              >
+                <option value="+Z">+Z</option>
+                <option value="-Z">−Z</option>
+              </select>
+            </label>
             <button
               type="button"
               className="secondary"
@@ -1635,7 +1657,8 @@ export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
                   mode: kernelCombineMode,
                   profileIndex: kernelCombineProfileIndex,
                   extrudeDepthMm: kernelCombineDepthMm,
-                  zStartMm: kernelCombineZStartMm
+                  zStartMm: kernelCombineZStartMm,
+                  extrudeDirection: kernelCombineExtrudeDirection
                 } satisfies KernelPostSolidOp)
               }}
             >
@@ -4143,10 +4166,22 @@ export function DesignWorkspace({ onImport3D }: DesignWorkspaceProps = {}) {
           <div className="design-model-fullscreen">
             <div className="design-3d design-3d--fill design-3d--solo">
               <h3>3D preview</h3>
+              {kernelManifest && !kernelManifest.ok && kernelManifest.userHint ? (
+                <p className="msg msg--xs" role="status">
+                  <strong>Kernel hint:</strong> {kernelManifest.userHint}
+                </p>
+              ) : null}
               {kernelManifest && kernelInspectStaleReason ? (
                 <p className="msg" role="status">
                   <strong>Kernel mesh may be stale</strong> — measure/section use the sketch preview until you{' '}
                   <strong>Build STEP (kernel)</strong> again. ({kernelInspectStaleReason})
+                </p>
+              ) : null}
+              {kernelManifest?.ok && kernelManifest.splitKeepHalfspace ? (
+                <p className="msg msg--xs" role="status">
+                  Last split (diagnostic): axis <strong>{kernelManifest.splitKeepHalfspace.axis}</strong>, offset{' '}
+                  <strong>{kernelManifest.splitKeepHalfspace.offsetMm}</strong> mm, keep{' '}
+                  <strong>{kernelManifest.splitKeepHalfspace.keep}</strong> half-space — discarded solid is not exported.
                 </p>
               ) : null}
               <p

@@ -37,7 +37,14 @@ describe('kernel-manifest-schema', () => {
       placementParityDetail: 'max delta 0.030 mm',
       placementParityMaxDeltaMm: 0.03,
       designHash: 'abc'.repeat(10),
-      loftStrategy: 'smooth+align'
+      loftStrategy: 'smooth+align',
+      userHint: 'Tip: check profile indices.',
+      splitKeepHalfspace: { axis: 'X' as const, offsetMm: 0, keep: 'positive' as const },
+      splitDiscardedStepPath: 'out/kernel-part-split-discard.step',
+      splitDiscardedStlPath: 'out/kernel-part-split-discard.stl',
+      loftGuideRailsKernelMode: 'sketch_xy_align' as const,
+      inspectBackend: 'kernel_stl_tessellation' as const,
+      stlMeshAngularToleranceDeg: 0.25
     }
     const r = kernelManifestSchema.safeParse(input)
     expect(r.success).toBe(true)

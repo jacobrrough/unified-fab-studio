@@ -7,8 +7,10 @@
  * disclaimer. Saves to a .html file and opens in the system browser.
  */
 
+import { resolveManufactureSetupForCam } from '../../shared/cam-cut-params'
 import type { MachineProfile } from '../../shared/machine-schema'
 import type { MaterialRecord } from '../../shared/material-schema'
+import type { ManufactureFile } from '../../shared/manufacture-schema'
 import type { ToolRecord } from '../../shared/tool-schema'
 
 // ── Types (mirrors ShopApp.tsx local types to keep this file standalone) ─────
@@ -18,6 +20,13 @@ export interface SetupSheetJob {
   machineId: string | null
   materialId: string | null
   stock: { x: number; y: number; z: number }
+  /** When set (Shop 4-/5-axis session), cylinder stock along rotation axis + chuck context. */
+  rotarySetup?: {
+    cylinderDiameterMm: number
+    cylinderLengthMm: number
+    chuckDepthMm: number
+    clampOffsetMm: number
+  }
   operations: Array<{
     id: string
     kind: string
@@ -92,6 +101,14 @@ function fmtTime(sec: number): string {
   return `${m}m ${s}s`
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 // ── HTML generator ─────────────────────────────────────────────────────────────
 export function generateSetupSheet(opts: {
   job: SetupSheetJob
@@ -99,9 +116,11 @@ export function generateSetupSheet(opts: {
   material: MaterialRecord | null
   tools: ToolRecord[]
   gcodeStats: GcodeStats | null
+  /** When set, first lines are shown as an excerpt (not full program). */
+  gcodeText?: string | null
   generatedAt?: Date
 }): string {
-  const { job, machine, material, tools, gcodeStats } = opts
+  const { job, machine, material, tools, gcodeStats, gcodeText } = opts
   const now = (opts.generatedAt ?? new Date()).toLocaleString()
   const modelFile = job.stlPath ? job.stlPath.split(/[\\/]/).pop() : '—'
   const gcodeFile = job.gcodeOut ? job.gcodeOut.split(/[\\/]/).pop() : 'Not generated'
@@ -127,10 +146,22 @@ export function generateSetupSheet(opts: {
     const stepover = p['stepoverMm'] != null ? `${p['stepoverMm']} mm`       : '—'
     const safeZ   = p['safeZMm']     != null ? `${p['safeZMm']} mm`          : '—'
 
+    const extraBits: string[] = []
+    const fs = p['finishScallopMm']
+    if (typeof fs === 'number' && Number.isFinite(fs) && fs > 0) extraBits.push(`finish scallop ${fs} mm`)
+    const fsm = p['finishScallopMode']
+    if (typeof fsm === 'string' && fsm.trim()) extraBits.push(`scallop mode: ${fsm}`)
+    const rs = p['rasterRestStockMm']
+    if (typeof rs === 'number' && Number.isFinite(rs) && rs > 0) extraBits.push(`raster rest +${rs} mm`)
+    const extraLine =
+      extraBits.length > 0
+        ? `<br><span style="font-size:10px;color:#6b7280">${extraBits.join(' · ')}</span>`
+        : ''
+
     return `
       <tr>
         <td style="color:#8899aa;font-family:monospace;font-size:12px">${i+1}</td>
-        <td><strong>${op.label}</strong><br><span style="font-size:11px;color:#8899aa">${op.kind}</span></td>
+        <td><strong>${op.label}</strong><br><span style="font-size:11px;color:#8899aa">${op.kind}</span>${extraLine}</td>
         <td>${toolName}</td>
         <td>${feed}</td>
         <td>${plunge}</td>
@@ -280,8 +311,41 @@ export function generateSetupSheet(opts: {
     </div>
   </section>
 
+  ${job.rotarySetup ? `
   <section>
-    <h2>Operations (${job.operations.length})</h2>
+    <h2>Rotary stock (session)</h2>
+    <div class="info-grid">
+      <div class="info-card">
+        <div class="label">Cylinder Ø (stock Y)</div>
+        <div class="value">${fmt(job.rotarySetup.cylinderDiameterMm, 2)} mm</div>
+      </div>
+      <div class="info-card">
+        <div class="label">Cylinder length (stock X)</div>
+        <div class="value">${fmt(job.rotarySetup.cylinderLengthMm, 2)} mm</div>
+      </div>
+      <div class="info-card">
+        <div class="label">Chuck depth</div>
+        <div class="value">${job.rotarySetup.chuckDepthMm} mm</div>
+      </div>
+      <div class="info-card">
+        <div class="label">Clamp offset</div>
+        <div class="value">${fmt(job.rotarySetup.clampOffsetMm, 2)} mm</div>
+      </div>
+    </div>
+    <p class="disclaimer" style="margin-top:10px">4-axis posts are unverified until you confirm A-axis WCS, cylinder diameter, and clearance — see docs/MACHINES.md.</p>
+  </section>` : ''}
+
+  <section>
+    <h2>CAM guardrails & verification</h2>
+    <p style="font-size:12px;color:#374151;max-width:52rem">
+      Feeds, plunge, stepover, and depth are copied from the job as entered. The app may clamp values to safe minimums and append
+      <strong>machine work-volume hints</strong> after posting when parsed G-code exceeds the profile <code>workAreaMm</code> (WCS must match your fixture).
+      G-code remains <strong>unverified</strong> for any real machine until you air-cut, check the post, and follow <strong>docs/MACHINES.md</strong> in the project.
+    </p>
+  </section>
+
+  <section>
+    <h2>Operation sequence (${job.operations.length})</h2>
     <table>
       <thead>
         <tr>
@@ -319,6 +383,18 @@ export function generateSetupSheet(opts: {
 
   ${statsSection}
 
+  ${
+    gcodeText && gcodeText.trim().length > 0
+      ? `<section>
+    <h2>G-code excerpt <span class="note">(first 50 lines)</span></h2>
+    <pre style="font-size:10px;background:#0f172a;color:#e2e8f0;padding:12px;border-radius:6px;overflow:auto;max-height:280px;white-space:pre-wrap;word-break:break-all">${escapeHtml(
+      gcodeText.split(/\r?\n/).slice(0, 50).join('\n')
+    )}</pre>
+    <p class="disclaimer">Excerpt only — open the full <code>cam.nc</code> (or project output) for the complete program.</p>
+  </section>`
+      : ''
+  }
+
   <footer>
     Unified Fab Studio — Setup Sheet &nbsp;|&nbsp; ${job.name} &nbsp;|&nbsp; ${now}
     <br>Always verify G-code, work offsets, and tool lengths before running. The operator is responsible for machine safety.
@@ -328,4 +404,51 @@ export function generateSetupSheet(opts: {
 </html>`
 
   return html
+}
+
+/** Build a setup sheet job from `manufacture.json` + resolved CAM setup (Make / Plan tab). */
+export function buildSetupSheetJobFromManufacture(input: {
+  projectName: string
+  mfg: ManufactureFile
+  camMachineId: string | undefined
+  gcodePath: string | null
+  sourceStlPath: string | null
+}): SetupSheetJob {
+  const setup = resolveManufactureSetupForCam(input.mfg, input.camMachineId)
+  const st = setup?.stock
+  let stock = { x: 100, y: 100, z: 20 }
+  if (st && (st.kind === 'box' || st.kind === 'cylinder')) {
+    const sx = typeof st.x === 'number' && st.x > 0 ? st.x : stock.x
+    const sy = typeof st.y === 'number' && st.y > 0 ? st.y : stock.y
+    const sz = typeof st.z === 'number' && st.z > 0 ? st.z : stock.z
+    stock = { x: sx, y: sy, z: sz }
+  }
+  let rotarySetup: SetupSheetJob['rotarySetup']
+  if (setup?.axisMode === '4axis' && st && (st.kind === 'box' || st.kind === 'cylinder')) {
+    const lx = typeof st.x === 'number' && st.x > 0 ? st.x : 0
+    const dia = typeof st.y === 'number' && st.y > 0 ? st.y : 0
+    if (lx > 0 && dia > 0) {
+      rotarySetup = {
+        cylinderLengthMm: lx,
+        cylinderDiameterMm: dia,
+        chuckDepthMm: 5,
+        clampOffsetMm: 0
+      }
+    }
+  }
+  return {
+    name: input.projectName,
+    stlPath: input.sourceStlPath,
+    machineId: setup?.machineId ?? null,
+    materialId: null,
+    stock,
+    ...(rotarySetup ? { rotarySetup } : {}),
+    operations: input.mfg.operations.map((op) => ({
+      id: op.id,
+      kind: op.kind,
+      label: op.label,
+      params: (op.params ?? {}) as Record<string, unknown>
+    })),
+    gcodeOut: input.gcodePath
+  }
 }

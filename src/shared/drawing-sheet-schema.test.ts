@@ -21,6 +21,32 @@ describe('drawing-sheet-schema', () => {
     expect(f.sheets[0]).toEqual({ id: 'a', name: 'General', scale: '1:2' })
   })
 
+  it('parses sheet with sheetTemplateHint', () => {
+    const f = parseDrawingFile({
+      version: 1,
+      sheets: [{ id: 'b', name: 'S', scale: '1:1', sheetTemplateHint: 'A4 landscape' }]
+    })
+    expect(f.sheets[0]?.sheetTemplateHint).toBe('A4 landscape')
+  })
+
+  it('parses meshProjectionTier A and B on first sheet', () => {
+    const a = parseDrawingFile({
+      version: 1,
+      sheets: [{ id: 's', name: 'S', scale: '1:1', meshProjectionTier: 'A' }]
+    })
+    expect(a.sheets[0]?.meshProjectionTier).toBe('A')
+    const b = parseDrawingFile({
+      version: 1,
+      sheets: [{ id: 's2', name: 'S2', scale: '1:1', meshProjectionTier: 'B' }]
+    })
+    expect(b.sheets[0]?.meshProjectionTier).toBe('B')
+    const c = parseDrawingFile({
+      version: 1,
+      sheets: [{ id: 's3', name: 'S3', scale: '1:1', meshProjectionTier: 'C' }]
+    })
+    expect(c.sheets[0]?.meshProjectionTier).toBe('C')
+  })
+
   it('parses view placeholders on a sheet', () => {
     const f = parseDrawingFile({
       version: 1,

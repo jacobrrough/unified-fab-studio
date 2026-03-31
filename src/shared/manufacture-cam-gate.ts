@@ -4,8 +4,8 @@
  */
 export type ManufactureCamBlockedKind = 'fdm_slice' | 'export_stl'
 
-/** cnc_laser is blocked from the built-in CAM runner — needs external laser post. */
-const BLOCKED = new Set<string>(['fdm_slice', 'export_stl', 'cnc_laser'])
+/** cnc_laser / cnc_lathe_turn: blocked from built-in CAM runner until dedicated posts ship. */
+const BLOCKED = new Set<string>(['fdm_slice', 'export_stl', 'cnc_laser', 'cnc_lathe_turn'])
 
 export function isManufactureKindBlockedFromCam(kind: string | undefined): boolean {
   if (kind == null || kind === '') return false
@@ -31,6 +31,13 @@ export function getManufactureCamRunBlock(kind: string | undefined): { error: st
     return {
       error: 'Laser operations are not posted by the built-in CAM runner.',
       hint: 'Use Makera CAM or dedicated laser software to generate laser G-code. The cnc_laser kind is for planning only.'
+    }
+  }
+  if (kind === 'cnc_lathe_turn') {
+    return {
+      error: 'Lathe / turning is not posted by the built-in CAM runner yet.',
+      hint:
+        'Use CAM software with lathe posts for G-code. `cnc_lathe_turn` is reserved in manufacture.json for future axis + stock + cycle work (see docs/MACHINES.md).'
     }
   }
   return null

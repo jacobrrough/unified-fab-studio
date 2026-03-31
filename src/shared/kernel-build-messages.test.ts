@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LOFT_MAX_PROFILES } from './sketch-profile'
-import { formatKernelBuildStatus } from './kernel-build-messages'
+import { formatKernelBuildStatus, kernelBuildDetailGuidance } from './kernel-build-messages'
 
 describe('formatKernelBuildStatus', () => {
   it('maps known payload guard codes to readable text', () => {
@@ -22,5 +22,12 @@ describe('formatKernelBuildStatus', () => {
   it('mentions loft profile cap from LOFT_MAX_PROFILES', () => {
     const s = formatKernelBuildStatus('loft_too_many_profiles')
     expect(s).toContain(String(LOFT_MAX_PROFILES))
+  })
+
+  it('appends guidance for profile index errors', () => {
+    expect(kernelBuildDetailGuidance('profileIndex out of range: 3')).toMatch(/0-based|indices/i)
+    const s = formatKernelBuildStatus('build_failed', 'profileIndex out of range: 3')
+    expect(s).toContain('profileIndex out of range')
+    expect(s).toMatch(/Tip:/i)
   })
 })

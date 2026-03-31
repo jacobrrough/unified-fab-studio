@@ -29,9 +29,39 @@ const KERNEL_BUILD_USER: Record<string, string> = {
   usage: 'Kernel script was invoked incorrectly (internal error).'
 }
 
+/**
+ * Short follow-up line for status toasts / `kernel-manifest.json` `userHint` when CadQuery or payload
+ * errors include recognizable detail text.
+ */
+export function kernelBuildDetailGuidance(detail?: string, error?: string): string | undefined {
+  const d = detail?.trim() ?? ''
+  if (/profileIndex out of range/i.test(d)) {
+    return 'Tip: indices are 0-based against closed profiles exported from the sketch (entity order).'
+  }
+  if (/split_keep_halfspace produced empty keep region/i.test(d)) {
+    return 'Tip: try the opposite keep side or move offsetMm so the kept half-space still intersects the body.'
+  }
+  if (/boolean_combine_profile extrudeDirection/i.test(d)) {
+    return 'Tip: use +Z (default) or -Z only for combine profile extrude direction.'
+  }
+  if (/pattern_path alignToPathTangent/i.test(d)) {
+    return 'Tip: alignToPathTangent must be a boolean.'
+  }
+  if (/hole_from_profile depthMm/i.test(d) || /hole_from_profile depth mode requires/i.test(d)) {
+    return 'Tip: depth mode needs a finite positive depthMm; through_all omits depthMm.'
+  }
+  if (error === 'design_file_missing') {
+    return 'Tip: save the design or open a project folder that contains design/sketch.json.'
+  }
+  return undefined
+}
+
 export function formatKernelBuildStatus(error: string, detail?: string): string {
   const base = KERNEL_BUILD_USER[error] ?? `Kernel build failed (${error})`
   const d = detail?.trim()
+  const hint = kernelBuildDetailGuidance(d, error)
+  if (d && hint) return `${base} — ${d}. ${hint}`
   if (d) return `${base} — ${d}`
+  if (hint) return `${base} ${hint}`
   return base
 }

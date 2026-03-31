@@ -12,7 +12,11 @@ import {
   isManufactureKind4AxisForPreview,
   resolve4AxisCylinderDiameterMm
 } from '../../shared/cam-gcode-toolpath'
-import { buildVoxelRemovalFromCuttingSegments } from '../../shared/cam-voxel-removal-proxy'
+import {
+  buildVoxelRemovalFromCuttingSegments,
+  VOXEL_SIM_QUALITY_PRESETS,
+  type VoxelSimQualityPreset
+} from '../../shared/cam-voxel-removal-proxy'
 import type { MachineProfile } from '../../shared/machine-schema'
 import type { ManufactureFile, ManufactureOperation } from '../../shared/manufacture-schema'
 import { resolveCamToolDiameterMm } from '../../shared/cam-tool-resolve'
@@ -313,6 +317,18 @@ type Props = {
   layout?: 'compact' | 'workspace'
 }
 
+const VOXEL_QUALITY_STORAGE_KEY = 'ufs.manufacture.camSim.voxelQuality'
+
+function readStoredVoxelQuality(): VoxelSimQualityPreset {
+  try {
+    const v = localStorage.getItem(VOXEL_QUALITY_STORAGE_KEY)
+    if (v === 'fast' || v === 'balanced' || v === 'detailed') return v
+  } catch {
+    /* ignore */
+  }
+  return 'balanced'
+}
+
 const TUBE_MAX_SEGMENTS = 10000
 const TUBE_MAX_CHAINS = 900
 /** Playback: approximate path fraction advanced per second when playing (loops). */
@@ -333,6 +349,7 @@ export function ManufactureCamSimulationPanel({
   const [loadNote, setLoadNote] = useState<string | null>(null)
   const [showRemoval, setShowRemoval] = useState(true)
   const [removalMode, setRemovalMode] = useState<'tier2' | 'tier3'>('tier2')
+  const [voxelQuality, setVoxelQuality] = useState<VoxelSimQualityPreset>(() => readStoredVoxelQuality())
   const [pathPreviewMode, setPathPreviewMode] = useState<'rendered' | 'lines'>('rendered')
   const [showPartMesh, setShowPartMesh] = useState(true)
   const [partLoadNote, setPartLoadNote] = useState<string | null>(null)
@@ -344,6 +361,14 @@ export function ManufactureCamSimulationPanel({
   useEffect(() => {
     setGcode(camOut ?? '')
   }, [camOut])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VOXEL_QUALITY_STORAGE_KEY, voxelQuality)
+    } catch {
+      /* ignore */
+    }
+  }, [voxelQuality])
 
   const setupIdx = Math.max(0, Math.min(stockSetupIndex, Math.max(0, mfg.setups.length - 1)))
   const stockDef = mfg.setups[setupIdx]?.stock
@@ -512,17 +537,18 @@ export function ManufactureCamSimulationPanel({
 
   const voxelPreview = useMemo(() => {
     if (!showRemoval || removalMode !== 'tier3' || segments.length === 0) return null
+    const vq = VOXEL_SIM_QUALITY_PRESETS[voxelQuality]
     return buildVoxelRemovalFromCuttingSegments(segments, {
       toolRadiusMm: toolDia * 0.5,
-      maxCols: 34,
-      maxRows: 34,
-      maxLayers: 20,
+      ...vq,
       stockTopZ: 0,
-      cuttingZThreshold: 0.08,
-      maxStamps: 8000,
-      maxSamplePoints: 2400
+      ...(stockBox && stockBox.z > 0 ? { stockBottomZ: -stockBox.z } : {}),
+      ...(stockBox && stockBox.x > 0 && stockBox.y > 0
+        ? { stockRectXYMm: { minX: 0, maxX: stockBox.x, minY: 0, maxY: stockBox.y } }
+        : {}),
+      cuttingZThreshold: 0.08
     })
-  }, [segments, showRemoval, removalMode, toolDia])
+  }, [segments, showRemoval, removalMode, toolDia, stockBox, voxelQuality])
 
   useEffect(() => {
     if (!isPlaying || pathSampler.totalMm < 1e-9) return
@@ -650,8 +676,10 @@ export function ManufactureCamSimulationPanel({
       <h3 className="subh">Fabrication 3D workspace — path, stock, part mesh</h3>
       <p className="msg msg--muted">
         <strong>Part mesh</strong> uses the same CNC→Three mapping as G-code (X→X, CNC Z→Three Y, CNC Y→Three Z).{' '}
-        <strong>Tier 1:</strong> rendered tubes vs lines. <strong>Tier 2/3:</strong> approximate removal. Not collision-safe —{' '}
-        <code>docs/MACHINES.md</code>.
+        <strong>Tier 1:</strong> rendered tubes vs lines. <strong>Tier 2:</strong> fixed ~88×88 2.5D height field from feed
+        stamps (not stock-exact).         <strong>Tier 3:</strong> coarse voxels; quality preset scales grid/stamp budget (still
+        approximate). Tier 2–3 trade <strong>resolution vs UI responsiveness</strong> under fixed caps — not a
+        certified removal model. Not collision-safe — <code>docs/MACHINES.md</code>.
       </p>
       <p className="msg msg--muted msg--xs" aria-live="polite">
         <strong>Machine safety:</strong> verify posts, units, tool length, and clearances before running G-code. Purple
@@ -660,6 +688,17 @@ export function ManufactureCamSimulationPanel({
       {envelopeMachine && workArea ? (
         <p className="msg msg--muted msg--xs">
           <strong>Machine envelope (preview):</strong> {envelopeMachine.name} — {workArea.x}×{workArea.y}×{workArea.z} mm
+        </p>
+      ) : null}
+      {envelopeMachine?.kind === 'cnc' && (envelopeMachine.axisCount ?? 3) >= 4 ? (
+        <p className="msg msg--muted msg--xs" role="note">
+          <strong>Rotary (A):</strong> Tier 1 tube/lines map <code>X</code>, radial <code>Z</code>, and <code>A</code> into a
+          cylindrical preview rig. Tier 2–3 material proxies remain coarse 2.5D / voxel stamps — not full rotary swept-volume
+          or collision checking. Compare <code>A</code> to <code>aAxisRangeDeg</code>
+          {envelopeMachine.aAxisRangeDeg != null
+            ? ` (${envelopeMachine.aAxisRangeDeg}° nominal)`
+            : ' (defaults to 360° when unset)'}
+          . See <code>docs/CAM_4TH_AXIS_REFERENCE.md</code> and <code>docs/MACHINES.md</code>.
         </p>
       ) : null}
       {stockDef?.kind === 'fromExtents' ? (
@@ -748,6 +787,20 @@ export function ManufactureCamSimulationPanel({
             </select>
           </label>
         ) : null}
+        {showRemoval && removalMode === 'tier3' ? (
+          <label title="Tier 3 grid resolution and sphere-stamp budget (saved in this browser)">
+            Voxel quality
+            <select
+              value={voxelQuality}
+              onChange={(e) => setVoxelQuality(e.target.value as VoxelSimQualityPreset)}
+              className="ml-6"
+            >
+              <option value="fast">Fast (coarse)</option>
+              <option value="balanced">Balanced</option>
+              <option value="detailed">Detailed (slow)</option>
+            </select>
+          </label>
+        ) : null}
         <span className="msg msg--muted msg--xs">
           Tool Ø for proxy: {toolDia.toFixed(2)} mm (selected or first CNC op + library)
         </span>
@@ -783,11 +836,19 @@ export function ManufactureCamSimulationPanel({
           mm — carved voxels ~{voxelPreview.carvedVoxelCount.toLocaleString()} (~
           {voxelPreview.approxRemovedVolumeMm3.toFixed(0)} mm³ heuristic).
           {voxelPreview.stampsCapped ? ' Stamp budget capped for performance.' : ''} Orange points sample removed volume.
+          {' '}
+          Approximate only — not collision-safe. With a setup stock box, the grid extends to nominal XY and Z stock (still heuristic).
         </p>
       ) : null}
       {showRemoval && removalMode === 'tier3' && segments.length > 0 && !voxelPreview ? (
         <p className="msg msg--muted cam-msg-tier3">
           Tier 3: no voxel data (no qualifying feed moves below the Z threshold, or path too small).
+        </p>
+      ) : null}
+      {showRemoval && removalMode === 'tier2' && heightField ? (
+        <p className="msg msg--muted cam-msg-tier3">
+          Tier 2: grid {heightField.cols}×{heightField.rows}, cell ≈{heightField.cellMm.toFixed(2)} mm — upper-envelope proxy
+          only; does not model holder/fixture collisions or true swept volume.
         </p>
       ) : null}
       {loadNote ? <p className="msg">{loadNote}</p> : null}

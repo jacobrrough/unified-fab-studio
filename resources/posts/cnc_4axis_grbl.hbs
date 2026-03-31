@@ -22,6 +22,8 @@
 ; (6) Confirm your Carvera firmware supports the A word in Grbl (some builds
 ;     require the rotary axis plugin — check Makera documentation).
 ; ---------------------------------------------------------------------------
+; Retract order: lift Z to a safe radial clearance before commanding large A moves
+; (toolpath lines already use clearance Z between passes; header retract is machine max Z).
 ; Before production: dry run — spindle off, Z high, feed reduced.
 ; Compare a short program to a known-good file from Makera CAM.
 ; See docs/MACHINES.md — safe Z, WCS, units, spindle M-codes.

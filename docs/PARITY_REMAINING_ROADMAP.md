@@ -13,9 +13,9 @@ This document **expands** [`PARITY_PHASES.md`](PARITY_PHASES.md) into a **backlo
 Commercial CAD–depth stretch work is still **mostly open**. **You cannot “finish all stretch” in one pass** — see [`STRETCH_SCOPE.md`](STRETCH_SCOPE.md). Shipped so far as **thin vertical slices**:
 
 - **Assembly / shell:** interference report **download JSON**; **save** to `output/{assembly}-interference.json`; **`ut_interference`** opens **Assembly**; **hierarchical BOM** → `output/bom-hierarchical.txt` (`parentId` tree); **active tree JSON** → `output/bom-hierarchy.json`.
-- **Drawings:** **`drawing/drawing.json`** + **Utilities → Project → Drawing manifest** (primary sheet + **view slots** with per-slot labels, **`aria-live`** on changes); **`drawing:load` / `drawing:save`** IPC; PDF/DXF embed **Tier A** orthographic linework from `project_views.py` when **`output/kernel-part.stl`** + Python succeed (**no HLR**); otherwise title block + slot list + build hint. Palette **`dr_new_sheet`** / **`dr_base_view`** / **`dr_projected_view`** → Project tab (catalog **implemented**).
+- **Drawings:** **`drawing/drawing.json`** + **Utilities → Project → Drawing manifest** (primary sheet + **view slots** + optional **`meshProjectionTier` A/B/C**); **`drawing:load` / `drawing:save`** IPC; PDF/DXF embed **Tier A/B/C** linework from `project_views.py` when **`output/kernel-part.stl`** + Python succeed (**C** uses **`output/kernel-part.step`** for BRep section when available; **not** certified HLR); otherwise title block + slot list + build hint. Palette **`dr_new_sheet`** / **`dr_base_view`** / **`dr_projected_view`** → Project tab (catalog **implemented**).
 - **Parameters:** **`design:exportParameters`** / **`design:mergeParameters`** (Utilities → Project) for `output/design-parameters.json` ↔ `design/sketch.json`.
-- **Inspect (Design):** **`ut_measure`** / **`ut_section`** — Design 3D: **Shift+click** distance (mm) + **Y** section clip; mesh from **kernel STL** when manifest matches current design/features, else sketch preview mesh (catalog **implemented**; not B-rep–accurate inspect).
+- **Inspect (Design):** **`ut_measure`** / **`ut_section`** — Design 3D: **Shift+click** distance (mm) + **Y** section clip; mesh from **kernel STL** when manifest matches current design/features, else sketch preview mesh (catalog **implemented**; not B-rep–accurate inspect). Optional manifest **`stlMeshAngularToleranceDeg`** (from kernel JSON payload) is surfaced in inspect copy when set — tessellation intent only.
 - **Kernel queue:** per-op **`suppressed`** on `kernelOps` → filtered in **`attachKernelPostOpsToPayload`** / **`activeKernelOpsForPython`** before `build_part.py`.
 - **Manufacture:** **Simulation** — Manufacture tab **Tier 1–3 preview** (G0/G1 path + Tier 2 2.5D proxy + optional Tier 3 experimental voxel sample); catalog **`mf_simulate`** = **partial** (not boolean-exact / not collision-safe); Utilities **CAM** text analysis; see [`VERIFICATION.md`](VERIFICATION.md).
 
@@ -92,8 +92,8 @@ Line tool, offset closed loops, trim, sketch fillet, tangent + symmetric constra
 
 | Priority | Catalog IDs | Deliverable |
 |----------|-------------|-------------|
-| High | `so_combine` | **Partial:** profile-driven combine via `boolean_combine_profile` (union/subtract/intersect from `profileIndex` + depth/zStart) plus prior primitive booleans; **`profileIndex`** is range-checked against payload **`profiles`** in `build_part.py` pre-OCC; richer body references + diagnostics still planned. |
-| Medium | `so_split`, `so_hole` | **Partial:** `split_keep_halfspace` (axis + **`offsetMm`** + **`keep`** positive/negative; extra sample with negative keep + offset) and `hole_from_profile` (depth requires **`depthMm`** in JSON; through-all). Full split-body management and hole wizard semantics remain planned. |
+| High | `so_combine` | **Partial:** profile-driven combine via `boolean_combine_profile` (union/subtract/intersect from `profileIndex` + depth/zStart, optional **`extrudeDirection` ±Z**) plus prior primitive booleans; **`profileIndex`** is range-checked against payload **`profiles`** in `build_part.py` pre-OCC; richer body references + split-body management still planned. |
+| Medium | `so_split`, `so_hole` | **Partial:** `split_keep_halfspace` (axis + **`offsetMm`** + **`keep`** positive/negative; extra sample with negative keep + offset) and `hole_from_profile` (depth requires **`depthMm`** in JSON; through-all). Successful kernel manifest includes **`splitKeepHalfspace`** (diagnostic; discarded half still not exported). Full two-solid export and hole wizard semantics remain planned. |
 | Low | `so_thread` | **Implemented (vNext):** `thread_wizard` modeled/cosmetic flow (standard/designation/class metadata, hand, starts) with legacy `thread_cosmetic` compatibility mapping. |
 
 ### Epic 3.B — Patterns & mirrors
@@ -102,7 +102,7 @@ Line tool, offset closed loops, trim, sketch fillet, tangent + symmetric constra
 |----------|-------------|-------------|
 | High | `so_pattern_circ` | **Shipped:** `pattern_circular` in `kernelOps` / `build_part.py` (+Z pivot); Design ribbon **+ circ pattern**; sample [`features.circular.example.json`](../resources/sample-kernel-solid-ops/part/features.circular.example.json). |
 | High | *(linear 3D)* | **Shipped:** `pattern_linear_3d` + sample [`features.linear3d.example.json`](../resources/sample-kernel-solid-ops/part/features.linear3d.example.json). |
-| Medium | `so_pattern_path` | **Partial:** `pattern_path` with path-point sampling along sketch polyline (translation-only); optional **`closedPath`** includes the closing edge in arc-length sampling. |
+| Medium | `so_pattern_path` | **Partial:** `pattern_path` with path-point sampling along sketch polyline; optional **`alignToPathTangent`** rotates copies about +Z at the path start (tangent-follow MVP); optional **`closedPath`** includes the closing edge in arc-length sampling. |
 | Medium | `so_mirror_body` | **Partial:** `mirror_union_plane` (YZ/XZ/XY + origin) + sample [`features.mirror.example.json`](../resources/sample-kernel-solid-ops/part/features.mirror.example.json). |
 
 ### Epic 3.C — Modify & create extensions
@@ -112,7 +112,7 @@ Line tool, offset closed loops, trim, sketch fillet, tangent + symmetric constra
 | Medium | `so_fillet`, `so_chamfer` | **Partial:** directional edge selection (`fillet_select` / `chamfer_select`, ±X/±Y/±Z) in addition to all-edge ops; full graph/face selection still planned. |
 | Medium | `so_shell` | **Partial:** one cap per op via **`openDirection`** ±X/±Y/±Z (default +Z) + opposite-cap fallback; multiple open faces / thickness variants per op if CadQuery allows. |
 | Low | `so_sweep`, `so_pipe`, `so_thicken` | **Implemented (vNext):** `sweep_profile_path_true` orientation modes + `thicken_offset`; legacy `sweep_profile_path` / `thicken_scale` map forward for compatibility. `pipe_path` remains available with existing limits. |
-| Low | `so_rib`, `so_web` | Still planned as separate kernel + UI projects. |
+| Low | `so_rib`, `so_web` | **Deferred** as separate kernel + UI projects — see [`GEOMETRY_KERNEL.md`](GEOMETRY_KERNEL.md) *Stretch deferrals*. |
 | Low | `so_coil` | **Partial:** kernel **`coil_cut`** (stacked ring-cut surrogate, **≤1024** ring instances) + sample [`features.coil-cut.example.json`](../resources/sample-kernel-solid-ops/part/features.coil-cut.example.json); true coil/sweep UX still planned. |
 | Medium | `so_move_copy`, `so_press_pull` | **Partial:** `transform_translate` (move/copy union) and `press_pull_profile` (signed profile delta). Direct-manipulation UX remains planned. |
 
@@ -243,7 +243,7 @@ Setups, stock, **`fixtureNote`**, WCS **G54–G59** in post; op kinds **`cnc_par
 | Priority | Catalog IDs | Deliverable |
 |----------|-------------|-------------|
 | Medium | `mf_additive` | **Shipped:** merged Cura `-s` (**preset + extra JSON + named profiles**), Slice tab preview, **`fdm_slice` → CuraEngine** from Manufacture. |
-| Low | `mf_turning` | Separate post + op taxonomy — large scope. |
+| Low | `mf_turning` | **Phased sub-plan:** `cnc_lathe_turn` stays **blocked** in **Generate CAM** until lathe posts + `cam-runner` / `engines/cam` slice + machine profiles land in **separate** batches ([`MACHINES.md`](MACHINES.md)); treat as multi-PR epic, not a single “done” toggle. |
 
 ### Epic 6.D — Simulation
 
@@ -271,13 +271,13 @@ Setups, stock, **`fixtureNote`**, WCS **G54–G59** in post; op kinds **`cnc_par
 
 ### Baseline (**shipped**)
 
-Command palette (catalog search, a11y, workspace filter), keyboard shortcuts reference + global chords, status footer + discoverability hint, drawing **PDF/DXF** with **Tier A** mesh-edge projection when kernel STL + Python succeed (**no HLR**), parameters ribbon + Project file I/O, project open/save/import/export, persisted **last workspace** and resizable panel columns, Browser/Properties polish.
+Command palette (catalog search, a11y, workspace filter), keyboard shortcuts reference + global chords, status footer + discoverability hint, drawing **PDF/DXF** with **Tier A–C** mesh/BRep-assisted projection when kernel STL + Python succeed (**no certified HLR**), parameters ribbon + Project file I/O, project open/save/import/export, persisted **last workspace** and resizable panel columns, Browser/Properties polish.
 
 ### Epic 7.A — Drawings
 
 | Priority | Catalog IDs | Deliverable |
 |----------|-------------|-------------|
-| High | `dr_new_sheet`, `dr_base_view`, `dr_projected_view` | **Shipped:** **`drawing/drawing.json`** + Project **Drawing manifest** (view slots, labels); PDF/DXF embed per-slot projection linework via **`project_views.py`** when STL + Python OK — catalog **implemented**; **stretch:** HLR, fully associative drawing pipeline. |
+| High | `dr_new_sheet`, `dr_base_view`, `dr_projected_view` | **Shipped:** **`drawing/drawing.json`** + Project **Drawing manifest** (view slots, labels, **Tier C** BRep section from kernel STEP when selected); PDF/DXF embed per-slot projection linework via **`project_views.py`** when STL + Python OK — catalog **implemented**; **stretch:** certified HLR, fully associative drawing pipeline. |
 | Medium | `dr_export_pdf`, `dr_export_dxf` | **Shipped:** title block + embedded projection layers when available — catalog **implemented**. |
 
 ### Epic 7.B — Inspect & manage
@@ -312,9 +312,79 @@ Command palette (catalog search, a11y, workspace filter), keyboard shortcuts ref
 
 - [x] **IPC:** drawing export and other utilities that use **`invoke`** stay registered in **preload + main**; **`ipc-contract.test.ts`** passes when channels change.
 - [x] **Shortcuts:** chord behavior covered in **`app-keyboard-shortcuts.test.ts`**; human-readable table in [`KEYBOARD_SHORTCUTS.md`](KEYBOARD_SHORTCUTS.md) stays aligned with [`app-keyboard-shortcuts.ts`](../src/shared/app-keyboard-shortcuts.ts) (update **TS first**).
-- [x] **Drawing export:** PDF/DXF paths exercised by **`drawing-export-*.test.ts`**; catalog **`dr_export_*`** / view commands document **Tier A** projection vs fallback (see [`VERIFICATION.md`](VERIFICATION.md)).
+- [x] **Drawing export:** PDF/DXF paths exercised by **`drawing-export-*.test.ts`**; catalog **`dr_export_*`** / view commands document **Tier A/B/C** projection vs fallback (see [`VERIFICATION.md`](VERIFICATION.md)).
 
 **Primary paths:** `src/renderer/shell/*`, `src/renderer/commands/*`, drawing export services in `src/main/`, `fusion-style-command-catalog.ts`.
+
+---
+
+## Phase 8 — CAM depth (post–Phase 7 program)
+
+**Status:** **Active slice** — tracker row in [`PARITY_PHASES.md`](PARITY_PHASES.md).
+
+**Goal:** Clearer **finish geometry** (scallop-driven stepover), coarse **rest** hint on mesh rasters, and **mesh-informed 4-axis** bounds without claiming full rotary CAM.
+
+### Epic 8.A — Finish semantics
+
+| Deliverable | Paths |
+|-------------|--------|
+| `finishScallopMm` on `cnc_3d_finish` resolves stepover when `finishStepoverMm` omitted | `src/shared/cam-scallop-stepover.ts`, `cam-runner.ts`, `manufacture-schema` / Shop op defaults |
+
+### Epic 8.B — Rest / raster MVP
+
+| Deliverable | Paths |
+|-------------|--------|
+| `rasterRestStockMm` lifts effective cut Z on **mesh height-field** raster / ortho fallback (pencil + raster) | `cam-local.ts`, `cam-runner.ts` |
+
+### Epic 8.C — 4-axis + mesh bounds
+
+| Deliverable | Paths |
+|-------------|--------|
+| STL bbox **X** range passed into `axis4_toolpath.py` as optional machinable clamp inside stock | `cam-runner.ts`, `axis4_toolpath.py`, `stl.ts` / `parseBinaryStl` |
+
+### Phase 8 exit criteria
+
+- [x] `npm test` + `npm run build` from `unified-fab-studio/`
+- [x] [`VERIFICATION.md`](VERIFICATION.md) CAM subsection mentions new optional params
+
+---
+
+## Phase 9 — Trust layer (post–Phase 7 program)
+
+**Goal:** Reduce silent mismatch between **intent** and **machine travel** (still not collision-safe sim).
+
+### Epic 9.A — Simulation
+
+| Optional **stock bbox** (six values or manufacture setup) feeding voxel proxy grid extent | `cam-voxel-removal-proxy.ts`, `ManufactureCamSimulationPanel.tsx` |
+| Tier 3 **Fast / Balanced / Detailed** voxel presets (grid + stamp budget; `localStorage`) | `VOXEL_SIM_QUALITY_PRESETS` in `cam-voxel-removal-proxy.ts`, `ManufactureCamSimulationPanel.tsx` |
+
+### Epic 9.B — Envelope warning
+
+| Parsed G-code **XYZ extents** vs profile **`workAreaMm`** → append **hint** on successful `cam:run` | `cam-gcode-toolpath.ts` or small `cam-envelope-warn.ts`, `cam-runner.ts` |
+
+### Epic 9.C — Material floors
+
+| `calcCutParams` **feed / plunge** floors match `cam-toolpath-guardrails` minimums | `material-schema.ts` |
+
+---
+
+## Phase 10 — Drawings + manufacturing docs (post–Phase 7 program)
+
+### Epic 10.A — Projection
+
+| **Silhouette / convex hull** outline from mesh XY projection when Tier A mesh edges are sparse | `engines/occt/project_views.py` (optional branch) |
+
+### Epic 10.B — Setup sheet
+
+| Shop/setup sheet HTML: **rotary stock**, **tool names/diameters**, **guardrails** line | `setup-sheet.ts`, `ShopApp.tsx` |
+
+---
+
+## Phase 11 — Kernel samples (post–Phase 7 program)
+
+### Epic 11.A — Documented samples
+
+| **`pattern_path`** closed-loop + tangent + **`hole_from_profile`** depth + **`boolean_combine_profile` −Z** examples under `resources/sample-kernel-solid-ops/` | `build_part.py` + README index + `sample-kernel-solid-ops-examples.test.ts` |
 
 ---
 
@@ -346,6 +416,12 @@ flowchart TB
 | **M5A** | 5 | Explode + motion playback |
 | **M6A** | 6 | Shop-floor 2D + hardened 3D |
 | **M7A** | 7 | Real drawing pipeline |
+
+---
+
+## Appendix — exhaustive stretch program waves (March 2026)
+
+Cross-reference: multi-wave plan in repo planning docs. **Wave 1 (drawings):** Tier **C** BRep plane section path in `project_views.py` + manifest **Tier C** + docs/catalog. **Wave 2 (kernel):** split discard STEP/STL export + bounded **`loft_guide_rails`** **`sketch_xy_align`** + optional **`stlMeshAngularToleranceDeg`**. **Wave 3 (rib/web):** formal deferral — [`RIB_WEB_SCOPE_GATE.md`](RIB_WEB_SCOPE_GATE.md). **Wave 4 (CAM/lathe):** industrial rest remains roadmap Phase 8/9; turning = **`mf_turning`** phased sub-plan above. **Wave 5 (sim/inspect):** sim copy documents preset/grid **perf vs accuracy** tradeoffs; inspect manifests optional STL tolerance for transparency. **Wave 6 (sketch/feature UX):** still **parallel epics** — topology-rich **`sk_project`**, **`so_shell`** / **`so_coil`** / **`so_pattern_path`**, feature browser ↔ kernel, setup sheet depth; track per epic in tables above + catalog, not as a single PR.
 
 ---
 

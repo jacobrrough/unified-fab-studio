@@ -16,6 +16,7 @@ import type { ToolLibraryFile } from '../shared/tool-schema'
 import type { DrawingFile } from '../shared/drawing-sheet-schema'
 import type { MeshImportPlacement, MeshImportTransform, MeshImportUpAxis } from '../shared/mesh-import-placement'
 import type { MaterialRecord } from '../shared/material-schema'
+import type { CarveraUploadPayload, CarveraUploadResult } from '../main/carvera-cli-run'
 
 export type Api = {
   appGetVersion: () => Promise<string>
@@ -84,6 +85,15 @@ export type Api = {
     workCoordinateIndex?: number
     toolDiameterMm?: number
     operationParams?: Record<string, unknown>
+    rotaryStockLengthMm?: number
+    rotaryStockDiameterMm?: number
+    rotaryChuckDepthMm?: number
+    rotaryClampOffsetMm?: number
+    stockBoxZMm?: number
+    stockBoxXMm?: number
+    stockBoxYMm?: number
+    priorPostedGcode?: string
+    useMeshMachinableXClamp?: boolean
   }) => Promise<
     | {
         ok: true
@@ -298,6 +308,9 @@ export type Api = {
     printerUrl: string,
     timeoutMs?: number
   ) => Promise<{ ok: boolean; error?: string }>
+
+  /** Upload NC/G-code to a Makera Carvera via community carvera-cli (USB or WiFi). */
+  carveraUpload: (payload: CarveraUploadPayload) => Promise<CarveraUploadResult>
 }
 
 const api: Api = {
@@ -400,7 +413,9 @@ const api: Api = {
   // ── Moonraker / Creality K2 Plus network push ──────────────────────────────
   moonrakerPush: (payload) => ipcRenderer.invoke('moonraker:push', payload),
   moonrakerStatus: (printerUrl, timeoutMs) => ipcRenderer.invoke('moonraker:status', printerUrl, timeoutMs),
-  moonrakerCancel: (printerUrl, timeoutMs) => ipcRenderer.invoke('moonraker:cancel', printerUrl, timeoutMs)
+  moonrakerCancel: (printerUrl, timeoutMs) => ipcRenderer.invoke('moonraker:cancel', printerUrl, timeoutMs),
+
+  carveraUpload: (payload) => ipcRenderer.invoke('carvera:upload', payload)
 }
 
 contextBridge.exposeInMainWorld('fab', api)

@@ -21,6 +21,8 @@ type Props = {
   onMaterialTypeChange: (mat: StockMaterialType | undefined) => void
   onWcsOriginChange: (point: WcsOriginPoint) => void
   onAxisModeChange: (mode: '3axis' | '4axis') => void
+  onRotaryChuckDepthMmChange?: (mm: number | undefined) => void
+  onRotaryClampOffsetMmChange?: (mm: number | undefined) => void
 }
 
 export function StockMaterialPanel({
@@ -35,7 +37,9 @@ export function StockMaterialPanel({
   onStockDimChange,
   onMaterialTypeChange,
   onWcsOriginChange,
-  onAxisModeChange
+  onAxisModeChange,
+  onRotaryChuckDepthMmChange,
+  onRotaryClampOffsetMmChange
 }: Props): ReactNode {
   const stock = setup.stock
   const matType = stock?.materialType
@@ -58,6 +62,49 @@ export function StockMaterialPanel({
           ))}
         </div>
       </div>
+
+      {setup.axisMode === '4axis' ? (
+        <div className="stock-material-panel__section">
+          <div className="stock-material-panel__section-label">4-axis rotary (CAM)</div>
+          <div className="stock-material-panel__dims-row">
+            <label className="stock-material-panel__field-group">
+              <span className="stock-material-panel__field-label">Chuck depth (mm)</span>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                className="stock-material-panel__input"
+                value={setup.rotaryChuckDepthMm ?? ''}
+                onChange={(e) =>
+                  onRotaryChuckDepthMmChange?.(
+                    e.target.value === '' ? undefined : Math.max(0, Number.parseFloat(e.target.value) || 0)
+                  )
+                }
+                placeholder="0"
+              />
+            </label>
+            <label className="stock-material-panel__field-group">
+              <span className="stock-material-panel__field-label">Clamp offset (mm)</span>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                className="stock-material-panel__input"
+                value={setup.rotaryClampOffsetMm ?? ''}
+                onChange={(e) =>
+                  onRotaryClampOffsetMmChange?.(
+                    e.target.value === '' ? undefined : Math.max(0, Number.parseFloat(e.target.value) || 0)
+                  )
+                }
+                placeholder="0"
+              />
+            </label>
+          </div>
+          <p className="msg msg--muted" style={{ fontSize: 11, marginTop: 6 }}>
+            In-chuck zone + buffer reduce machinable X along the bar — see docs/CAM_4TH_AXIS_REFERENCE.md.
+          </p>
+        </div>
+      ) : null}
 
       {/* ── MATERIAL TYPE ── */}
       <div className="stock-material-panel__section">

@@ -33,12 +33,14 @@ Default **`part/features.json`**: rectangular extrude (10 mm) + **`pattern_recta
 | `features.shell-inward-open-plus-x.example.json` | `shell_inward` (+X cap) | default |
 | `features.pattern-path.example.json` | `pattern_path` | default |
 | `features.pattern-path-closed.example.json` | `pattern_path` (`closedPath`) | default |
+| `features.pattern-path-tangent.example.json` | `pattern_path` (`alignToPathTangent`) | default |
 | `features.split-halfspace.example.json` | `split_keep_halfspace` (X, offset 0, keep positive) | default |
 | `features.split-halfspace-negative-offset.example.json` | `split_keep_halfspace` (Y, offset 5 mm, keep negative) | default |
 | `features.transform-translate.example.json` | `transform_translate` | default |
 | `features.thicken-scale.example.json` | `thicken_scale` (legacy surrogate) | default |
 | `features.thicken-offset.example.json` | `thicken_offset` (true offset request) | default |
 | `features.boolean-combine-profile.example.json` | `boolean_combine_profile` | **rect + circle** |
+| `features.boolean-combine-profile-minus-z.example.json` | `boolean_combine_profile` (`extrudeDirection` −Z) | **rect + circle** |
 | `features.hole-from-profile.example.json` | `hole_from_profile` (`through_all`) | **rect + circle** |
 | `features.hole-from-profile-depth.example.json` | `hole_from_profile` (`depth` + `depthMm`) | **rect + circle** |
 | `features.press-pull-profile.example.json` | `press_pull_profile` | default |
@@ -52,5 +54,7 @@ Default **`part/features.json`**: rectangular extrude (10 mm) + **`pattern_recta
 | `features.suppressed-op.example.json` | `fillet_all` (suppressed) + `chamfer_all` | default |
 
 **CI:** `src/shared/sample-kernel-solid-ops-examples.test.ts` parses every `part/*.example.json` with `partFeaturesFileSchema`.
+
+**Split:** After **Build STEP (kernel)** with `split_keep_halfspace`, `part/kernel-manifest.json` includes **`splitKeepHalfspace`** (axis, offsetMm, keep) when the Python build succeeds. When the discarded half has volume, **`splitDiscardedStepPath`** / **`splitDiscardedStlPath`** point at **`kernel-part-split-discard.*`** in `output/` (same sketch placement as the kept body).
 
 **Manual QA:** cross-check steps in [`docs/VERIFICATION.md`](../../docs/VERIFICATION.md) — **Geometry kernel (CadQuery / cad:kernelBuild)** (manifest, Phase 3 ops table).

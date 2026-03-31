@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { ToolpathSegment3 } from './cam-gcode-toolpath'
 import {
   compareToolpathToMachineEnvelope,
-  computeToolpathBoundsFromSegments
+  computeToolpathBoundsFromSegments,
+  formatMachineEnvelopeHintForPostedGcode,
+  formatRotaryRadialHintForPostedGcode,
+  maxRadialExtentYZFromSegments
 } from './cam-machine-envelope'
 
 const box = { x: 100, y: 80, z: 50 }
@@ -56,5 +59,34 @@ describe('compareToolpathToMachineEnvelope', () => {
     const r = compareToolpathToMachineEnvelope(segs, box)
     expect(r.withinEnvelope).toBe(false)
     expect(r.violations.some((v) => v.axis === 'y' && v.kind === 'below_min')).toBe(true)
+  })
+})
+
+describe('formatMachineEnvelopeHintForPostedGcode', () => {
+  it('returns empty when within work volume', () => {
+    const g = `G0 X0 Y0 Z5\nG1 X10 Y10 Z5 F1000`
+    expect(formatMachineEnvelopeHintForPostedGcode(g, { x: 100, y: 100, z: 50 })).toBe('')
+  })
+
+  it('appends hint when X exceeds workAreaMm', () => {
+    const g = `G0 X0 Y0 Z5\nG1 X150 Y10 Z5 F1000`
+    const h = formatMachineEnvelopeHintForPostedGcode(g, { x: 100, y: 80, z: 50 })
+    expect(h).toContain('Machine work volume warning')
+    expect(h).toContain('X')
+    expect(h).toContain('MACHINES')
+  })
+})
+
+describe('rotary radial YZ hints', () => {
+  it('maxRadialExtentYZFromSegments uses hypot on endpoints', () => {
+    const segs = [{ kind: 'feed' as const, x0: 0, y0: 30, z0: 40, x1: 0, y1: 30, z1: 40 }]
+    expect(maxRadialExtentYZFromSegments(segs)).toBeCloseTo(50, 5)
+  })
+
+  it('formatRotaryRadialHintForPostedGcode warns when YZ exceeds nominal radius', () => {
+    const g = `G1 X0 Y30 Z40 F1000`
+    const h = formatRotaryRadialHintForPostedGcode(g, 80)
+    expect(h).toContain('Rotary radial')
+    expect(h).toContain('MACHINES')
   })
 })

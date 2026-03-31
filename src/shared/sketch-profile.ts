@@ -524,6 +524,11 @@ export type KernelBuildPayload = {
   /** Placement of canonical XY/+Z extrude into world mm (datum or picked face). */
   sketchPlane: SketchPlane
   postSolidOps?: KernelPostSolidOp[]
+  /**
+   * Optional CadQuery STL `angularTolerance` (degrees). Finer values increase mesh count for kernel STL
+   * (inspect/measure) and main-body export; omitted = CadQuery default.
+   */
+  stlMeshAngularToleranceDeg?: number
 }
 
 /** @deprecated alias — use `KernelBuildPayload` */

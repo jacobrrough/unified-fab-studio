@@ -1,6 +1,10 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
 import {
+  collectAsciiStlTriangles,
+  collectBinaryStlTriangles,
+  effectiveBinaryStlTriangleCount,
+  isBinaryStlLayout,
   isLikelyAsciiStl,
   iterateBinaryStlTriangles,
   parseBinaryStl,
@@ -52,11 +56,60 @@ describe('STL helpers', () => {
     expect(isLikelyAsciiStl(buildOneTriangleStl())).toBe(false)
   })
 
+  it('treats binary STL with solid-prefixed 80-byte header as binary layout', () => {
+    const tri = buildOneTriangleStl()
+    const header = Buffer.alloc(80, 0)
+    header.write('solid', 0, 5, 'latin1')
+    const withSolid = Buffer.concat([header, tri.subarray(80)])
+    expect(isLikelyAsciiStl(withSolid)).toBe(true)
+    expect(isBinaryStlLayout(withSolid)).toBe(true)
+    const r = collectBinaryStlTriangles(withSolid, 10)
+    expect(r.triangles).toHaveLength(1)
+    expect(readStlFirstTriangleVertices(withSolid)).not.toBeNull()
+    const b = parseBinaryStl(withSolid)
+    expect(b.triangleCount).toBe(1)
+  })
+
+  it('reads binary STL when declared triangle count exceeds bytes on disk (truncated / bad header)', () => {
+    const tri = buildOneTriangleStl()
+    const header = Buffer.alloc(80, 0)
+    header.write('solid', 0, 5, 'latin1')
+    const count = Buffer.alloc(4)
+    count.writeUInt32LE(9_999_999, 0)
+    const body = tri.subarray(84)
+    const bloatedHeader = Buffer.concat([header, count, body])
+    expect(effectiveBinaryStlTriangleCount(bloatedHeader)).toBe(1)
+    expect(isBinaryStlLayout(bloatedHeader)).toBe(true)
+    const r = collectBinaryStlTriangles(bloatedHeader, 10)
+    expect(r.triangles).toHaveLength(1)
+    const b = parseBinaryStl(bloatedHeader)
+    expect(b.triangleCount).toBe(1)
+  })
+
   it('reads first triangle vertices from binary STL', () => {
     const tri = readStlFirstTriangleVertices(buildOneTriangleStl())
     expect(tri).not.toBeNull()
     expect(tri![0]![0]).toBeCloseTo(0)
     expect(tri![1]![0]).toBeCloseTo(1)
+  })
+
+  it('collects triangles from ASCII STL', () => {
+    const ascii = `solid test
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 1 0
+    endloop
+  endfacet
+endsolid
+`
+    const r = collectAsciiStlTriangles(Buffer.from(ascii, 'utf8'), 100)
+    expect(r.triangles).toHaveLength(1)
+    expect(r.triangles[0]![0]![0]).toBeCloseTo(0)
+    expect(r.triangles[0]![1]![0]).toBeCloseTo(1)
+    expect(r.fileTriangleCount).toBe(1)
+    expect(r.truncated).toBe(false)
   })
 
   it('iterates all triangles up to maxYield', () => {

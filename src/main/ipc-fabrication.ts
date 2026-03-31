@@ -11,6 +11,7 @@ import {
   listAllMaterials,
   saveMaterial
 } from './materials-manager'
+import { carveraUpload, type CarveraUploadPayload } from './carvera-cli-run'
 import { moonrakerCancel, moonrakerPush, moonrakerStatus } from './moonraker-push'
 import {
   deleteUserMachine,
@@ -38,6 +39,7 @@ import { emptyManufacture, manufactureFileSchema } from '../shared/manufacture-s
 import { toolLibraryFileSchema, type ToolLibraryFile } from '../shared/tool-schema'
 import { ZodError } from 'zod'
 import type { MainIpcWindowContext } from './ipc-context'
+import { loadSettings } from './settings-store'
 
 export type { MainIpcWindowContext } from './ipc-context'
 
@@ -146,6 +148,15 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
         workCoordinateIndex?: number
         toolDiameterMm?: number
         operationParams?: Record<string, unknown>
+        rotaryStockLengthMm?: number
+        rotaryStockDiameterMm?: number
+        rotaryChuckDepthMm?: number
+        rotaryClampOffsetMm?: number
+        stockBoxZMm?: number
+        stockBoxXMm?: number
+        stockBoxYMm?: number
+        priorPostedGcode?: string
+        useMeshMachinableXClamp?: boolean
       }
     ) => {
       try {
@@ -182,7 +193,16 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
           operationKind: payload.operationKind,
           workCoordinateIndex: payload.workCoordinateIndex,
           toolDiameterMm: payload.toolDiameterMm,
-          operationParams: payload.operationParams
+          operationParams: payload.operationParams,
+          rotaryStockLengthMm: payload.rotaryStockLengthMm,
+          rotaryStockDiameterMm: payload.rotaryStockDiameterMm,
+          rotaryChuckDepthMm: payload.rotaryChuckDepthMm,
+          rotaryClampOffsetMm: payload.rotaryClampOffsetMm,
+          stockBoxZMm: payload.stockBoxZMm,
+          stockBoxXMm: payload.stockBoxXMm,
+          stockBoxYMm: payload.stockBoxYMm,
+          priorPostedGcode: payload.priorPostedGcode,
+          useMeshMachinableXClamp: payload.useMeshMachinableXClamp
         })
         if (result.ok && policy.hint) {
           return { ...result, hint: [result.hint, policy.hint].filter(Boolean).join(' ') }
@@ -363,6 +383,13 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
     const filePath = result.filePaths[0]!
     const content = await readFile(filePath, 'utf-8')
     return saveUserPost(basename(filePath), content)
+  })
+
+  // ── Makera Carvera (carvera-cli upload) ─────────────────────────────────────
+
+  ipcMain.handle('carvera:upload', async (_e, payload: CarveraUploadPayload) => {
+    const settings = await loadSettings()
+    return carveraUpload(settings, payload)
   })
 
   // ── Moonraker / Creality K2 Plus network push ──────────────────────────────

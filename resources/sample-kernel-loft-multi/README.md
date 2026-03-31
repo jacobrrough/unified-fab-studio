@@ -11,3 +11,5 @@ Open this folder as a **project** in Unified Fab Studio. The design uses **`soli
 **Limit:** at most **16** closed profiles in entity order; more sketches return `loft_too_many_profiles` before the Python run.
 
 **Manual QA:** [`docs/VERIFICATION.md`](../../docs/VERIFICATION.md) — **Geometry kernel** → Phase 4 **loft** row.
+
+**Guide rails:** `loft_guide_rails` validates finite rail polylines. Omit **`behavior`** (or use non-`marker`) on **two-profile** loft: first rail segment sets sketch-XY **yaw** on the second profile before loft → manifest **`loftGuideRailsKernelMode: sketch_xy_align`**. With **`behavior": "marker"`**, manifest records **`marker`** only (no profile twist). Full rail-driven OCC loft remains stretch.

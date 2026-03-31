@@ -32,6 +32,31 @@ describe('resolveCamCutParams', () => {
     expect(r.safeZMm).toBe(CAM_CUT_DEFAULTS.safeZMm)
   })
 
+  it('derives safeZ from manufacture setup stock Z when op omits safeZMm', () => {
+    const op: ManufactureOperation = {
+      id: '1',
+      kind: 'cnc_raster',
+      label: 'r',
+      params: { feedMmMin: 900 }
+    }
+    const setup = { stock: { kind: 'box' as const, x: 100, y: 80, z: 30 } }
+    const r = resolveCamCutParams(op, setup)
+    expect(r.safeZMm).toBeGreaterThan(5)
+    expect(r.safeZMm).toBeLessThanOrEqual(30)
+    expect(r.feedMmMin).toBe(900)
+  })
+
+  it('explicit safeZMm overrides setup stock default', () => {
+    const op: ManufactureOperation = {
+      id: '1',
+      kind: 'cnc_parallel',
+      label: 'p',
+      params: { safeZMm: 7 }
+    }
+    const setup = { stock: { kind: 'box' as const, x: 100, y: 80, z: 50 } }
+    expect(resolveCamCutParams(op, setup).safeZMm).toBe(7)
+  })
+
   it('applies same cut fields for OCL 3D kinds (adaptive / raster)', () => {
     const adaptive: ManufactureOperation = {
       id: '1',

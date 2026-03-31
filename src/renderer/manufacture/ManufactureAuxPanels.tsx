@@ -43,6 +43,10 @@ export type ManufactureAuxPanelsProps = {
   manufacture: ManufactureFile | null
   onGoSettings: () => void
   onGoProject: () => void
+  /** Status line / toast text from Manufacture (e.g. Carvera upload result). */
+  onStatus?: (msg: string) => void
+  /** Optional: export HTML setup sheet from current manufacture plan + output/cam.nc. */
+  onExportSetupSheet?: () => void | Promise<void>
 }
 
 export function SliceManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
@@ -185,10 +189,37 @@ export function CamManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
   })
   const [camPreviewTick, setCamPreviewTick] = useState(0)
   const [camPreview, setCamPreview] = useState(() => buildCamSimulationPreview(''))
+  const [carveraConn, setCarveraConn] = useState<'auto' | 'wifi' | 'usb'>('auto')
+  const [carveraDevice, setCarveraDevice] = useState('')
+  const [carveraBusy, setCarveraBusy] = useState(false)
 
   function runCamPreview(): void {
     setCamPreview(buildCamSimulationPreview(p.camOut))
     setCamPreviewTick((v) => v + 1)
+  }
+
+  async function uploadToCarvera(): Promise<void> {
+    if (!p.projectDir || !p.camOut?.trim()) return
+    const sep = p.projectDir.includes('\\') ? '\\' : '/'
+    const gcodePath = `${p.projectDir}${sep}output${sep}cam.nc`
+    setCarveraBusy(true)
+    try {
+      const r = await window.fab.carveraUpload({
+        gcodePath,
+        connection: carveraConn,
+        device: carveraDevice.trim() || undefined,
+        timeoutMs: 120_000
+      })
+      if (r.ok) {
+        p.onStatus?.('Carvera: file uploaded (start the job on the machine if needed).')
+      } else {
+        p.onStatus?.(`Carvera upload failed: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`)
+      }
+    } catch (e) {
+      p.onStatus?.(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCarveraBusy(false)
+    }
   }
 
   return (
@@ -228,6 +259,60 @@ export function CamManufacturePanel(p: ManufactureAuxPanelsProps): ReactNode {
           title={!p.camOut?.trim() ? 'Generate a toolpath first' : undefined}
         >
           Preview G-code analysis
+        </button>
+        {p.onExportSetupSheet ? (
+          <button type="button" className="secondary" onClick={() => void p.onExportSetupSheet?.()}>
+            Export setup sheet (HTML)…
+          </button>
+        ) : null}
+      </div>
+      <h3 className="subh util-section-heading" id="mfg-carvera-heading">
+        Makera Carvera
+      </h3>
+      <p className="msg msg--muted util-panel-intro" id="mfg-carvera-hint">
+        Upload <code>output/cam.nc</code> to the machine using community{' '}
+        <a href="https://github.com/hagmonk/carvera-cli" target="_blank" rel="noreferrer">
+          carvera-cli
+        </a>{' '}
+        (install separately). Set the CLI under <strong>File → Settings → External tool paths</strong>. See{' '}
+        <code>docs/MACHINES.md</code>.
+      </p>
+      <div
+        className="row util-cam-actions manufacture-carvera-row"
+        role="group"
+        aria-label="Carvera upload"
+        aria-describedby="mfg-carvera-hint"
+      >
+        <label htmlFor="mfg-carvera-conn">
+          Connection
+          <select
+            id="mfg-carvera-conn"
+            value={carveraConn}
+            onChange={(e) => setCarveraConn(e.target.value as 'auto' | 'wifi' | 'usb')}
+          >
+            <option value="auto">Auto</option>
+            <option value="wifi">WiFi</option>
+            <option value="usb">USB</option>
+          </select>
+        </label>
+        <label htmlFor="mfg-carvera-device">
+          Device (optional)
+          <input
+            id="mfg-carvera-device"
+            value={carveraDevice}
+            onChange={(e) => setCarveraDevice(e.target.value)}
+            placeholder="192.168.x.x or COM3"
+            autoComplete="off"
+            aria-describedby="mfg-carvera-hint"
+          />
+        </label>
+        <button
+          type="button"
+          className="secondary"
+          disabled={!p.projectDir || !p.camOut?.trim() || carveraBusy}
+          onClick={() => void uploadToCarvera()}
+        >
+          {carveraBusy ? 'Uploading…' : 'Upload to Carvera'}
         </button>
       </div>
       {!readiness.canCam ? (

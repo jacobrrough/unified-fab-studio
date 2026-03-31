@@ -139,6 +139,8 @@ const patternPathSchema = z
     pathPoints: z.array(pathPoint2d).min(2).max(256),
     /** When true, arc length includes a closing segment from last point to first (skipped if first and last coincide). */
     closedPath: z.boolean().optional(),
+    /** When true, each copy is rotated about +Z through the path start so local +X follows path tangent at the sample. */
+    alignToPathTangent: z.boolean().optional(),
     ...suppressKernel
   })
   .refine(
@@ -195,6 +197,8 @@ const booleanCombineProfileSchema = z.object({
   profileIndex: z.number().int().min(0).max(255),
   extrudeDepthMm: mmPos,
   zStartMm: mm.default(0),
+  /** Extrude tool body along +Z (default) or −Z from `zStartMm` (CadQuery workplane offset). */
+  extrudeDirection: z.enum(['+Z', '-Z']).optional(),
   ...suppressKernel
 })
 
@@ -332,10 +336,12 @@ const pipePathSchema = z
     message: 'pipe_path fixed_normal mode requires fixedNormal [x,y,z]'
   })
 
-/** Guide-rail hint op for loft validation and manifest strategy tags. */
+/** Guide-rail op: `marker` = validate only; omit `behavior` on 2-profile loft for sketch-XY yaw from first rail segment (`sketch_xy_align` in manifest). */
 const loftGuideRailsSchema = z
   .object({
     kind: z.literal('loft_guide_rails'),
+    /** `marker` = no kernel twist; omit for bounded yaw align on two-profile loft. */
+    behavior: z.literal('marker').optional(),
     rails: z.array(z.array(pathPoint2d).min(2).max(256)).min(1).max(4),
     ...suppressKernel
   })

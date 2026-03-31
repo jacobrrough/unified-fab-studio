@@ -123,6 +123,14 @@ def _parse_cam_numeric_params(cfg: dict[str, Any], strategy: str) -> dict[str, f
     if strategy in ("waterline", "adaptive_waterline") and z_pass <= 0:
         _die("invalid_numeric_params", "zPassMm must be > 0 for waterline strategies", code=2)
 
+    # Clamp stepover vs tool Ø: > Ø skips stock; tiny values explode path length (HSM uses bounded radial engagement).
+    _min_s = max(0.01, tool_d * 0.02)
+    _max_s = tool_d * 0.98
+    if stepover < _min_s:
+        stepover = _min_s
+    elif stepover > _max_s:
+        stepover = _max_s
+
     return {
         "zPassMm": z_pass,
         "stepoverMm": stepover,

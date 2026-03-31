@@ -5,6 +5,9 @@ export const viewFromAxisSchema = z.enum(['front', 'top', 'right', 'back', 'left
 
 export type ViewFromAxis = z.infer<typeof viewFromAxisSchema>
 
+/** `drawing.json` mesh projection tier for `project_views.py` (A/B/C). */
+export type MeshProjectionTier = 'A' | 'B' | 'C'
+
 /** Optional sheet layout box (mm, title-block coordinates: X right, Y up from bottom-left of sheet frame). */
 export const drawingViewLayoutSchema = z.object({
   originXMM: z.number().finite().optional(),
@@ -46,6 +49,14 @@ export const drawingSheetSchema = z.object({
   name: z.string().min(1),
   /** e.g. "1:1", "1:2" — shown in exports when present */
   scale: z.string().optional(),
+  /** Optional template / sheet style hint for operators (export metadata only). */
+  sheetTemplateHint: z.string().max(200).optional(),
+  /**
+   * Mesh projection for PDF/DXF linework from `project_views.py`: **A** = edge soup + optional hull;
+   * **B** = A plus bbox-center **mesh section** segments; **C** = B plus **BRep plane section** from
+   * `output/kernel-part.step` when CadQuery succeeds (still not full HLR).
+   */
+  meshProjectionTier: z.enum(['A', 'B', 'C']).optional(),
   /** Listed on PDF/DXF title-block shell as planned view regions. */
   viewPlaceholders: z.array(drawingViewPlaceholderSchema).optional()
 })

@@ -1,4 +1,5 @@
 import type { StlBounds, Vec3 } from './stl'
+import { extractToolpathSegmentsFromGcode } from '../shared/cam-gcode-toolpath'
 
 export type ParallelFinishParams = {
   bounds: StlBounds
@@ -9,6 +10,9 @@ export type ParallelFinishParams = {
   plungeMmMin: number
   safeZMm: number
 }
+
+/** Caps Y passes so pathological stepovers cannot emit multi-million-line programs. */
+export const PARALLEL_FINISH_MAX_Y_PASSES = 40_000
 
 /**
  * Naive parallel XZ passes at fixed Y steps — for regression / demo when OpenCAMLib is unavailable.
@@ -21,9 +25,23 @@ export function generateParallelFinishLines(params: ParallelFinishParams): strin
   const lines: string[] = []
   const zWork = zPassMm
 
+  const spanY = Math.max(1e-9, maxY - minY)
+  const minStepForCap = spanY / PARALLEL_FINISH_MAX_Y_PASSES
+  const step = Math.max(stepoverMm, minStepForCap)
+  if (step > stepoverMm + 1e-9) {
+    lines.push(
+      `; UFSCAM: stepover raised ${stepoverMm.toFixed(4)}→${step.toFixed(4)} mm to cap at ${PARALLEL_FINISH_MAX_Y_PASSES} Y passes (efficiency guard)`
+    )
+  }
+
   let y = minY
   let flip = false
+  let passCount = 0
   while (y <= maxY + 1e-6) {
+    if (++passCount > PARALLEL_FINISH_MAX_Y_PASSES) {
+      lines.push('; UFSCAM: parallel pass limit — aborting further Y rows')
+      break
+    }
     const x0 = flip ? maxX : minX
     const x1 = flip ? minX : maxX
     lines.push(`G0 Z${safeZMm.toFixed(3)}`)
@@ -31,7 +49,7 @@ export function generateParallelFinishLines(params: ParallelFinishParams): strin
     lines.push(`G1 Z${zWork.toFixed(3)} F${plungeMmMin.toFixed(0)}`)
     lines.push(`G1 X${x1.toFixed(3)} Y${y.toFixed(3)} F${feedMmMin.toFixed(0)}`)
     flip = !flip
-    y += stepoverMm
+    y += step
   }
   lines.push(`G0 Z${safeZMm.toFixed(3)}`)
   return lines
@@ -242,6 +260,91 @@ function heightAtXyFromBucketGrid(
   return best
 }
 
+/** Returns minimum feed Z (mm) the prior roughing pass reached near (x,y), or null if unknown / no coverage. */
+export type PriorRoughFloorSampler = (x: number, y: number) => number | null
+
+/**
+ * Build a coarse grid of minimum feed Z from prior posted G-code (2.5D MVP).
+ * Used to skip mesh raster points where roughing already machined at or past the part surface (+ allowance).
+ */
+export function buildPriorRoughFloorSamplerFromGcode(opts: {
+  gcode: string
+  minX: number
+  maxX: number
+  minY: number
+  maxY: number
+  toolRadiusMm: number
+  maxGridCols?: number
+  maxGridRows?: number
+}): PriorRoughFloorSampler | null {
+  const segs = extractToolpathSegmentsFromGcode(opts.gcode).filter((s) => s.kind === 'feed')
+  if (segs.length === 0) return null
+
+  const spanX = opts.maxX - opts.minX
+  const spanY = opts.maxY - opts.minY
+  if (!(spanX > 1e-9) || !(spanY > 1e-9)) return null
+
+  const maxCols = Math.min(64, Math.max(8, opts.maxGridCols ?? 48))
+  const maxRows = Math.min(64, Math.max(8, opts.maxGridRows ?? 48))
+  const cellW = spanX / maxCols
+  const cellH = spanY / maxRows
+  const originX = opts.minX
+  const originY = opts.minY
+  const grid = new Float32Array(maxCols * maxRows)
+  grid.fill(Number.NaN)
+
+  const stampDisk = (cx: number, cy: number, z: number, radiusMm: number) => {
+    const rCellsX = Math.ceil(radiusMm / cellW) + 1
+    const rCellsY = Math.ceil(radiusMm / cellH) + 1
+    const ic = Math.floor((cx - originX) / cellW)
+    const jc = Math.floor((cy - originY) / cellH)
+    for (let dj = -rCellsY; dj <= rCellsY; dj++) {
+      for (let di = -rCellsX; di <= rCellsX; di++) {
+        const i = ic + di
+        const j = jc + dj
+        if (i < 0 || j < 0 || i >= maxCols || j >= maxRows) continue
+        const px = originX + (i + 0.5) * cellW
+        const py = originY + (j + 0.5) * cellH
+        if (Math.hypot(px - cx, py - cy) > radiusMm + 1e-6) continue
+        const idx = j * maxCols + i
+        const cur = grid[idx]!
+        grid[idx] = Number.isNaN(cur) ? z : Math.min(cur, z)
+      }
+    }
+  }
+
+  const R = Math.max(0.05, opts.toolRadiusMm)
+  const step = Math.max(Math.min(cellW, cellH) * 0.35, 0.15)
+  for (const s of segs) {
+    const len = Math.hypot(s.x1 - s.x0, s.y1 - s.y0)
+    const n = Math.max(1, Math.ceil(len / step))
+    for (let k = 0; k <= n; k++) {
+      const t = k / n
+      const x = s.x0 + t * (s.x1 - s.x0)
+      const y = s.y0 + t * (s.y1 - s.y0)
+      const z = s.z0 + t * (s.z1 - s.z0)
+      stampDisk(x, y, z, R)
+    }
+  }
+
+  let any = false
+  for (let i = 0; i < grid.length; i++) {
+    if (!Number.isNaN(grid[i]!)) {
+      any = true
+      break
+    }
+  }
+  if (!any) return null
+
+  return (x: number, y: number) => {
+    const i = Math.floor((x - originX) / cellW)
+    const j = Math.floor((y - originY) / cellH)
+    if (i < 0 || j < 0 || i >= maxCols || j >= maxRows) return null
+    const v = grid[j * maxCols + i]!
+    return Number.isNaN(v) ? null : v
+  }
+}
+
 export type MeshHeightRasterParams = {
   triangles: ReadonlyArray<readonly [Vec3, Vec3, Vec3]>
   minX: number
@@ -253,6 +356,22 @@ export type MeshHeightRasterParams = {
   feedMmMin: number
   plungeMmMin: number
   safeZMm: number
+  /**
+   * Positive: leave this much material along +Z on the mesh envelope (coarse “rest” / allowance on 2.5D raster).
+   * Applied to sampled Z before emitting G1 (no cutter-radius compensation).
+   */
+  rasterRestStockMm?: number
+  /**
+   * When set, skip samples where prior roughing already reached Z at or past the mesh surface (+ {@link rasterRestStockMm}).
+   * 2.5D heuristic only — not full rest-roughing simulation.
+   */
+  priorRoughFloorSampler?: PriorRoughFloorSampler
+  /**
+   * When {@link priorRoughFloorSampler} is **unset**: treat each sample as if a prior rough pass left this much stock
+   * “above” the mesh along Z (`floorZ = zMesh + meshAnalyticPriorRoughStockMm`) for skip logic vs `zMesh + rasterRestStockMm`.
+   * Ignored when a G-code-derived prior sampler is present (that path wins). 2.5D heuristic only.
+   */
+  meshAnalyticPriorRoughStockMm?: number
 }
 
 /**
@@ -261,6 +380,10 @@ export type MeshHeightRasterParams = {
  */
 export function generateMeshHeightRasterLines(params: MeshHeightRasterParams): string[] {
   const { triangles, minX, maxX, minY, maxY, feedMmMin, plungeMmMin, safeZMm } = params
+  const restZ =
+    typeof params.rasterRestStockMm === 'number' && Number.isFinite(params.rasterRestStockMm) && params.rasterRestStockMm > 0
+      ? params.rasterRestStockMm
+      : 0
   if (triangles.length === 0 || !(maxX > minX) || !(maxY > minY)) return []
 
   const stepY = Math.max(0.05, params.stepoverMm)
@@ -305,11 +428,26 @@ export function generateMeshHeightRasterLines(params: MeshHeightRasterParams): s
     }
 
     for (const x of xs) {
-      const z = heightAt(x, y)
-      if (z == null) {
+      const zRaw = heightAt(x, y)
+      if (zRaw == null) {
         flush()
         continue
       }
+      let floorZ = params.priorRoughFloorSampler?.(x, y) ?? null
+      const aStock = params.meshAnalyticPriorRoughStockMm
+      if (
+        floorZ == null &&
+        typeof aStock === 'number' &&
+        Number.isFinite(aStock) &&
+        aStock > 0
+      ) {
+        floorZ = zRaw + aStock
+      }
+      if (floorZ != null && Number.isFinite(floorZ) && floorZ <= zRaw + restZ + 1e-5) {
+        flush()
+        continue
+      }
+      const z = zRaw + restZ
       const last = segment[segment.length - 1]
       if (last && Math.hypot(last.x - x, last.y - y) < 1e-6) continue
       segment.push({ x, y, z })

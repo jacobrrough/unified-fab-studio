@@ -1,4 +1,4 @@
-import type { ToolpathSegment3 } from './cam-gcode-toolpath'
+import { extractToolpathSegmentsFromGcode, type ToolpathSegment3 } from './cam-gcode-toolpath'
 
 export type MachineEnvelopeBoundsGcode = {
   minX: number
@@ -77,4 +77,47 @@ export function compareToolpathToMachineEnvelope(
     bounds,
     violations
   }
+}
+
+/**
+ * After posting, parse emitted G-code and warn if XYZ extents exceed the machine profile
+ * work volume [0, wx]×[0, wy]×[0, wz] (same assumptions as {@link compareToolpathToMachineEnvelope}).
+ */
+export function formatMachineEnvelopeHintForPostedGcode(
+  gcode: string,
+  workAreaMm: { x: number; y: number; z: number }
+): string {
+  if (!gcode.trim()) return ''
+  const segs = extractToolpathSegmentsFromGcode(gcode)
+  const ch = compareToolpathToMachineEnvelope(segs, workAreaMm)
+  if (ch.withinEnvelope || ch.violations.length === 0) return ''
+  const parts = ch.violations.map((v) => {
+    const ax = v.axis.toUpperCase()
+    if (v.kind === 'below_min') {
+      return `${ax} below machine origin (~${v.excessMm.toFixed(1)} mm outside)`
+    }
+    return `${ax} past work volume max (~${v.excessMm.toFixed(1)} mm outside)`
+  })
+  return ` Machine work volume warning: ${parts.join('; ')}. Confirm WCS vs profile workAreaMm — docs/MACHINES.md.`
+}
+
+/**
+ * Max distance from the X axis in the YZ plane (mm) over segment endpoints — for 4-axis radial sanity vs nominal stock Ø.
+ */
+export function maxRadialExtentYZFromSegments(segments: ToolpathSegment3[]): number {
+  let m = 0
+  for (const s of segments) {
+    m = Math.max(m, Math.hypot(s.y0, s.z0), Math.hypot(s.y1, s.z1))
+  }
+  return m
+}
+
+/** Soft warning when parsed YZ extent exceeds nominal cylinder radius (same WCS as posted G-code). */
+export function formatRotaryRadialHintForPostedGcode(gcode: string, stockCylinderDiameterMm: number): string {
+  if (!gcode.trim() || !(stockCylinderDiameterMm > 0)) return ''
+  const segs = extractToolpathSegmentsFromGcode(gcode)
+  const R = stockCylinderDiameterMm * 0.5
+  const maxR = maxRadialExtentYZFromSegments(segs)
+  if (maxR <= R + 0.5) return ''
+  return ` Rotary radial hint: YZ toolpath reach ~${maxR.toFixed(1)} mm vs nominal stock radius ${R.toFixed(1)} mm (Ø${stockCylinderDiameterMm.toFixed(1)}). Confirm stock diameter and WCS — docs/MACHINES.md.`
 }

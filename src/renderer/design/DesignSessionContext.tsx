@@ -398,7 +398,14 @@ export function DesignSessionProvider({
 
   const inspectMeshSourceLabel = useMemo(() => {
     if (kernelInspectGeometry && kernelManifest?.ok && kernelInspectStale == null) {
-      return 'Kernel STL (tessellated)'
+      const tol = kernelManifest.stlMeshAngularToleranceDeg
+      const tolBit =
+        typeof tol === 'number' && Number.isFinite(tol)
+          ? ` STL export angular tolerance ${tol}° (manifest).`
+          : ''
+      return kernelManifest.inspectBackend === 'kernel_stl_tessellation'
+        ? `Kernel STL (tessellated STEP export; not live B-rep).${tolBit}`
+        : `Kernel STL (tessellated).${tolBit}`
     }
     if (geometry) return 'Sketch preview mesh'
     if (assetImportGeometry) return 'Imported asset (STL)'

@@ -1,4 +1,5 @@
 import type { ManufactureFile, ManufactureOperation, ManufactureSetup } from './manufacture-schema'
+import { recommendedSafeZFromStockThicknessMm, setupStockThicknessZMm } from './cam-setup-defaults'
 import { calcCutParams, type MaterialRecord } from './material-schema'
 import type { ToolRecord } from './tool-schema'
 
@@ -24,6 +25,8 @@ type CamMaterialCutInput = {
   materialId: string | null | undefined
   materials: MaterialRecord[]
   tools: ToolRecord[]
+  /** Manufacture setup stock drives default safe Z when op omits `safeZMm`. */
+  setup?: Pick<ManufactureSetup, 'stock'> | undefined
 }
 
 function finiteNonZeroNumber(v: unknown): number | undefined {
@@ -48,11 +51,19 @@ function finitePositiveNumber(v: unknown): number | undefined {
  * Cutting parameters for `cam:run` / OCL config from `manufacture.json` operation `params`.
  * Used for all CNC kinds, including catalog labels “3D” that still map to 2D contour/pocket (`cnc_contour` / `cnc_pocket`).
  * Unknown or invalid fields fall back to {@link CAM_CUT_DEFAULTS}.
+ * When `setup` includes **box/cylinder** stock with **Z height**, `safeZMm` defaults from stock thickness if the op omits `safeZMm`.
  */
-export function resolveCamCutParams(operation: ManufactureOperation | undefined): CamCutParamsResolved {
+export function resolveCamCutParams(
+  operation: ManufactureOperation | undefined,
+  setup?: Pick<ManufactureSetup, 'stock'> | undefined
+): CamCutParamsResolved {
   const p = operation?.params
+  const stockZ = setupStockThicknessZMm(setup?.stock)
+  const defaultSafeZ =
+    stockZ != null ? recommendedSafeZFromStockThicknessMm(stockZ) : CAM_CUT_DEFAULTS.safeZMm
+
   if (!p || typeof p !== 'object') {
-    return { ...CAM_CUT_DEFAULTS }
+    return { ...CAM_CUT_DEFAULTS, safeZMm: defaultSafeZ }
   }
 
   return {
@@ -60,7 +71,7 @@ export function resolveCamCutParams(operation: ManufactureOperation | undefined)
     stepoverMm: finitePositiveNumber(p['stepoverMm']) ?? CAM_CUT_DEFAULTS.stepoverMm,
     feedMmMin: finitePositiveNumber(p['feedMmMin']) ?? CAM_CUT_DEFAULTS.feedMmMin,
     plungeMmMin: finitePositiveNumber(p['plungeMmMin']) ?? CAM_CUT_DEFAULTS.plungeMmMin,
-    safeZMm: finitePositiveNumber(p['safeZMm']) ?? CAM_CUT_DEFAULTS.safeZMm
+    safeZMm: finitePositiveNumber(p['safeZMm']) ?? defaultSafeZ
   }
 }
 
@@ -111,7 +122,7 @@ function resolveOperationFluteCount(operation: ManufactureOperation | undefined,
  * from a selected material record.
  */
 export function resolveCamCutParamsWithMaterial(input: CamMaterialCutInput): CamCutParamsResolved {
-  const base = resolveCamCutParams(input.operation)
+  const base = resolveCamCutParams(input.operation, input.setup)
   const materialId = input.materialId?.trim()
   if (!materialId) return base
   const material = input.materials.find((m) => m.id === materialId)

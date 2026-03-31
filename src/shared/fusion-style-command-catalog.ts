@@ -513,7 +513,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'partial',
     'MODIFY',
-    'Kernel: primitives + `boolean_combine_profile` (union/subtract/intersect from profileIndex + extrude depth) in `kernelOps` (CadQuery); profileIndex range-checked vs payload profiles pre-OCC (clear error if index out of range or zero profiles)'
+    'Kernel: primitives + `boolean_combine_profile` (union/subtract/intersect from profileIndex + extrude depth, optional extrudeDirection ±Z) in `kernelOps` (CadQuery); profileIndex range-checked vs payload profiles pre-OCC (clear error if index out of range or zero profiles)'
   ),
   c(
     'so_split',
@@ -569,7 +569,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'design',
     'partial',
     'PATTERN',
-    'Kernel `pattern_path` on sketch polyline points (sampled along path length, translation-only); optional `closedPath` includes last→first segment; linear translation in 3D is `pattern_linear_3d`'
+    'Kernel `pattern_path` on sketch polyline points (sampled along path length); optional `alignToPathTangent` rotates copies about +Z at path start (tangent MVP); optional `closedPath` includes last→first segment; linear translation in 3D is `pattern_linear_3d`'
   ),
   c(
     'so_mirror_body',
@@ -840,7 +840,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     '3D',
-    'cnc_raster — OCL PathDropCutter when opencamlib; else mesh height-field then ortho bounds; hints on fallback. Same cut param resolution as parallel/waterline. G-code unverified — docs/MACHINES.md'
+    'cnc_raster — OCL PathDropCutter when opencamlib; else mesh height-field then ortho bounds; optional `rasterRestStockMm` offsets cut Z on mesh fallback (+Z allowance). Optional `meshAnalyticPriorRoughStockMm` (mesh fallback only, **ignored** when `usePriorPostedGcodeRest` supplies a G-code floor) simulates a prior rough stock height for skip logic vs finish rest — 2.5D heuristic. With `stockBoxZMm` on `cam:run`, effective rest can auto-derive from stock + mesh min Z unless `autoRasterRestFromSetup: false`. `resolveCamCutParams` can default `safeZMm` from manufacture setup stock Z. G-code unverified — docs/MACHINES.md'
   ),
   c(
     'mf_op_contour',
@@ -876,7 +876,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     '3D',
-    'cnc_pencil — OpenCAMLib PathDropCutter raster with tighter effective stepover (`resolvePencilStepoverMm`, optional `pencilStepoverMm` / `pencilStepoverFactor`); same built-in mesh/bounds raster fallbacks as `cnc_raster`. **Not** automatic rest-stock / leftover detection — output is **unverified** for any machine — docs/MACHINES.md'
+    'cnc_pencil — OpenCAMLib PathDropCutter raster with tighter effective stepover (`resolvePencilStepoverMm`, optional `pencilStepoverMm` / `pencilStepoverFactor`); same built-in mesh/bounds raster fallbacks as `cnc_raster` including optional `rasterRestStockMm` and the same stock-driven rest / setup `safeZMm` behavior as raster. **Not** automatic rest-stock / leftover detection — output is **unverified** for any machine — docs/MACHINES.md'
   ),
   c(
     'mf_turning',
@@ -885,7 +885,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'planned',
     'TURNING',
-    'Deferred stretch: lathe post + op taxonomy — large scope'
+    'Manufacture op kind **`cnc_lathe_turn`** parses for planning; **Generate CAM** blocks until lathe posts + runner path ship — docs/MACHINES.md'
   ),
   c(
     'mf_additive',
@@ -903,10 +903,10 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'manufacture',
     'partial',
     'INSPECT',
-    'Manufacture **Tier 1** G0/G1 path preview + **Tier 2** 2.5D height-field removal proxy + optional **Tier 3** coarse voxel carve sample (experimental; not swept-volume / not collision-safe / not machine kinematics); Utilities CAM **text cues** remain. **Do not** treat preview as safe to run on hardware — docs/VERIFICATION.md + docs/MACHINES.md'
+    'Manufacture **Tier 1** G0/G1 path preview + **Tier 2** 2.5D height-field removal proxy (~88×88 grid, cylindrical tool stamps; not stock-exact) + optional **Tier 3** coarse voxel carve with **Fast/Balanced/Detailed** presets (grid/stamp budgets scale monotonically; still not swept-volume / not collision-safe / not machine kinematics). **Do not** treat preview as safe to run on hardware — docs/VERIFICATION.md + docs/MACHINES.md'
   ),
 
-  // —— Drawings / documentation (Tier A mesh edge projection + title block) ——
+  // —— Drawings / documentation (Tier A/B mesh projection + title block) ——
   c(
     'dr_new_sheet',
     'New drawing sheet',
@@ -914,7 +914,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'utilities',
     'implemented',
     'CREATE',
-    'Primary sheet + optional **view placeholders** → `drawing/drawing.json`; PDF/DXF run **Tier A** projection from `output/kernel-part.stl` when placeholders exist + Python OK (**no HLR**)'
+    'Primary sheet + optional **view placeholders** + optional **`meshProjectionTier`** (A=edge soup, B=+bbox-center mesh sections, C=+BRep plane section from kernel STEP when CadQuery loads) → `drawing/drawing.json`; PDF/DXF via `engines/occt/project_views.py` when kernel STL + Python OK — not certified HLR'
   ),
   c(
     'dr_base_view',
@@ -932,7 +932,7 @@ export const FUSION_STYLE_COMMAND_CATALOG: FusionStyleCommand[] = [
     'utilities',
     'implemented',
     'CREATE',
-    'Project tab: **+ Projected view slot** → parent + **direction**; each slot gets its own orthographic projection from the same kernel STL (third-angle layout metadata; Tier A edges)'
+    'Project tab: **+ Projected view slot** → parent + **direction**; each slot gets its own orthographic projection from the same kernel STL (third-angle layout metadata; Tier A/B/C per sheet **meshProjectionTier**)'
   ),
   c(
     'dr_export_pdf',

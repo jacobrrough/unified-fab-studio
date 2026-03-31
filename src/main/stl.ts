@@ -6,11 +6,40 @@ export type StlBounds = {
   triangleCount: number
 }
 
+/** First triangle vertex floats (after 12-byte normal) look like real geometry, not ASCII text as floats. */
+function stlBinaryTriangleFloatsPlausible(buffer: Buffer): boolean {
+  if (buffer.length < 84 + 50) return false
+  let o = 84 + 12
+  for (let i = 0; i < 9; i++) {
+    const f = buffer.readFloatLE(o)
+    o += 4
+    if (!Number.isFinite(f) || Math.abs(f) > 1e6) return false
+  }
+  return true
+}
+
+/**
+ * How many complete 50-byte triangles exist after the 84-byte header, capped by the uint32 at offset 80.
+ * If the header says 0 triangles, all complete records in the file are used (some exporters write 0).
+ */
+export function effectiveBinaryStlTriangleCount(buffer: Buffer): number {
+  if (buffer.length < 84) return 0
+  const maxFit = Math.floor((buffer.length - 84) / 50)
+  if (maxFit < 1) return 0
+  const declared = buffer.readUInt32LE(80)
+  if (!Number.isFinite(declared) || declared < 0 || declared > 50_000_000) return 0
+  if (declared === 0) return maxFit
+  return Math.min(declared, maxFit)
+}
+
 export function parseBinaryStl(buffer: Buffer): StlBounds {
   if (buffer.length < 84) {
     throw new Error('STL too small')
   }
-  const triangleCount = buffer.readUInt32LE(80)
+  const triangleCount = effectiveBinaryStlTriangleCount(buffer)
+  if (triangleCount < 1) {
+    throw new Error('STL corrupt: no complete triangles in file')
+  }
   const expected = 84 + triangleCount * 50
   if (buffer.length < expected) {
     throw new Error(`STL corrupt: expected ${expected} bytes, got ${buffer.length}`)
@@ -56,10 +85,26 @@ export function isLikelyAsciiStl(buffer: Buffer): boolean {
   return head === 'solid'
 }
 
+/**
+ * True when we can read at least one complete binary STL triangle.
+ * Prefer this over {@link isLikelyAsciiStl} alone: many **binary** STLs start with `solid` in the 80-byte header.
+ * Also accepts files whose declared triangle count is **larger** than the bytes on disk (uses min(declared, fits)).
+ */
+export function isBinaryStlLayout(buffer: Buffer): boolean {
+  const n = effectiveBinaryStlTriangleCount(buffer)
+  if (n < 1 || buffer.length < 84 + n * 50) return false
+  const declared = buffer.readUInt32LE(80)
+  const strictHeader =
+    Number.isFinite(declared) && declared > 0 && buffer.length >= 84 + declared * 50
+  if (strictHeader) return true
+  if (!isLikelyAsciiStl(buffer)) return true
+  return stlBinaryTriangleFloatsPlausible(buffer)
+}
+
 /** First triangle vertices in STL model space (binary STL only). */
 export function readStlFirstTriangleVertices(buffer: Buffer): [Vec3, Vec3, Vec3] | null {
-  if (buffer.length < 84 || isLikelyAsciiStl(buffer)) return null
-  const triangleCount = buffer.readUInt32LE(80)
+  if (buffer.length < 84 || !isBinaryStlLayout(buffer)) return null
+  const triangleCount = effectiveBinaryStlTriangleCount(buffer)
   if (triangleCount < 1) return null
   let o = 84 + 12
   const readV = (): Vec3 => {
@@ -87,12 +132,11 @@ export function iterateBinaryStlTriangles(
   maxYield: number,
   fn: (v0: Vec3, v1: Vec3, v2: Vec3, fileIndex: number) => void
 ): StlTriangleIterateResult {
-  if (buffer.length < 84 || isLikelyAsciiStl(buffer)) {
+  if (buffer.length < 84 || !isBinaryStlLayout(buffer)) {
     return { fileTriangleCount: 0, yielded: 0, truncated: false }
   }
-  const fileTriangleCount = buffer.readUInt32LE(80)
-  const expected = 84 + fileTriangleCount * 50
-  if (buffer.length < expected) {
+  const fileTriangleCount = effectiveBinaryStlTriangleCount(buffer)
+  if (fileTriangleCount < 1) {
     return { fileTriangleCount: 0, yielded: 0, truncated: false }
   }
   let o = 84
@@ -142,5 +186,62 @@ export function collectBinaryStlTriangles(
     triangles: out,
     truncated: r.truncated,
     fileTriangleCount: r.fileTriangleCount
+  }
+}
+
+/**
+ * Collect triangles from ASCII STL (`solid` … `endsolid`) for mesh sampling (e.g. 4-axis raster).
+ * Caps triangle count like {@link collectBinaryStlTriangles}.
+ */
+export function collectAsciiStlTriangles(
+  buffer: Buffer,
+  maxTriangles: number = DEFAULT_MAX_STL_TRIANGLES_CAM
+): { triangles: Array<[Vec3, Vec3, Vec3]>; truncated: boolean; fileTriangleCount: number } {
+  const out: Array<[Vec3, Vec3, Vec3]> = []
+  let facetCount = 0
+  let truncated = false
+  const lines = buffer.toString('utf8').split(/\r?\n/)
+  let inLoop = false
+  let verts: Array<[number, number, number]> = []
+  for (const raw of lines) {
+    const t = raw.trim()
+    const low = t.toLowerCase()
+    if (low.startsWith('outer loop')) {
+      inLoop = true
+      verts = []
+      continue
+    }
+    if (low.startsWith('endloop')) {
+      inLoop = false
+      facetCount++
+      if (verts.length >= 3) {
+        if (out.length >= maxTriangles) {
+          truncated = true
+          break
+        }
+        const a = verts[0]!
+        const b = verts[1]!
+        const c = verts[2]!
+        out.push([a, b, c])
+      }
+      continue
+    }
+    if (inLoop && low.startsWith('vertex')) {
+      const rest = t.slice(low.indexOf('vertex') + 6).trim()
+      const parts = rest.split(/\s+/).filter(Boolean)
+      if (parts.length >= 3) {
+        const x = Number.parseFloat(parts[0]!)
+        const y = Number.parseFloat(parts[1]!)
+        const z = Number.parseFloat(parts[2]!)
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+          verts.push([x, y, z])
+        }
+      }
+    }
+  }
+  return {
+    triangles: out,
+    truncated,
+    fileTriangleCount: facetCount
   }
 }

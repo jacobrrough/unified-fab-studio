@@ -62,6 +62,8 @@ export type UtilitiesWorkspacePanelsProps = {
   onPatchDrawingFirstSheet: (partial: {
     name?: string
     scale?: string
+    sheetTemplateHint?: string
+    meshProjectionTier?: 'A' | 'B' | 'C'
     viewPlaceholders?: DrawingViewPlaceholder[]
   }) => void
   onSaveDrawingManifest: () => void | Promise<void>
@@ -545,8 +547,43 @@ export function UtilitiesWorkspacePanels(p: UtilitiesWorkspacePanelsProps): Reac
                 />
               </label>
             </div>
+            <div className="row">
+              <label htmlFor="util-carvera-cli">
+                Carvera CLI executable (optional)
+                <input
+                  id="util-carvera-cli"
+                  value={p.settings.carveraCliPath ?? ''}
+                  onChange={(e) =>
+                    void p.onSaveSettingsField({
+                      carveraCliPath: e.target.value.trim() ? e.target.value : undefined
+                    })
+                  }
+                  placeholder="carvera-cli (PATH) or full path"
+                  autoComplete="off"
+                  aria-describedby="util-settings-more-info"
+                />
+              </label>
+            </div>
+            <label htmlFor="util-carvera-extra-args" className="row">
+              Carvera CLI extra args (JSON array, optional)
+              <textarea
+                id="util-carvera-extra-args"
+                className="textarea--code"
+                rows={2}
+                value={p.settings.carveraCliExtraArgsJson ?? ''}
+                onChange={(e) =>
+                  void p.onSaveSettingsField({
+                    carveraCliExtraArgsJson: e.target.value.trim() ? e.target.value : undefined
+                  })
+                }
+                placeholder='["-m","carvera_cli"]'
+                spellCheck={false}
+                aria-describedby="util-settings-more-info"
+              />
+            </label>
             <p id="util-settings-more-info" className="msg util-settings-disclosure__footer-msg">
-              See <code>resources/slicer/README.md</code> for <code>CURA_ENGINE_SEARCH_PATH</code> and bundled profile notes.
+              See <code>resources/slicer/README.md</code> for <code>CURA_ENGINE_SEARCH_PATH</code> and bundled profile notes.{' '}
+              Carvera: <code>docs/MACHINES.md</code> (Makera Carvera upload).
             </p>
           </SettingsDisclosure>
           <SettingsDisclosure id="util-cura-advanced" title="CuraEngine advanced (optional)">

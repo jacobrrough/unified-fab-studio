@@ -4,10 +4,10 @@ Requires: pip install cadquery
 
 Phase 1 — extrude + revolve of closed profiles (loops + circles).
 Phase 3 — optional postSolidOps: fillet/chamfer (all + directional select), shell (optional cap ±X/±Y/±Z + opposite-cap fallback),
-    pattern_rectangular, pattern_circular, pattern_linear_3d, pattern_path (optional closedPath),
+    pattern_rectangular, pattern_circular, pattern_linear_3d, pattern_path (optional closedPath, alignToPathTangent),
     boolean_subtract_cylinder, boolean_union_box, boolean_subtract_box, boolean_intersect_box,
-    boolean_combine_profile (union/subtract/intersect with extruded profile index),
-    split_keep_halfspace (axis plane split keep positive/negative side),
+    boolean_combine_profile (union/subtract/intersect with extruded profile index; optional extrudeDirection +/-Z),
+    split_keep_halfspace (axis plane split keep positive/negative side; non-trivial discard exports kernel-part-split-discard STEP/STL),
     hole_from_profile (cut from profile index, depth or through-all),
     thread_cosmetic (simplified ring-groove approximation, not true helical thread),
     transform_translate (move/copy body by XYZ translation),
@@ -38,6 +38,7 @@ Failure:
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import sys
@@ -646,6 +647,10 @@ def _validate_post_solid_ops(ops: list) -> str | None:
                     prev = (x, y)
                 if not non_zero:
                     raise ValueError("pattern_path needs at least one non-zero segment")
+                if "alignToPathTangent" in op and not isinstance(
+                    op.get("alignToPathTangent"), bool
+                ):
+                    raise ValueError("pattern_path alignToPathTangent must be boolean")
             elif kind == "mirror_union_plane":
                 pl = str(op.get("plane", "")).strip().upper()
                 if pl not in ("YZ", "XZ", "XY"):
@@ -683,6 +688,11 @@ def _validate_post_solid_ops(ops: list) -> str | None:
                     raise ValueError("boolean_combine_profile extrudeDepthMm must be positive")
                 zs = float(op.get("zStartMm", 0))
                 _require_finite_mm("boolean_combine_profile", zStartMm=zs)
+                ed = str(op.get("extrudeDirection", "+Z")).strip().upper()
+                if ed not in ("+Z", "-Z"):
+                    raise ValueError(
+                        "boolean_combine_profile extrudeDirection must be +Z or -Z"
+                    )
             elif kind == "split_keep_halfspace":
                 ax = str(op.get("axis", "")).strip().upper()
                 if ax not in ("X", "Y", "Z"):
@@ -1185,8 +1195,17 @@ def _cq_transform_solid_by_gp_trsf(cq, solid, trsf) -> object:
     return cq.Workplane("XY").newObject([casted])
 
 
-def _extruded_tool_from_profile_index(cq, profiles: list, profile_index: int, depth_mm: float, z_start_mm: float):
-    """Build tool body from one payload profile index; supports loop or circle."""
+def _extruded_tool_from_profile_index(
+    cq,
+    profiles: list,
+    profile_index: int,
+    depth_mm: float,
+    z_start_mm: float,
+    extrude_sign: float = 1.0,
+):
+    """Build tool body from one payload profile index; supports loop or circle.
+    extrude_sign: +1 extrudes +Z, -1 extrudes -Z from the workplane at z_start_mm.
+    """
     if profile_index < 0 or profile_index >= len(profiles):
         raise ValueError(f"profileIndex out of range: {profile_index}")
     p = profiles[profile_index]
@@ -1198,17 +1217,19 @@ def _extruded_tool_from_profile_index(cq, profiles: list, profile_index: int, de
     z0 = float(z_start_mm)
     if not math.isfinite(z0):
         raise ValueError("zStartMm must be finite")
+    sign = -1.0 if float(extrude_sign) < 0 else 1.0
+    ext = depth * sign
     wp = cq.Workplane("XY").workplane(offset=z0)
     if p.get("type") == "circle":
         cx, cy, rr = float(p.get("cx", 0)), float(p.get("cy", 0)), float(p.get("r", 0))
         if rr <= 0 or not all(math.isfinite(v) for v in (cx, cy, rr)):
             raise ValueError(f"profile[{profile_index}] circle is invalid")
-        return wp.center(cx, cy).circle(rr).extrude(depth)
+        return wp.center(cx, cy).circle(rr).extrude(ext)
     if p.get("type") == "loop":
         pts = _normalize_loop_profile(p)
         if pts is None:
             raise ValueError(f"profile[{profile_index}] loop is invalid")
-        return wp.polyline(pts).close().extrude(depth)
+        return wp.polyline(pts).close().extrude(ext)
     raise ValueError(f"profile[{profile_index}] unsupported type {p.get('type')!r}")
 
 
@@ -1241,6 +1262,56 @@ def _halfspace_box_for_split(cq, solid, axis: str, offset_mm: float, keep: str):
     cy = (y0 + y1) / 2.0
     cz = (z0 + z1) / 2.0
     return cq.Workplane("XY").box(x1 - x0, y1 - y0, z1 - z0).translate((cx, cy, cz))
+
+
+def _loft_rail_sketch_yaw_deg_from_ops(ops: list) -> float | None:
+    """First non-suppressed loft_guide_rails rail segment defines −atan2(dy,dx) yaw in sketch XY (deg)."""
+    for op in ops:
+        if not isinstance(op, dict) or op.get("suppressed"):
+            continue
+        if op.get("kind") != "loft_guide_rails":
+            continue
+        if str(op.get("behavior", "")).strip().lower() == "marker":
+            continue
+        rails = op.get("rails")
+        if not isinstance(rails, list) or len(rails) < 1:
+            continue
+        rail = rails[0]
+        if not isinstance(rail, list) or len(rail) < 2:
+            continue
+        try:
+            x0, y0 = float(rail[0][0]), float(rail[0][1])
+            x1, y1 = float(rail[1][0]), float(rail[1][1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        dx, dy = x1 - x0, y1 - y0
+        if math.hypot(dx, dy) < 1e-9:
+            continue
+        return -math.degrees(math.atan2(dy, dx))
+    return None
+
+
+def _profiles_clone_with_yaw_second(profiles: list, yaw_deg: float) -> list:
+    """Deep-copy profiles and rotate the second profile in XY about the sketch origin."""
+    out = copy.deepcopy(profiles)
+    if len(out) < 2:
+        return out
+    rad = math.radians(float(yaw_deg))
+    c, s = math.cos(rad), math.sin(rad)
+
+    def rot_xy(x: float, y: float) -> tuple[float, float]:
+        return (c * x - s * y, s * x + c * y)
+
+    p1 = out[1]
+    if isinstance(p1, dict) and p1.get("type") == "loop":
+        n = _normalize_loop_profile(p1)
+        if n:
+            p1["points"] = [[rot_xy(a, b)[0], rot_xy(a, b)[1]] for a, b in n]
+    elif isinstance(p1, dict) and p1.get("type") == "circle":
+        cx, cy = float(p1.get("cx", 0)), float(p1.get("cy", 0))
+        ncx, ncy = rot_xy(cx, cy)
+        p1["cx"], p1["cy"] = ncx, ncy
+    return out
 
 
 def _hole_depth_from_mode(solid, mode: str, depth_mm: float | None) -> float:
@@ -1459,7 +1530,9 @@ def _thicken_offset_apply(cq, solid, op: dict):
     ) from last_err
 
 
-def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
+def _apply_post_solid_ops(
+    cq, solid, ops: list, profiles: list, split_discard_out: list | None = None
+):
     """Apply ordered CadQuery ops after base extrude/revolve/loft."""
     for idx, op in enumerate(ops):
         kind = op.get("kind")
@@ -1609,12 +1682,15 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                 solid = solid.intersect(tool)
             elif kind == "boolean_combine_profile":
                 mode = str(op.get("mode", "")).strip().lower()
+                ed = str(op.get("extrudeDirection", "+Z")).strip().upper()
+                ex_sign = -1.0 if ed == "-Z" else 1.0
                 tool = _extruded_tool_from_profile_index(
                     cq,
                     profiles,
                     int(op.get("profileIndex", -1)),
                     float(op.get("extrudeDepthMm", 0)),
                     float(op.get("zStartMm", 0)),
+                    ex_sign,
                 )
                 if mode == "union":
                     solid = solid.union(tool)
@@ -1631,8 +1707,19 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                     raise ValueError("split_keep_halfspace axis must be X, Y, or Z")
                 if keep not in ("positive", "negative"):
                     raise ValueError("split_keep_halfspace keep must be positive or negative")
-                tool = _halfspace_box_for_split(cq, solid, axis, float(op.get("offsetMm", 0)), keep)
-                solid = solid.intersect(tool)
+                off = float(op.get("offsetMm", 0))
+                other = "negative" if keep == "positive" else "positive"
+                discard_tool = _halfspace_box_for_split(cq, solid, axis, off, other)
+                keep_tool = _halfspace_box_for_split(cq, solid, axis, off, keep)
+                if split_discard_out is not None:
+                    try:
+                        disc = solid.intersect(discard_tool)
+                        if disc.val().Volume() > 1e-8:
+                            split_discard_out.clear()
+                            split_discard_out.append(disc)
+                    except Exception:  # noqa: BLE001
+                        pass
+                solid = solid.intersect(keep_tool)
             elif kind == "hole_from_profile":
                 mode = str(op.get("mode", "")).strip().lower()
                 if mode not in ("depth", "through_all"):
@@ -1911,12 +1998,51 @@ def _apply_post_solid_ops(cq, solid, ops: list, profiles: list):
                         acc = nxt
                     return path_pts[-1]
 
+                def tangent_at(dist: float) -> tuple[float, float]:
+                    d = max(0.0, min(float(dist), total))
+                    acc = 0.0
+                    for si, ll in enumerate(seg_lens):
+                        if ll <= 1e-12:
+                            continue
+                        nxt = acc + ll
+                        if d <= nxt or si == len(seg_lens) - 1:
+                            x0, y0 = seg_starts[si]
+                            x1, y1 = seg_ends[si]
+                            dx, dy = x1 - x0, y1 - y0
+                            nn = math.hypot(dx, dy)
+                            if nn <= 1e-12:
+                                return (1.0, 0.0)
+                            return (dx / nn, dy / nn)
+                        acc = nxt
+                    x0, y0 = seg_starts[-1]
+                    x1, y1 = seg_ends[-1]
+                    dx, dy = x1 - x0, y1 - y0
+                    nn = math.hypot(dx, dy)
+                    if nn <= 1e-12:
+                        return (1.0, 0.0)
+                    return (dx / nn, dy / nn)
+
+                align_tangent = bool(op.get("alignToPathTangent", False))
                 base = solid
                 x_ref, y_ref = path_pts[0]
                 step = total / float(cnt - 1)
+                t0x, t0y = tangent_at(0.0)
+                ref_ang = math.atan2(t0y, t0x)
                 for i in range(1, cnt):
-                    sx, sy = sample_path(step * i)
-                    solid = solid.union(base.translate((sx - x_ref, sy - y_ref, 0)))
+                    dist_i = step * i
+                    sx, sy = sample_path(dist_i)
+                    if align_tangent:
+                        tix, tiy = tangent_at(dist_i)
+                        ang_i = math.atan2(tiy, tix)
+                        delta_deg = math.degrees(ang_i - ref_ang)
+                        dup = _rotate_solid_around_z_mm(
+                            base, x_ref, y_ref, delta_deg
+                        ).translate((sx - x_ref, sy - y_ref, 0))
+                        solid = solid.union(dup)
+                    else:
+                        solid = solid.union(
+                            base.translate((sx - x_ref, sy - y_ref, 0))
+                        )
             elif kind == "mirror_union_plane":
                 plane = str(op.get("plane", "YZ")).strip().upper()
                 if plane not in ("YZ", "XZ", "XY"):
@@ -2080,6 +2206,25 @@ def main() -> None:
     stl_path = out_dir / f"{base}.stl"
 
     loft_strategy: str | None = None
+    loft_profiles = profiles
+    loft_rail_mode: str = "marker"
+    rail_yaw = _loft_rail_sketch_yaw_deg_from_ops(post_ops)
+    if solid_kind == "loft" and rail_yaw is not None:
+        loft_profiles = _profiles_clone_with_yaw_second(profiles, rail_yaw)
+        loft_rail_mode = "sketch_xy_align"
+
+    split_discard_holder: list = []
+    stl_mesh_kw: dict = {}
+    try:
+        atd = data.get("stlMeshAngularToleranceDeg")
+        if atd is not None:
+            stl_mesh_kw["angularTolerance"] = float(atd)
+    except (TypeError, ValueError):
+        stl_mesh_kw = {}
+
+    split_step_path = out_dir / f"{base}-split-discard.step"
+    split_stl_path = out_dir / f"{base}-split-discard.stl"
+
     try:
         if solid_kind == "extrude":
             depth = float(data.get("extrudeDepthMm", 10))
@@ -2091,10 +2236,10 @@ def main() -> None:
             solid = _revolve_profiles(cq, profiles, angle, axis_x)
         else:
             loft_sep = float(data.get("loftSeparationMm", 20))
-            if len(profiles) == 2:
-                solid, loft_strategy = _loft_two_profiles(cq, profiles, loft_sep)
+            if len(loft_profiles) == 2:
+                solid, loft_strategy = _loft_two_profiles(cq, loft_profiles, loft_sep)
             else:
-                solid, loft_strategy = _loft_many_via_unions(cq, profiles, loft_sep)
+                solid, loft_strategy = _loft_many_via_unions(cq, loft_profiles, loft_sep)
 
         if solid is None:
             detail = "no valid solid from profiles after kernel rules"
@@ -2103,16 +2248,25 @@ def main() -> None:
             _emit_json({"ok": False, "error": "no_solid", "detail": detail}, 1)
 
         if post_ops:
-            solid = _apply_post_solid_ops(cq, solid, post_ops, profiles)
+            solid = _apply_post_solid_ops(cq, solid, post_ops, profiles, split_discard_holder)
 
         try:
             trsf = _sketch_plane_gp_trsf(sketch_plane)
             solid = _cq_transform_solid_by_gp_trsf(cq, solid, trsf)
+            if split_discard_holder:
+                split_discard_holder[0] = _cq_transform_solid_by_gp_trsf(
+                    cq, split_discard_holder[0], trsf
+                )
         except ValueError as e:
             _emit_json({"ok": False, "error": "invalid_payload", "detail": str(e)}, 1)
 
         cq.exporters.export(solid, str(step_path.resolve()), exportType="STEP")
-        cq.exporters.export(solid, str(stl_path.resolve()), exportType="STL")
+        cq.exporters.export(solid, str(stl_path.resolve()), exportType="STL", **stl_mesh_kw)
+        if split_discard_holder:
+            cq.exporters.export(split_discard_holder[0], str(split_step_path.resolve()), exportType="STEP")
+            cq.exporters.export(
+                split_discard_holder[0], str(split_stl_path.resolve()), exportType="STL", **stl_mesh_kw
+            )
     except Exception as e:  # noqa: BLE001
         _emit_json({"ok": False, "error": "build_failed", "detail": str(e)}, 1)
 
@@ -2125,6 +2279,22 @@ def main() -> None:
         ok_payload["flatPatternStrategy"] = "bbox-outline+fold-centerline-markers"
     if solid_kind == "loft" and loft_strategy:
         ok_payload["loftStrategy"] = loft_strategy
+    for op in reversed(post_ops):
+        if isinstance(op, dict) and op.get("kind") == "split_keep_halfspace":
+            try:
+                ok_payload["splitKeepHalfspace"] = {
+                    "axis": str(op.get("axis", "")).strip().upper(),
+                    "offsetMm": float(op.get("offsetMm", 0)),
+                    "keep": str(op.get("keep", "")).strip().lower(),
+                }
+            except (TypeError, ValueError):
+                pass
+            break
+    if split_discard_holder:
+        ok_payload["splitDiscardedStepPath"] = str(split_step_path.resolve())
+        ok_payload["splitDiscardedStlPath"] = str(split_stl_path.resolve())
+    if any(isinstance(op, dict) and op.get("kind") == "loft_guide_rails" for op in post_ops):
+        ok_payload["loftGuideRailsKernelMode"] = loft_rail_mode
     _emit_json(ok_payload, 0)
 
 
