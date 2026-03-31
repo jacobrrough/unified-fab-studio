@@ -488,6 +488,19 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
   lines.push('; Algorithm: cylindrical heightmap + tool-radius compensation + surface-offset roughing')
   lines.push('; VERIFY: cylinder diameter; A home')
   lines.push(`; Heightmap: ${hitCount}/${hm.radii.length} cells hit (${(hitCount / hm.radii.length * 100).toFixed(1)}%)`)
+  if (hitCount === 0) {
+    lines.push('; WARNING: Heightmap has ZERO hits — mesh may not be aligned with grid.')
+    lines.push(`; Grid X range: [${extXStart.toFixed(2)}, ${extXEnd.toFixed(2)}]`)
+    // Show triangle X extent for debugging
+    let triXMin = Infinity, triXMax = -Infinity
+    for (const [v0, v1, v2] of centered) {
+      for (const v of [v0, v1, v2]) {
+        if (v[0] < triXMin) triXMin = v[0]
+        if (v[0] > triXMax) triXMax = v[0]
+      }
+    }
+    lines.push(`; Mesh X range (centered): [${triXMin.toFixed(2)}, ${triXMax.toFixed(2)}]`)
+  }
 
   // Step 4: Compute per-angle X extents with overcut (used for finishing only)
   const overcutCells = Math.max(1, Math.ceil(overcutMm / actualDx))

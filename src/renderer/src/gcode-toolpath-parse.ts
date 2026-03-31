@@ -218,10 +218,11 @@ export function parseGcodeToolpath(text: string, opts?: ParseGcodeToolpathOpts):
       const dz = z - pz
       const horiz = Math.hypot(x - px, y - py)
       const da = a - pa
-      // Pure A at constant XYZ (unusual on G1) — draw as rapid like an index move.
+      // G1 A-only moves in 4-axis are angular stepovers at cutting depth — classify as cuts, not rapids.
+      // The tool stays engaged in the stock during these rotations.
       const onlyA = Math.abs(dz) <= 1e-6 && horiz <= 1e-6 && Math.abs(da) > ANGLE_EPS
       if (onlyA) {
-        pushLineBuffer(rapidPts, fourAxisMode, rotaryMap, stockLenMm, px, py, pz, pa, x, y, z, a)
+        pushLineBuffer(cutPts, fourAxisMode, rotaryMap, stockLenMm, px, py, pz, pa, x, y, z, a)
       } else {
         const plungeDominant =
           Math.abs(dz) > horiz + 1e-4 && Math.abs(dz) > 1e-4 && Math.abs(da) <= ANGLE_EPS

@@ -87,7 +87,11 @@ export function registerFabricationIpc(ctx: MainIpcWindowContext): void {
       const { transformBinaryStlWithPlacement } = await import('./binary-stl-placement')
       const source = await readFile(payload.stlPath)
       const t = payload.transform
-      const transformed = transformBinaryStlWithPlacement(source, 'as_is', 'y_up', {
+      // ShopModelViewer centers the geometry at origin before applying the user
+      // transform (geo.translate(-center)).  The CAM transform must do the same
+      // so the rotation/translation the user chose in the viewer produces the
+      // same result on the STL fed to the toolpath engine.
+      const transformed = transformBinaryStlWithPlacement(source, 'center_origin', 'y_up', {
         // ShopModelViewer maps model Y->Three.js Z and model Z->Three.js Y.
         rotateDeg: [t.rotation.x, t.rotation.z, t.rotation.y],
         translateMm: [t.position.x, t.position.z, t.position.y],

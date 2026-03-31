@@ -781,12 +781,20 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
     let meshMachinableXMinMm: number | undefined
     let meshMachinableXMaxMm: number | undefined
     let meshRadialMaxMm: number | undefined
+    // The .cam-aligned.stl is in viewer space (stock centred at X=0).
+    // Machine / G-code space has X=0 at the chuck end.  We compute an X shift
+    // that centres the mesh within the machinable zone so the heightmap grid
+    // aligns with the actual triangle positions.  This works for both the
+    // cam-aligned STL and the raw-STL fallback (ASCII STL / transform failure).
+    let meshXShift = 0
+    let rawMeshXMin: number | undefined
+    let rawMeshXMax: number | undefined
     try {
       const stlBuf = await readFile(job.stlPath)
       if (isBinaryStlLayout(stlBuf)) {
         const mb = parseBinaryStl(stlBuf)
-        meshMachinableXMinMm = mb.min[0]
-        meshMachinableXMaxMm = mb.max[0]
+        rawMeshXMin = mb.min[0]
+        rawMeshXMax = mb.max[0]
         const yzCorners: [number, number][] = [
           [mb.min[1], mb.min[2]],
           [mb.min[1], mb.max[2]],
@@ -800,6 +808,21 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
     }
 
     const cylR = cylD / 2
+
+    const stockLenForMach =
+      stockL != null && Number.isFinite(stockL) && stockL > 0 ? stockL : cylinderLengthMm
+    const spanMach = rotaryMachinableXSpanMm(stockLenForMach, chuckDepthMm, clampOffsetMm)
+
+    // Compute the X shift that aligns the mesh centre with the machinable zone centre.
+    // The STL may be in viewer space (stock centred at X=0) or raw coordinates (ASCII fallback).
+    // Either way, this shift places the mesh correctly in machine space (X=0 at chuck end).
+    if (rawMeshXMin != null && rawMeshXMax != null && rawMeshXMax > rawMeshXMin + 1e-6) {
+      const meshCenterX = (rawMeshXMin + rawMeshXMax) / 2
+      const machCenterX = (spanMach.machXStartMm + Math.min(cylinderLengthMm, spanMach.machXEndMm)) / 2
+      meshXShift = machCenterX - meshCenterX
+      meshMachinableXMinMm = rawMeshXMin + meshXShift
+      meshMachinableXMaxMm = rawMeshXMax + meshXShift
+    }
 
     const toolD = job.toolDiameterMm ?? 3.175
     const userBands = p['axialBandCount']
@@ -818,9 +841,6 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
       }
     }
 
-    const stockLenForMach =
-      stockL != null && Number.isFinite(stockL) && stockL > 0 ? stockL : cylinderLengthMm
-    const spanMach = rotaryMachinableXSpanMm(stockLenForMach, chuckDepthMm, clampOffsetMm)
     let mach_x_s = spanMach.machXStartMm
     let mach_x_e = Math.min(cylinderLengthMm, spanMach.machXEndMm)
     if (
@@ -884,6 +904,18 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
             ? collectAsciiStlTriangles(stlBuf, 120_000)
             : collectBinaryStlTriangles(stlBuf, 120_000)
         if (triangles.length > 0) {
+          // Shift triangles so the mesh centre aligns with the machinable zone centre.
+          // Works for both cam-aligned STLs (viewer space) and raw-STL fallback.
+          if (Math.abs(meshXShift) > 1e-6) {
+            for (let ti = 0; ti < triangles.length; ti++) {
+              const [v0, v1, v2] = triangles[ti]!
+              triangles[ti] = [
+                [v0[0] + meshXShift, v0[1], v0[2]],
+                [v1[0] + meshXShift, v1[1], v1[2]],
+                [v2[0] + meshXShift, v2[1], v2[2]]
+              ]
+            }
+          }
           const maxCells =
             typeof p['cylindricalRasterMaxCells'] === 'number' &&
             Number.isFinite(p['cylindricalRasterMaxCells']) &&

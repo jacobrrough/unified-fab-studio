@@ -864,11 +864,13 @@ export function ShopModelViewer({
       s.radius = Math.max(10, Math.min(3000, s.radius + e.deltaY * 0.4))
     }
 
+    const onContextMenu = (e: Event): void => { e.preventDefault() }
+
     canvasEl.addEventListener('mousedown', onDown)
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
     canvasEl.addEventListener('wheel', onWheel, { passive: true })
-    canvasEl.addEventListener('contextmenu', e => e.preventDefault())
+    canvasEl.addEventListener('contextmenu', onContextMenu)
 
     // ── ResizeObserver ────────────────────────────────────────────────────────
     const ro = new ResizeObserver(() => {
@@ -888,6 +890,7 @@ export function ShopModelViewer({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       canvasEl.removeEventListener('wheel', onWheel)
+      canvasEl.removeEventListener('contextmenu', onContextMenu)
       stateRef.current = null
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

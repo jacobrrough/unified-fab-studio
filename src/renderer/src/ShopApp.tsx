@@ -79,7 +79,7 @@ declare const window: Window & {
     toolsImport: (dir: string, payload: { kind: 'csv' | 'json' | 'fusion' | 'fusion_csv'; content: string }) => Promise<ToolLibraryFile>
     toolsImportFile: (dir: string, filePath: string) => Promise<ToolLibraryFile>
     machineToolsRead: (machineId: string) => Promise<ToolLibraryFile>
-    machineToolsSave: (machineId: string, lib: ToolLibraryFile) => Promise<void>
+    machineToolsSave: (machineId: string, lib: ToolLibraryFile) => Promise<ToolLibraryFile>
     machineToolsImport: (machineId: string, payload: { kind: string; content: string }) => Promise<ToolLibraryFile>
     machineToolsImportFile: (machineId: string, filePath: string) => Promise<ToolLibraryFile>
     postsList: () => Promise<Array<{ filename: string; path: string; source: 'bundled' | 'user'; preview: string }>>
@@ -1655,7 +1655,7 @@ function LibraryView({ onToast, onMachinesChanged }: {
             </div>
             {editingMachine && (
               <MachineEditor machine={editingMachine} onChange={setEditingMachine}
-                onSave={async () => { await fab().machinesSaveUser(editingMachine); await refreshMachines(); setEditingMachine(null); onToast('ok', 'Saved') }}
+                onSave={async () => { try { await fab().machinesSaveUser(editingMachine); await refreshMachines(); setEditingMachine(null); onToast('ok', 'Saved') } catch (e) { onToast('err', String(e)) } }}
                 onCancel={() => setEditingMachine(null)} />
             )}
             {!editingMachine && machines.map(m => {
@@ -1676,7 +1676,7 @@ function LibraryView({ onToast, onMachinesChanged }: {
                   <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setEditingMachine({ ...m })}>✏</button>
                   {m.meta?.source === 'user' && (
                     <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }}
-                      onClick={async () => { await fab().machinesDeleteUser(m.id); await refreshMachines(); onToast('ok', 'Deleted') }}>🗑</button>
+                      onClick={async () => { try { await fab().machinesDeleteUser(m.id); await refreshMachines(); onToast('ok', 'Deleted') } catch (e) { onToast('err', String(e)) } }}>🗑</button>
                   )}
                 </div>
               )
@@ -1719,15 +1719,15 @@ function LibraryView({ onToast, onMachinesChanged }: {
                 cutParams: { default: { surfaceSpeedMMin: 200, chiploadMm: 0.05, docFactor: 0.5, stepoverFactor: 0.45, plungeFactor: 0.3 } }
               })}>+ New Material</button>
               <button className="btn btn-ghost btn-sm" onClick={async () => {
-                const r = await fab().materialsPickAndImport()
+                try { const r = await fab().materialsPickAndImport()
                 if (!r) return
                 setMaterials(await fab().materialsList())
-                onToast('ok', `Imported ${r.length} material(s)`)
+                onToast('ok', `Imported ${r.length} material(s)`) } catch (e) { onToast('err', String(e)) }
               }}>Import JSON…</button>
             </div>
             {editingMaterial && (
               <MaterialEditor material={editingMaterial} onChange={setEditingMaterial}
-                onSave={async () => { await fab().materialsSave(editingMaterial); setMaterials(await fab().materialsList()); setEditingMaterial(null); onToast('ok', 'Saved') }}
+                onSave={async () => { try { await fab().materialsSave(editingMaterial); setMaterials(await fab().materialsList()); setEditingMaterial(null); onToast('ok', 'Saved') } catch (e) { onToast('err', String(e)) } }}
                 onCancel={() => setEditingMaterial(null)} />
             )}
             {!editingMaterial && materials.map(m => (
@@ -1739,7 +1739,7 @@ function LibraryView({ onToast, onMachinesChanged }: {
                 <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setEditingMaterial({ ...m })}>✏</button>
                 {m.source !== 'bundled' && (
                   <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }}
-                    onClick={async () => { await fab().materialsDelete(m.id); setMaterials(await fab().materialsList()); onToast('ok', 'Deleted') }}>🗑</button>
+                    onClick={async () => { try { await fab().materialsDelete(m.id); setMaterials(await fab().materialsList()); onToast('ok', 'Deleted') } catch (e) { onToast('err', String(e)) } }}>🗑</button>
                 )}
               </div>
             ))}
@@ -1750,14 +1750,14 @@ function LibraryView({ onToast, onMachinesChanged }: {
           <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
             <div style={{ width: 220, borderRight: '1px solid var(--border)', overflow: 'auto', padding: 8 }}>
               <button className="btn btn-ghost btn-sm" style={{ width: '100%', marginBottom: 8 }}
-                onClick={async () => { const r = await fab().postsPickAndUpload(); if (r) { setPosts(await fab().postsList()); onToast('ok', `Imported ${r.filename}`) } }}>
+                onClick={async () => { try { const r = await fab().postsPickAndUpload(); if (r) { setPosts(await fab().postsList()); onToast('ok', `Imported ${r.filename}`) } } catch (e) { onToast('err', String(e)) } }}>
                 Import .hbs…
               </button>
               {posts.map(p => (
                 <div key={p.filename}
                   className={`lib-row${editingPostFilename === p.filename ? ' lib-row--active' : ''}`}
                   style={{ cursor: 'pointer' }}
-                  onClick={async () => { setPostContent(await fab().postsRead(p.filename)); setEditingPostFilename(p.filename) }}>
+                  onClick={async () => { try { setPostContent(await fab().postsRead(p.filename)); setEditingPostFilename(p.filename) } catch (e) { onToast('err', String(e)) } }}>
                   <div style={{ flex: 1, fontSize: 12 }}>
                     <div>{p.filename}</div>
                     <div className="text-muted" style={{ fontSize: 10 }}>{p.source}</div>
@@ -1772,8 +1772,8 @@ function LibraryView({ onToast, onMachinesChanged }: {
                     <span style={{ fontWeight: 600 }}>{editingPostFilename}</span>
                     <div style={{ flex: 1 }} />
                     <button className="btn btn-sm btn-generate" onClick={async () => {
-                      await fab().postsSave(editingPostFilename, postContent)
-                      setPosts(await fab().postsList()); onToast('ok', 'Saved')
+                      try { await fab().postsSave(editingPostFilename, postContent)
+                      setPosts(await fab().postsList()); onToast('ok', 'Saved') } catch (e) { onToast('err', String(e)) }
                     }}>Save</button>
                   </div>
                   <textarea style={{ flex: 1, background: 'var(--bg2)', color: 'var(--txt0)', border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'monospace', fontSize: 12, padding: 8, resize: 'none' }}
@@ -1938,7 +1938,7 @@ function SettingsView({ onToast }: { onToast: (k: Toast['kind'], m: string) => v
       </div>
       <div style={{ marginTop: 16 }}>
         <button className="btn btn-generate" onClick={async () => {
-          await fab().settingsSet(settings); onToast('ok', 'Settings saved')
+          try { await fab().settingsSet(settings); onToast('ok', 'Settings saved') } catch (e) { onToast('err', String(e)) }
         }}>Save Settings</button>
       </div>
     </div>
@@ -2010,6 +2010,7 @@ export default function ShopApp(): React.ReactElement {
   // Auto-save to localStorage whenever jobs change
   useEffect(() => {
     if (jobs.length > 0) localStorage.setItem(JOBS_KEY, JSON.stringify(jobs))
+    else localStorage.removeItem(JOBS_KEY)
   }, [jobs])
 
   useEffect(() => {
@@ -2046,8 +2047,13 @@ export default function ShopApp(): React.ReactElement {
     setJobs(js => [...js, j]); setActiveJobId(j.id)
   }
   const deleteJob = (id: string): void => {
-    setJobs(js => js.filter(j => j.id !== id))
-    if (activeJobId === id) setActiveJobId(jobs.find(j => j.id !== id)?.id ?? null)
+    setJobs(js => {
+      const remaining = js.filter(j => j.id !== id)
+      if (activeJobId === id) {
+        setActiveJobId(remaining[0]?.id ?? null)
+      }
+      return remaining
+    })
   }
   const addOp = (kind: ManufactureOperationKind): void => {
     if (!activeJob) return
@@ -2070,18 +2076,22 @@ export default function ShopApp(): React.ReactElement {
     pushToast('ok', `Applied ${mat.name} to ${applied.operations.filter(o => o.kind.startsWith('cnc_')).length} op(s)`)
   }
 
+  const activeJobMaterialId = activeJob?.materialId ?? null
+  const activeJobOpsLength = activeJob?.operations.length ?? 0
   useEffect(() => {
-    if (!activeJob?.materialId || activeJob.operations.length === 0) return
+    if (!activeJob || !activeJobMaterialId || activeJobOpsLength === 0) return
     const applied = applyMaterialToOperations(
       activeJob.operations,
-      activeJob.materialId,
+      activeJob.materialId!,
       materials,
       machineTools,
       activeJob.stock
     )
     if (!applied.changed) return
     updateJob(activeJob.id, { operations: applied.operations })
-  }, [activeJob, materials, machineTools, updateJob])
+  // Only re-run when the material selection or material library changes, not on every job mutation
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobMaterialId, activeJobOpsLength, materials, machineTools, updateJob])
   const saveProjectFile = async (): Promise<void> => {
     const payload = JSON.stringify({ version: 1, jobs, activeJobId }, null, 2)
     const p = await fab().dialogSaveFile(
@@ -2102,7 +2112,7 @@ export default function ShopApp(): React.ReactElement {
     if (!p) return
     try {
       const raw = await fab().fsReadBase64(p)
-      const text = atob(raw)
+      const text = decodeURIComponent(escape(atob(raw)))
       const { jobs: loadedJobs, activeJobId: loadedActiveId } = JSON.parse(text) as { version: number; jobs: Job[]; activeJobId: string | null }
       if (!Array.isArray(loadedJobs)) throw new Error('Invalid session file')
       setJobs(loadedJobs)
