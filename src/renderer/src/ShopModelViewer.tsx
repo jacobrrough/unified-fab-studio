@@ -11,6 +11,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
+import { parseGcodeToolpath, type ToolpathGeometry } from './gcode-toolpath-parse'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -81,87 +82,6 @@ function parseAscii(txt: string): THREE.BufferGeometry {
   return g
 }
 function deg(d: number): number { return d * Math.PI / 180 }
-
-// ── G-code toolpath parser ─────────────────────────────────────────────────────
-// Coordinate mapping: G-code X→Three.js X, G-code Y→Three.js Z, G-code Z→Three.js Y
-// Max segments to keep GPU memory bounded even for large files.
-const MAX_TOOLPATH_SEGS = 80_000
-
-interface ToolpathGeometry {
-  rapids:  THREE.BufferGeometry   // G0 moves — amber
-  plunges: THREE.BufferGeometry   // G1 with Z going negative — magenta
-  cuts:    THREE.BufferGeometry   // G1 with Z < 0 — cyan
-  stats:   { rapids: number; cuts: number; plunges: number; totalLines: number }
-}
-
-function parseGcodeToolpath(text: string): ToolpathGeometry {
-  const lines = text.split(/\r?\n/)
-  let x = 0, y = 0, z = 0
-  let isAbsolute = true
-
-  const rapidPts:  number[] = []
-  const plungePts: number[] = []
-  const cutPts:    number[] = []
-  let totalSegs = 0
-
-  const push = (arr: number[], x1: number, y1: number, z1: number,
-                              x2: number, y2: number, z2: number): void => {
-    // G-code→Three.js: X→X, Y→Z, Z→Y
-    arr.push(x1, z1, y1,  x2, z2, y2)
-  }
-
-  for (const raw of lines) {
-    if (totalSegs >= MAX_TOOLPATH_SEGS) break
-    const line = raw.replace(/;.*$/, '').trim().toUpperCase()
-    if (!line) continue
-
-    if (line.startsWith('G90')) { isAbsolute = true; continue }
-    if (line.startsWith('G91')) { isAbsolute = false; continue }
-
-    const isG0 = /^G0\b/.test(line) || /^G00\b/.test(line)
-    const isG1 = /^G1\b/.test(line) || /^G01\b/.test(line)
-    if (!isG0 && !isG1) continue
-
-    const px = x, py = y, pz = z
-    const xm = line.match(/X(-?[\d.]+)/); if (xm) x = isAbsolute ? +xm[1] : x + +xm[1]
-    const ym = line.match(/Y(-?[\d.]+)/); if (ym) y = isAbsolute ? +ym[1] : y + +ym[1]
-    const zm = line.match(/Z(-?[\d.]+)/); if (zm) z = isAbsolute ? +zm[1] : z + +zm[1]
-
-    if (px === x && py === y && pz === z) continue   // no motion
-
-    totalSegs++
-    if (isG0) {
-      push(rapidPts, px, py, pz, x, y, z)
-    } else {
-      // G1: plunge if Z went down, cut if Z is below surface, else traverse
-      if (z < 0 && pz >= z) {   // Z is dropping while cutting
-        push(plungePts, px, py, pz, x, y, z)
-      } else if (z < 0) {
-        push(cutPts, px, py, pz, x, y, z)
-      } else {
-        push(rapidPts, px, py, pz, x, y, z)   // slow traverse at safe-Z — treat as rapid color
-      }
-    }
-  }
-
-  function makeGeo(pts: number[]): THREE.BufferGeometry {
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(pts), 3))
-    return g
-  }
-
-  return {
-    rapids:  makeGeo(rapidPts),
-    plunges: makeGeo(plungePts),
-    cuts:    makeGeo(cutPts),
-    stats: {
-      rapids:  rapidPts.length  / 6,
-      plunges: plungePts.length / 6,
-      cuts:    cutPts.length    / 6,
-      totalLines: lines.length
-    }
-  }
-}
 
 function buildToolpathGroup(geo: ToolpathGeometry): THREE.Group {
   const root = new THREE.Group(); root.name = 'toolpath'
@@ -690,8 +610,14 @@ export function ShopModelViewer({
     setToolpathLoading(true)
     try {
       const b64 = await (window as Window & { fab: { fsReadBase64:(p:string)=>Promise<string> } }).fab.fsReadBase64(path)
-      const text = decodeURIComponent(escape(atob(b64)))   // UTF-8 safe decode
-      const geo = parseGcodeToolpath(text)
+      const bin = atob(b64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+      const geo = parseGcodeToolpath(text, {
+        fourAxis: is4Axis,
+        stockLenMm: stock.x
+      })
       const grp = buildToolpathGroup(geo)
       s.scene.add(grp)
       s.toolpathGrp = grp
@@ -701,7 +627,7 @@ export function ShopModelViewer({
     } finally {
       setToolpathLoading(false)
     }
-  }, [])
+  }, [is4Axis, stock.x])
 
   const clearToolpath = useCallback(() => {
     const s = stateRef.current
@@ -716,12 +642,11 @@ export function ShopModelViewer({
 
   useEffect(() => {
     if (showToolpath && gcodeOut) {
-      loadToolpath(gcodeOut)
+      void loadToolpath(gcodeOut)
     } else {
       clearToolpath()
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showToolpath, gcodeOut])
+  }, [showToolpath, gcodeOut, loadToolpath, clearToolpath])
 
   // ── Init Three.js ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1001,7 +926,7 @@ export function ShopModelViewer({
 
     if (is4Axis) {
       // 4-axis mode: show rig + cylinder stock, hide flat box
-      // Use stock.x as cylinder length, stock.y as diameter (matches cnc_4axis_wrapping cylinderDiameterMm concept)
+      // Use stock.x as cylinder length, stock.y as diameter (matches 4-axis cylinderDiameterMm concept)
       const cylLen = Math.max(20, stock.x)
       const cylDia = Math.max(10, stock.y)
       const rig = buildFourAxisRig(cylLen, cylDia, chuckDepthMm, clampOffsetMm, posts, s.scene)

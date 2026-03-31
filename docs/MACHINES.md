@@ -4,6 +4,10 @@ This document records how **Unified Fab Studio** maps software settings to **saf
 
 **Bundled profiles and posts** ship under [`resources/`](../resources/README.md): machine JSON and Handlebars templates are indexed in [`resources/machines/README.md`](../resources/machines/README.md) and [`resources/posts/README.md`](../resources/posts/README.md). **Parallel agent lanes:** **Stream F** (all `resources/`), **Stream K** (posts + machines only), **Stream L** (slicer stubs only) — see [`docs/agents/STREAM-F-resources-only.md`](agents/STREAM-F-resources-only.md) and [`docs/agents/STREAM-L-cura-slicer.md`](agents/STREAM-L-cura-slicer.md).
 
+## Lathe / turning (planning only)
+
+Manufacture operations may use **`cnc_lathe_turn`** in `manufacture.json` for roadmaps and UI, but **Generate CAM** does not post lathe cycles yet. Use external CAM with a lathe-capable post until runner + `resources/posts/` lathe templates ship.
+
 ## Laguna Swift 5×10 (CNC router)
 
 ### Controller identification (required)
@@ -135,6 +139,23 @@ The K2 Plus runs **Klipper** with **Moonraker** for remote control. The app can 
 - Envelope and max feed/accel are conservative defaults in **`resources/machines/makera-desktop.json`** — align with **Makera CAM** or manufacturer specs.
 - Many small routers use **Grbl**-compatible dialect; confirm in Makera documentation if `M3`/`M4`/`G21` differ.
 
+### Upload from Unified Fab Studio (carvera-cli)
+
+The app can send **`output/cam.nc`** to the machine using the community **[carvera-cli](https://github.com/hagmonk/carvera-cli)** tool (not affiliated with Makera; **beta** upstream). You install it yourself (`uv tool install`, `pip`, or similar — see that repo).
+
+1. Install **carvera-cli** and ensure it runs from a terminal (`carvera-cli --help` or your chosen invocation).
+2. Under **File → Settings → External tool paths**, set **Carvera CLI executable** if the command is not on `PATH`, or use **Carvera CLI extra args (JSON array)** when the executable is `python.exe` and you need `["-m","carvera_cli"]` (example only — match your install).
+3. On **Manufacture → CAM**, after **Generate toolpath**, use **Upload to Carvera**. Pick **WiFi** / **USB** / **Auto** and optionally the device (**IP** or **COM#** / serial path). The main process runs `carvera-cli upload …` with a timeout (see CLI docs).
+4. **Starting the job** on the control may still be a separate step on the machine or in **Carvera Controller** — this integration focuses on **file upload**. Treat all G-code as **unverified** until you dry-run and confirm WCS, speeds, and clearances (`docs/VERIFICATION.md`).
+
+**Troubleshooting**
+
+| Symptom | Check |
+|--------|--------|
+| Spawn / ENOENT / command not found | CLI path, PATH, or extra-args JSON for `python -m …`. |
+| Upload fails or times out | USB cable/driver; WiFi IP; run `carvera-cli scan` in a terminal. |
+| File not found | Run **Generate toolpath** so `output/cam.nc` exists under the project folder. |
+
 ---
 
 ## Makera Carvera + 4th Axis Rotary Attachment
@@ -150,10 +171,12 @@ The Carvera 4th-axis attachment adds a **rotary chuck** (A-axis, rotation around
 
 | Kind | Description | Required params |
 |------|-------------|-----------------|
-| `cnc_4axis_wrapping` | Continuous rotary — wraps a raster or contour path around a cylinder | `cylinderDiameterMm`, `cylinderLengthMm`, `zPassMm`, `wrapMode` (`parallel`\|`contour`) |
+| `cnc_4axis_roughing` | Mesh-aware radial waterline roughing — layer-by-layer from stock OD toward part surface | `zPassMm`, `zStepMm`, `stepoverDeg` |
+| `cnc_4axis_finishing` | Mesh-aware surface-following finish — fine angular stepover at final depth | `zPassMm`, `finishStepoverDeg` |
+| `cnc_4axis_contour` | Wraps a 2D contour onto the cylinder surface for engraving/profiling | `contourPoints`, `zPassMm` |
 | `cnc_4axis_indexed` | Indexed — lock A at discrete angles; 3-axis pass at each stop | `indexAnglesDeg` (array), `cylinderDiameterMm` |
 
-Both ops route to **`engines/cam/axis4_toolpath.py`** (pure Python, no external CAM library required). Post-processor: **`cnc_4axis_grbl.hbs`** (emits X Z A words for Grbl).
+Roughing and finishing use the **TS cylindrical heightmap engine** (`cam-axis4-cylindrical-raster.ts`) with Python fallback. Contour and indexed use **`engines/cam/axis4_toolpath.py`** (pure Python). Post-processor: **`cnc_4axis_grbl.hbs`**. Full pipeline and parameters: **`docs/CAM_4TH_AXIS_REFERENCE.md`**.
 
 ### Critical 4th-axis setup checklist (before any cut)
 
@@ -186,9 +209,9 @@ Both ops route to **`engines/cam/axis4_toolpath.py`** (pure Python, no external 
   ],
   "operations": [
     {
-      "id": "op-rotary-parallel",
-      "kind": "cnc_4axis_wrapping",
-      "label": "Cylindrical parallel finish",
+      "id": "op-rotary-rough",
+      "kind": "cnc_4axis_roughing",
+      "label": "Rotary roughing",
       "sourceMesh": "assets/part.stl",
       "params": {
         "cylinderDiameterMm": 50,

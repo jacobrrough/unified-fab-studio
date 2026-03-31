@@ -17,8 +17,8 @@ export const machineProfileSchema = z.object({
   dialect: z.enum(['grbl', 'mach3', 'generic_mm', 'grbl_4axis']),
   /**
    * Number of controlled axes. 3 = standard XYZ, 4 = XYZ + A rotary axis.
-   * Defaults to 3 when absent. Required for 4-axis ops (cnc_4axis_wrapping,
-   * cnc_4axis_indexed) to be offered in the UI.
+   * Defaults to 3 when absent. Required for 4-axis ops (cnc_4axis_roughing,
+   * cnc_4axis_finishing, cnc_4axis_contour, cnc_4axis_indexed) to be offered in the UI.
    */
   axisCount: z.number().int().min(3).max(5).optional(),
   /**

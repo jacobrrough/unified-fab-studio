@@ -669,13 +669,14 @@ function computeAxis4ZDepthsMm(
  * These ops require `axisCount >= 4` on the machine profile.
  */
 export function manufactureKindUses4AxisEngine(kind: string | undefined): boolean {
-  return kind === 'cnc_4axis_wrapping' || kind === 'cnc_4axis_indexed'
+  return kind === 'cnc_4axis_roughing' || kind === 'cnc_4axis_finishing' || kind === 'cnc_4axis_contour' || kind === 'cnc_4axis_indexed'
 }
 
 /**
  * CAM pipeline: for `cnc_waterline` / `cnc_adaptive` / `cnc_raster` / `cnc_pencil`, try OpenCAMLib → toolpath lines → post.
  * `cnc_pencil` uses the **raster** OCL strategy with a tighter stepover (`resolvePencilStepoverMm`).
- * `cnc_4axis_wrapping` / `cnc_4axis_indexed` route to the dedicated `axis4_toolpath.py` engine.
+ * `cnc_4axis_roughing` / `cnc_4axis_finishing` use TS cylindrical heightmap engine (Python fallback).
+ * `cnc_4axis_contour` / `cnc_4axis_indexed` route to the dedicated `axis4_toolpath.py` Python engine.
  * Fallbacks: parallel finish (waterline/adaptive) or mesh / ortho raster (raster + pencil); other kinds use parallel finish.
  */
 export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunResult> {
@@ -689,17 +690,20 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
   // ── 4-axis operations ──────────────────────────────────────────────────────
   if (manufactureKindUses4AxisEngine(job.operationKind)) {
     const p = job.operationParams ?? {}
-    const axis4Strategy = job.operationKind === 'cnc_4axis_wrapping' ? '4axis_wrapping' : '4axis_indexed'
-    const rawWrap = String(p['wrapMode'] ?? 'parallel').toLowerCase()
+    const axis4Strategy = job.operationKind === 'cnc_4axis_indexed' ? '4axis_indexed'
+      : job.operationKind === 'cnc_4axis_contour' ? '4axis_wrapping'
+      : '4axis_wrapping' // roughing & finishing both use wrapping strategy
+    const isFinishing = job.operationKind === 'cnc_4axis_finishing'
+    const isContour = job.operationKind === 'cnc_4axis_contour'
 
     let contourClosureHint = ''
-    if (job.operationKind === 'cnc_4axis_wrapping' && rawWrap === 'contour') {
+    if (isContour) {
       const cpts = point2dList(p['contourPoints'])
       if (cpts.length < 2) {
         return {
           ok: false,
           error: '4-axis contour wrapping requires contourPoints (at least two [x, y] points in mm).',
-          hint: 'Add contourPoints to the operation, apply a sketch contour from the Manufacture plan, or switch wrap mode to Parallel / Raster / Silhouette rough. See docs/CAM_4TH_AXIS_REFERENCE.md.'
+          hint: 'Add contourPoints to the operation or apply a sketch contour from the Manufacture plan. See docs/CAM_4TH_AXIS_REFERENCE.md.'
         }
       }
       if (cpts.length >= 3) {
@@ -868,7 +872,7 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
     // Contour mode uses explicit contour points (not mesh) → always Python.
     // All other wrapping & indexed modes: try TS mesh-aware engine first,
     // fall back to Python only when STL is unavailable or TS produces no cuts.
-    const useContourMode = job.operationKind === 'cnc_4axis_wrapping' && rawWrap === 'contour'
+    const useContourMode = isContour
 
     let axis4Lines: string[] | null = null
     if (!useContourMode && mach_x_e > mach_x_s + 0.05) {
@@ -894,11 +898,16 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
             typeof p['overcutMm'] === 'number' && Number.isFinite(p['overcutMm']) && p['overcutMm'] >= 0
               ? p['overcutMm']
               : undefined
-          // For silhouette_rough, use coarser angular stepover
-          const effectiveStepoverDeg =
-            rawWrap === 'silhouette_rough' || rawWrap === 'silhouette'
-              ? Math.max(5, Math.min(90, stepoverDeg * 2.5))
-              : stepoverDeg
+          // Finishing: finer stepover, single final depth, enable finish pass
+          // Roughing: normal stepover, all depth levels, no finish pass
+          const effectiveStepoverDeg = isFinishing
+            ? (typeof p['finishStepoverDeg'] === 'number' && Number.isFinite(p['finishStepoverDeg']) && (p['finishStepoverDeg'] as number) > 0
+                ? p['finishStepoverDeg'] as number
+                : Math.max(0.5, stepoverDeg / 2))
+            : stepoverDeg
+          const effectiveZDepths = isFinishing
+            ? [zDepths[zDepths.length - 1]!]
+            : zDepths
           const lines = generateCylindricalMeshRasterLines({
             triangles,
             cylinderRadiusMm: cylD,
@@ -906,14 +915,15 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
             machXEndMm: mach_x_e,
             stepoverDeg: effectiveStepoverDeg,
             stepXMm: Math.max(0.25, job.stepoverMm),
-            zDepthsMm: zDepths,
+            zDepthsMm: effectiveZDepths,
             feedMmMin: job.feedMmMin,
             plungeMmMin: job.plungeMmMin,
             safeZMm: job.safeZMm,
             finishAllowanceMm: finishAl,
             maxCells,
             toolDiameterMm: toolD,
-            overcutMm
+            overcutMm,
+            enableFinishPass: isFinishing
           })
           // Validate output: must have both plunge moves (G1 Z) AND cutting moves (G1 X)
           const g1xCount = lines.filter((l) => /^G1\s+X[\d.-]/i.test(l)).length
@@ -934,12 +944,7 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
 
     // ── Python fallback: contour mode, or when STL unavailable/TS produced no cuts ──
     if (axis4Lines == null) {
-      const pyWrapMode =
-        rawWrap === 'contour'
-          ? 'contour'
-          : rawWrap === 'silhouette_rough' || rawWrap === 'silhouette'
-            ? 'silhouette_rough'
-            : 'parallel'
+      const pyWrapMode = isContour ? 'contour' : 'parallel'
 
       const pyOvercutMm =
         typeof p['overcutMm'] === 'number' && Number.isFinite(p['overcutMm']) && p['overcutMm'] >= 0
@@ -1045,7 +1050,7 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
       gcode,
       usedEngine: 'builtin',
       engine: { requestedEngine: 'builtin', usedEngine: 'builtin', fallbackApplied: false },
-      hint: `4-axis toolpath (${axis4Strategy}${rawWrap === 'raster' && axis4Lines.some((l) => l.includes('MESH raster')) ? ', mesh raster' : ''}) posted. ${UNVERIFIED} Run an air cut with spindle OFF before any real cut. Confirm cylinder diameter and A WCS home (docs/MACHINES.md).${postedGcodeEnvelopeHint(job.machine, gcode, job.rotaryStockDiameterMm ?? cylD)}${rotaryTravelHintForPostedGcode(job.operationKind, gcode)}${guardHint}${alignHint}${contourClosureHint}${radialExtentHint}`
+      hint: `4-axis toolpath (${job.operationKind}) posted. ${UNVERIFIED} Run an air cut with spindle OFF before any real cut. Confirm cylinder diameter and A WCS home (docs/MACHINES.md).${postedGcodeEnvelopeHint(job.machine, gcode, job.rotaryStockDiameterMm ?? cylD)}${rotaryTravelHintForPostedGcode(job.operationKind, gcode)}${guardHint}${alignHint}${contourClosureHint}${radialExtentHint}`
     }
   }
 

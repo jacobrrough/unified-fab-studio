@@ -23,7 +23,7 @@ import {
   writePersistedManufactureOpFilter
 } from '../shell/workspaceMemory'
 import { estimateFeedMmMinFromTool } from '../../shared/tool-feed-hint'
-import type { ToolLibraryFile } from '../../shared/tool-schema'
+import type { ToolLibraryFile, ToolRecord } from '../../shared/tool-schema'
 import { CamManufacturePanel, SliceManufacturePanel, ToolsManufacturePanel } from './ManufactureAuxPanels'
 import { ManufactureSetupStrip } from './ManufactureSetupStrip'
 import { ManufactureCamSimulationPanel } from './ManufactureCamSimulationPanel'
@@ -31,6 +31,7 @@ import { ManufactureSubTabStrip } from './ManufactureSubTabStrip'
 import { MakeraFunctionsPanel } from './MakeraFunctionsPanel'
 import { StockMaterialPanel } from './StockMaterialPanel'
 import type { StockMaterialType, WcsOriginPoint } from '../../shared/manufacture-schema'
+import { buildSetupSheetJobFromManufacture, generateSetupSheet, parseGcodeStats } from '../src/setup-sheet'
 
 function resolveManufactureCamMachine(mfg: ManufactureFile, machines: MachineProfile[]): MachineProfile | undefined {
   const cnc = machines.filter((m) => m.kind === 'cnc')
@@ -67,7 +68,7 @@ type Props = {
   onImportTextChange: (value: string) => void
   onSaveSettingsField: (partial: Partial<AppSettings>) => void
   onRunSlice: () => void
-  onRunCam: () => void
+  onRunCam: (ctx: { mfg: ManufactureFile; selectedOpIndex: number }) => void | Promise<void>
   onImportTools: (kind: 'csv' | 'json' | 'fusion' | 'fusion_csv', target?: 'project' | 'machine') => void
   onImportToolLibraryFromFile: (target?: 'project' | 'machine') => void | Promise<void>
   onMigrateProjectToolsToMachine?: () => void | Promise<void>
@@ -456,6 +457,28 @@ export function ManufactureWorkspace({
       return
     }
     const base: Record<string, unknown> = { ...(op.params ?? {}) }
+    if (op.kind === 'cnc_4axis_contour') {
+      const sourceId = typeof base['contourSourceId'] === 'string' ? base['contourSourceId'] : undefined
+      const selected = sourceId ? listContourCandidatesFromDesign(d).find((c) => c.sourceId === sourceId) : undefined
+      const contour = deriveContourPointsFromDesign(d, sourceId)
+      if (contour.length < 2) {
+        onStatus?.('No usable sketch profile for 4-axis contour wrap (need ≥2 points).')
+        return
+      }
+      base.contourPoints = contour
+      base.wrapMode = 'contour'
+      if (selected) {
+        base.contourSourceLabel = selected.label
+        base.contourSourceSignature = selected.signature
+      } else {
+        delete base.contourSourceLabel
+        delete base.contourSourceSignature
+      }
+      base.contourDerivedAt = new Date().toISOString()
+      updateOp(i, { params: base })
+      onStatus?.(`4-axis wrap: ${contour.length} vertices from sketch (wrap mode set to Contour).`)
+      return
+    }
     if (op.kind === 'cnc_contour' || op.kind === 'cnc_pocket') {
       const sourceId = typeof base['contourSourceId'] === 'string' ? base['contourSourceId'] : undefined
       const selected = sourceId ? listContourCandidatesFromDesign(d).find((c) => c.sourceId === sourceId) : undefined
@@ -695,6 +718,53 @@ export function ManufactureWorkspace({
     await onAfterMeshImport?.()
   }
 
+  async function exportManufactureSetupSheet(): Promise<void> {
+    if (!projectDir) {
+      onStatus?.('Open a project first.')
+      return
+    }
+    const name = project?.name?.trim() || 'Manufacture'
+    const sep = projectDir.includes('\\') ? '\\' : '/'
+    const gcodePath = `${projectDir}${sep}output${sep}cam.nc`
+    let gcodeStats = null
+    let gcodeText: string | null = null
+    try {
+      const text = await fab.readTextFile(gcodePath)
+      gcodeText = text
+      gcodeStats = parseGcodeStats(text)
+    } catch {
+      /* optional */
+    }
+    const rel = mfg.operations.find((o) => o.sourceMesh?.trim())?.sourceMesh?.trim() ?? null
+    const stlAbs = rel ? `${projectDir}${sep}${rel.replace(/\//g, sep)}` : null
+    const job = buildSetupSheetJobFromManufacture({
+      projectName: name,
+      mfg,
+      camMachineId: camRunCncMachineId,
+      gcodePath,
+      sourceStlPath: stlAbs
+    })
+    const machineProf = camRunCncMachineId ? machines.find((m) => m.id === camRunCncMachineId) ?? null : null
+    const toolList: ToolRecord[] = tools?.tools ?? projectTools?.tools ?? machineTools?.tools ?? []
+    const html = generateSetupSheet({
+      job,
+      machine: machineProf,
+      material: null,
+      tools: toolList,
+      gcodeStats,
+      gcodeText
+    })
+    const fileName = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}_setup_sheet.html`
+    const outPath = `${projectDir}${sep}output${sep}${fileName}`
+    try {
+      await fab.fsWriteText(outPath, html)
+      await fab.shellOpenPath(outPath)
+      onStatus?.(`Setup sheet saved: ${fileName}`)
+    } catch (e) {
+      onStatus?.(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function fitStockFromPartOnSetup(setupIndex: number): Promise<void> {
     if (!projectDir) return
     const op = mfg.operations[selectedOpIndex]
@@ -749,13 +819,17 @@ export function ManufactureWorkspace({
     onImportTextChange,
     onSaveSettingsField,
     onRunSlice,
-    onRunCam,
+    onRunCam: () => {
+      void onRunCam({ mfg, selectedOpIndex })
+    },
     onImportTools,
     onImportToolLibraryFromFile,
     onMigrateProjectToolsToMachine,
     manufacture: mfg,
     onGoSettings,
-    onGoProject
+    onGoProject,
+    onStatus,
+    onExportSetupSheet: exportManufactureSetupSheet
   }
 
   const planBody =
@@ -1182,6 +1256,10 @@ export function ManufactureWorkspace({
                   <option value="cnc_waterline">CNC waterline (OCL Z-level or fallback)</option>
                   <option value="cnc_raster">CNC raster (OCL or mesh / bounds)</option>
                   <option value="cnc_pencil">CNC pencil (tight OCL raster / rest cleanup)</option>
+                  <option value="cnc_4axis_roughing">4-axis roughing (rotary)</option>
+                  <option value="cnc_4axis_finishing">4-axis finishing (rotary)</option>
+                  <option value="cnc_4axis_contour">4-axis contour (rotary)</option>
+                  <option value="cnc_4axis_indexed">4-axis indexed (rotary)</option>
                   <option value="export_stl">Export STL</option>
                 </select>
               </label>
@@ -1322,6 +1400,181 @@ export function ManufactureWorkspace({
                   </div>
                 ) : null}
               </>
+            ) : null}
+            {op.kind === 'cnc_4axis_roughing' || op.kind === 'cnc_4axis_finishing' || op.kind === 'cnc_4axis_contour' || op.kind === 'cnc_4axis_indexed' ? (
+              <div className="row row--mt-xs">
+                <label title="Clamp machinable X to STL bounding box (disable if WCS mismatch)">
+                  <input
+                    type="checkbox"
+                    checked={op.params?.['useMeshMachinableXClamp'] !== false}
+                    onChange={(e) => {
+                      const base: Record<string, unknown> = { ...(op.params ?? {}) }
+                      if (e.target.checked) delete base.useMeshMachinableXClamp
+                      else base.useMeshMachinableXClamp = false
+                      updateOp(i, { params: base })
+                    }}
+                  />
+                  Clamp X to STL
+                </label>
+                {op.kind === 'cnc_4axis_roughing' ? (
+                  <>
+                    <label>
+                      Z step (mm)
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={cutParamFieldValue(op, 'zStepMm')}
+                        onChange={(e) => setCutParam(i, 'zStepMm', e.target.value, 'positive')}
+                        placeholder="0 = auto"
+                      />
+                    </label>
+                    <label title="Extend cuts past material edges (mm)">
+                      Overcut (mm)
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={
+                          typeof op.params?.['overcutMm'] === 'number'
+                            ? String(op.params['overcutMm'])
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const base: Record<string, unknown> = { ...(op.params ?? {}) }
+                          const v = e.target.value.trim()
+                          if (!v) delete base.overcutMm
+                          else {
+                            const n = Number.parseFloat(v)
+                            if (Number.isFinite(n) && n >= 0) base.overcutMm = n
+                          }
+                          updateOp(i, { params: Object.keys(base).length ? base : undefined })
+                        }}
+                        placeholder="= tool Ø"
+                      />
+                    </label>
+                  </>
+                ) : null}
+                {op.kind === 'cnc_4axis_finishing' ? (
+                  <>
+                    <label title="Angular stepover for finish pass (degrees)">
+                      Finish stepover (°)
+                      <input
+                        type="number"
+                        min={0.1}
+                        step={0.5}
+                        value={
+                          typeof op.params?.['finishStepoverDeg'] === 'number'
+                            ? String(op.params['finishStepoverDeg'])
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const base: Record<string, unknown> = { ...(op.params ?? {}) }
+                          const v = e.target.value.trim()
+                          if (!v) delete base.finishStepoverDeg
+                          else {
+                            const n = Number.parseFloat(v)
+                            if (Number.isFinite(n) && n > 0) base.finishStepoverDeg = n
+                          }
+                          updateOp(i, { params: Object.keys(base).length ? base : undefined })
+                        }}
+                        placeholder="= half of stepover"
+                      />
+                    </label>
+                    <label title="Leave stock on mesh hits (mm)">
+                      Finish allowance (mm)
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.05}
+                        value={
+                          typeof op.params?.['rotaryFinishAllowanceMm'] === 'number'
+                            ? String(op.params['rotaryFinishAllowanceMm'])
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const base: Record<string, unknown> = { ...(op.params ?? {}) }
+                          const v = e.target.value.trim()
+                          if (!v) delete base.rotaryFinishAllowanceMm
+                          else {
+                            const n = Number.parseFloat(v)
+                            if (Number.isFinite(n) && n >= 0) base.rotaryFinishAllowanceMm = n
+                          }
+                          updateOp(i, { params: Object.keys(base).length ? base : undefined })
+                        }}
+                        placeholder="0"
+                      />
+                    </label>
+                  </>
+                ) : null}
+                {op.kind === 'cnc_4axis_indexed' ? (
+                  <label>
+                    Index angles (°, comma-sep)
+                    <input
+                      type="text"
+                      value={
+                        Array.isArray(op.params?.['indexAnglesDeg'])
+                          ? (op.params!['indexAnglesDeg'] as number[]).join(', ')
+                          : '0, 90, 180, 270'
+                      }
+                      onChange={(e) => {
+                        const base: Record<string, unknown> = { ...(op.params ?? {}) }
+                        const arr = e.target.value
+                          .split(',')
+                          .map((s) => Number.parseFloat(s.trim()))
+                          .filter((n) => !Number.isNaN(n))
+                        if (arr.length) base.indexAnglesDeg = arr
+                        else delete base.indexAnglesDeg
+                        updateOp(i, { params: Object.keys(base).length ? base : undefined })
+                      }}
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+            {op.kind === 'cnc_4axis_contour' ? (
+              <div className="row">
+                <label className="label--wide-420">
+                  contourPoints JSON
+                  <input
+                    value={geometryJsonFieldValue(op, 'contourPoints')}
+                    onChange={(e) => setGeometryJson(i, 'contourPoints', e.target.value)}
+                    placeholder="[[x,y],…] unwrap coordinates"
+                  />
+                </label>
+                <label>
+                  Contour source
+                  <select
+                    value={typeof op.params?.['contourSourceId'] === 'string' ? op.params['contourSourceId'] : ''}
+                    onChange={(e) => {
+                      const base: Record<string, unknown> = { ...(op.params ?? {}) }
+                      if (!e.target.value) delete base.contourSourceId
+                      else base.contourSourceId = e.target.value
+                      updateOp(i, { params: Object.keys(base).length ? base : undefined })
+                    }}
+                  >
+                    <option value="">first closed profile</option>
+                    {contourCandidates.map((c) => (
+                      <option key={c.sourceId} value={c.sourceId}>
+                        {c.label} ({c.points.length} pts)
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" className="secondary" onClick={() => void loadContourCandidates()}>
+                  Refresh sketch profiles
+                </button>
+                <button type="button" className="secondary" onClick={() => void deriveOpGeometryFromSketch(i)}>
+                  Derive contour
+                </button>
+              </div>
+            ) : null}
+            {op.kind === 'cnc_4axis_roughing' || op.kind === 'cnc_4axis_finishing' || op.kind === 'cnc_4axis_contour' || op.kind === 'cnc_4axis_indexed' ? (
+              <p className="msg manufacture-op-hint">
+                <strong>4-axis rotary:</strong> requires a machine profile with <code>axisCount: 4</code>.
+                Roughing and finishing use the mesh-aware cylindrical heightmap engine.
+                See <code>docs/CAM_4TH_AXIS_REFERENCE.md</code> and <code>docs/MACHINES.md</code>.
+              </p>
             ) : null}
             {op.kind === 'cnc_adaptive' ? (
               <p className="msg manufacture-op-hint">
@@ -1871,6 +2124,12 @@ export function ManufactureWorkspace({
                       onMaterialTypeChange={(mat) => updateSetupMaterialType(selectedSetupIndex, mat)}
                       onWcsOriginChange={(pt) => updateSetupWcsOrigin(selectedSetupIndex, pt)}
                       onAxisModeChange={(mode) => updateSetupAxisMode(selectedSetupIndex, mode)}
+                      onRotaryChuckDepthMmChange={(mm) =>
+                        updateSetup(selectedSetupIndex, { rotaryChuckDepthMm: mm })
+                      }
+                      onRotaryClampOffsetMmChange={(mm) =>
+                        updateSetup(selectedSetupIndex, { rotaryClampOffsetMm: mm })
+                      }
                     />
                     <div className="row" style={{ marginTop: '0.75rem' }}>
                       <button type="button" className="primary" onClick={() => void save()}>Save</button>

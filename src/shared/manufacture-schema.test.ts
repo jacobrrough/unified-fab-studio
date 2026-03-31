@@ -110,6 +110,7 @@ describe('manufactureFileSchema', () => {
       'cnc_waterline',
       'cnc_raster',
       'cnc_pencil',
+      'cnc_lathe_turn',
       'export_stl'
     ] as const satisfies readonly ManufactureOperationKind[]
     const m = manufactureFileSchema.parse({
@@ -131,8 +132,11 @@ describe('isManufactureCncOperationKind', () => {
     'cnc_waterline',
     'cnc_raster',
     'cnc_pencil',
-    'cnc_4axis_wrapping',
-    'cnc_4axis_indexed'
+    'cnc_4axis_roughing',
+    'cnc_4axis_finishing',
+    'cnc_4axis_contour',
+    'cnc_4axis_indexed',
+    'cnc_lathe_turn'
   ]
 
   it('is true for every cnc_* manufacture kind', () => {
@@ -148,27 +152,27 @@ describe('isManufactureCncOperationKind', () => {
 })
 
 describe('4-axis operation kinds', () => {
-  it('parses cnc_4axis_wrapping operation', () => {
+  it('parses cnc_4axis_roughing operation', () => {
     const m = manufactureFileSchema.parse({
       version: 1,
       setups: [],
       operations: [
         {
           id: 'rotary-1',
-          kind: 'cnc_4axis_wrapping',
-          label: 'Cylindrical parallel finish',
+          kind: 'cnc_4axis_roughing',
+          label: 'Rotary roughing',
           params: {
             cylinderDiameterMm: 50,
             cylinderLengthMm: 80,
-            zPassMm: -1.5,
-            stepoverDeg: 3,
-            feedMmMin: 600,
-            wrapMode: 'parallel'
+            zPassMm: -3,
+            zStepMm: 1,
+            stepoverDeg: 5,
+            feedMmMin: 600
           }
         }
       ]
     })
-    expect(m.operations[0]!.kind).toBe('cnc_4axis_wrapping')
+    expect(m.operations[0]!.kind).toBe('cnc_4axis_roughing')
     expect(m.operations[0]!.params!['cylinderDiameterMm']).toBe(50)
   })
 

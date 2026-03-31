@@ -8,6 +8,7 @@ import {
   drillOperationHints,
   manufactureKindUsesOclStrategy,
   manufactureKindUsesOclWaterline,
+  normalizeAxis4RadialZPassMm,
   readStlBufferForCam,
   resolveOclFallbackReason,
   resolveContourPathOptions,
@@ -115,6 +116,20 @@ describe('builtinOclFailureHint', () => {
     expect(builtinOclFailureHint('ocl_runtime_error', 'cnc_adaptive')).toMatch(/OpenCAMLib AdaptiveWaterline did not produce/)
     expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_waterline')).toMatch(/Waterline intent/)
     expect(builtinOclFailureHint('{"error":"stl_missing"}', 'cnc_adaptive')).toMatch(/Adaptive clearing intent/)
+  })
+})
+
+describe('normalizeAxis4RadialZPassMm', () => {
+  it('keeps negative values (into-stock convention for axis4)', () => {
+    expect(normalizeAxis4RadialZPassMm(-2)).toBe(-2)
+    expect(normalizeAxis4RadialZPassMm(-0.5)).toBe(-0.5)
+  })
+  it('negates positive depth so axis4 does not air-cut above the cylinder', () => {
+    expect(normalizeAxis4RadialZPassMm(5)).toBe(-5)
+    expect(normalizeAxis4RadialZPassMm(1)).toBe(-1)
+  })
+  it('maps zero to a default cut depth', () => {
+    expect(normalizeAxis4RadialZPassMm(0)).toBe(-1)
   })
 })
 

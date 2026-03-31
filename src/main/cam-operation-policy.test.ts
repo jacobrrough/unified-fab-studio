@@ -17,6 +17,10 @@ describe('describeCamOperationKind', () => {
     expect(exp.runnable).toBe(false)
     expect(exp.error).toMatch(/Export STL|not.*CNC/i)
     expect(exp.hint).toMatch(/assets|planning|cam:run/i)
+
+    const lathe = describeCamOperationKind('cnc_lathe_turn')
+    expect(lathe.runnable).toBe(false)
+    expect(lathe.error).toMatch(/lathe|turning/i)
   })
 
   it('allows parallel with STL bounds + unverified honesty', () => {

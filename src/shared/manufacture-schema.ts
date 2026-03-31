@@ -88,7 +88,11 @@ export const setupSchema = z.object({
    */
   wcsOriginPoint: z.enum(WCS_ORIGIN_POINTS).optional(),
   /** Axis count for this setup: 3 (default) or 4. Drives default op kinds offered. */
-  axisMode: z.enum(['3axis', '4axis']).optional()
+  axisMode: z.enum(['3axis', '4axis']).optional(),
+  /** mm — in-chuck zone from stock left face along X (4-axis rotary). */
+  rotaryChuckDepthMm: z.number().nonnegative().optional(),
+  /** mm — safety buffer after chuck before machinable zone (4-axis). */
+  rotaryClampOffsetMm: z.number().nonnegative().optional()
 })
 
 export type ManufactureSetup = z.infer<typeof setupSchema>
@@ -105,22 +109,38 @@ export const manufactureOperationSchema = z.object({
     'cnc_adaptive',
     /** Z-level waterline — OpenCAMLib `Waterline` when `pip install opencamlib` works for your Python; else built-in parallel finish (CAM run reports fallback reason). */
     'cnc_waterline',
-    /** XY raster — OpenCAMLib `PathDropCutter` in `engines/cam/ocl_toolpath.py` when available; else built-in 2.5D mesh height-field, then orthogonal bounds zigzag (reason shown in CAM output). */
+    /** XY raster — OpenCAMLib `PathDropCutter` in `engines/cam/ocl_toolpath.py` when available; else built-in 2.5D mesh height-field, then orthogonal bounds zigzag (reason shown in CAM output). Optional `rasterRestStockMm` on mesh height-field fallback; when `stockBoxZMm` is passed on `cam:run`, omit `autoRasterRestFromSetup: false` to auto-fill rest from stock Z + mesh min Z (WCS). Opt-in `usePriorPostedGcodeRest: true` + `output/cam.nc` (Manufacture) uses prior feed moves as a coarse rest floor (same WCS). Opt-in `meshAnalyticPriorRoughStockMm` (positive mm) applies only when **no** G-code rest sampler is in use — simulates a prior rough stock height for mesh-raster skip logic vs finish rest (2.5D heuristic). Opt-in `autoDocFromSetupMesh: true` + stock box on `cam:run` can set default negative `zPassMm` from stock Z vs STL min Z. */
     'cnc_raster',
     /**
      * Pencil / rest cleanup — same OpenCAMLib **raster** path as `cnc_raster` with a **tighter effective stepover**
      * (`resolvePencilStepoverMm`: optional `pencilStepoverMm` or `pencilStepoverFactor` × op stepover, default factor 0.22).
+     * Optional `rasterRestStockMm` on built-in mesh height-field fallback; same `usePriorPostedGcodeRest` / `priorRoughToolDiameterMm` / `autoDocFromSetupMesh` as `cnc_raster` when applicable.
      */
     'cnc_pencil',
     /**
-     * 4-axis wrapping — cylindrical wrapping of an XZ profile around the A axis.
-     * Wraps a 2D contour (or mesh-height raster) onto a cylinder; useful for
-     * engraving, relief carving, and cylindrical parts on the Carvera 4th-axis
-     * attachment. Requires `axisCount >= 4` on the active machine profile.
-     * Params: `cylinderDiameterMm`, `wrapAxis` ('x'|'y'), `wrapMode` ('contour'|'raster'|'parallel'),
-     * `zPassMm`, `stepoverMm`, `feedMmMin`, `safeZMm`, `toolDiameterMm`.
+     * 4-axis roughing — mesh-aware radial waterline roughing on cylindrical stock.
+     * Removes bulk material layer-by-layer from stock OD toward part surface using
+     * a cylindrical heightmap and tool-radius compensation. Requires `axisCount >= 4`.
+     * Params: `zPassMm` (total radial depth), `zStepMm` (per-layer step-down),
+     * `stepoverDeg` (angular step), `toolDiameterMm`, `overcutMm` (extend past edges),
+     * `feedMmMin`, `plungeMmMin`, `safeZMm`.
      */
-    'cnc_4axis_wrapping',
+    'cnc_4axis_roughing',
+    /**
+     * 4-axis finishing — mesh-aware surface-following finish pass on cylindrical stock.
+     * Fine angular stepover, follows the compensated part surface at final depth.
+     * Requires `axisCount >= 4`.
+     * Params: `zPassMm` (final radial depth), `finishStepoverDeg` (fine angular step),
+     * `toolDiameterMm`, `feedMmMin`, `plungeMmMin`, `safeZMm`.
+     */
+    'cnc_4axis_finishing',
+    /**
+     * 4-axis contour — wraps a 2D contour onto the cylinder surface.
+     * For engraving, V-carving, and profiling on rotary stock.
+     * Requires `axisCount >= 4` and `contourPoints: [x,y][]`.
+     * Params: `contourPoints`, `zPassMm`, `feedMmMin`, `plungeMmMin`, `safeZMm`.
+     */
+    'cnc_4axis_contour',
     /**
      * 4-axis indexed — machine multiple 3-axis setups with the A axis locked at
      * discrete rotation angles. Each index stop is a separate sub-operation.
@@ -142,7 +162,9 @@ export const manufactureOperationSchema = z.object({
      * Uses raster (default) or waterline strategy with tight stepover.
      * Params: `zPassMm`, `stepoverMm`, `feedMmMin`, `plungeMmMin`, `safeZMm`,
      *   `toolDiameterMm`, `finishStrategy` ('raster'|'waterline'|'pencil'),
-     *   `finishStepoverMm` (overrides stepoverMm for finer resolution), `toolId`.
+     *   `finishStepoverMm` (if >0, overrides stepover for finish passes),
+     *   `finishScallopMm` + optional `finishScallopMode` ('ball'|'flat') derive stepover when `finishStepoverMm` unset,
+     *   optional `rasterRestStockMm` on built-in mesh raster fallback (+Z envelope offset), `toolId`.
      */
     'cnc_3d_finish',
     /**
@@ -180,6 +202,11 @@ export const manufactureOperationSchema = z.object({
      * `tabHeightMm`, `toolDiameterMm`, `feedMmMin`, `safeZMm`.
      */
     'cnc_pcb_contour',
+    /**
+     * Lathe / turning — **planning only** in this release: not posted by the built-in CAM runner.
+     * Reserved for future `cam:run` + lathe posts (axis semantics, stock cylinder, G71/G70-class cycles).
+     */
+    'cnc_lathe_turn',
     'export_stl'
   ]),
   label: z.string().trim().min(1),

@@ -16,9 +16,15 @@ import type { ToolLibraryFile, ToolRecord } from '../../shared/tool-schema'
 import type { MaterialRecord, MaterialCategory } from '../../shared/material-schema'
 import { calcCutParams, MATERIAL_CATEGORY_LABELS } from '../../shared/material-schema'
 import { CAM_CUT_DEFAULTS, resolveCamCutParamsWithMaterial } from '../../shared/cam-cut-params'
+import { shopJobStockAsCamSetup } from '../../shared/cam-setup-defaults'
 import type { CpsImportSummary } from '../../main/machine-cps-import'
 import { ShopModelViewer, defaultTransform } from './ShopModelViewer'
 import type { ModelTransform, StockDimensions, GizmoMode } from './ShopModelViewer'
+import {
+  type MachineUIMode,
+  fitModelToStock,
+  modelFitsInStock
+} from './shop-stock-bounds'
 import { generateSetupSheet, parseGcodeStats } from './setup-sheet'
 import type { SetupSheetJob } from './setup-sheet'
 
@@ -53,7 +59,17 @@ declare const window: Window & {
       plungeMmMin: number; safeZMm: number; pythonPath: string
       operationKind?: string; toolDiameterMm?: number
       operationParams?: Record<string, unknown>
+      rotaryStockLengthMm?: number
+      rotaryStockDiameterMm?: number
+      rotaryChuckDepthMm?: number
+      rotaryClampOffsetMm?: number
+      stockBoxZMm?: number
+      stockBoxXMm?: number
+      stockBoxYMm?: number
+      priorPostedGcode?: string
+      useMeshMachinableXClamp?: boolean
     }) => Promise<{ ok: boolean; gcode?: string; error?: string; hint?: string; usedEngine?: string }>
+    readTextFile: (filePath: string) => Promise<string>
     sliceCura: (payload: {
       stlPath: string; outPath: string; curaEnginePath: string
       slicePreset?: string | null
@@ -83,6 +99,7 @@ declare const window: Window & {
     fsReadBase64: (filePath: string) => Promise<string>
     dialogSaveFile: (filters: { name: string; extensions: string[] }[], defaultPath?: string) => Promise<string | null>
     fsWriteText: (filePath: string, content: string) => Promise<void>
+    shellOpenPath: (filePath: string) => Promise<void>
   }
 }
 
@@ -102,8 +119,6 @@ function useToasts(): [Toast[], (kind: Toast['kind'], msg: string) => void] {
 }
 
 // ── Machine UI mode ────────────────────────────────────────────────────────────
-type MachineUIMode = 'fdm' | 'cnc_2d' | 'cnc_3d' | 'cnc_4axis' | 'cnc_5axis'
-
 function getMachineMode(m: MachineProfile): MachineUIMode {
   if (m.kind === 'fdm') return 'fdm'
   const axes = m.axisCount ?? 3
@@ -135,11 +150,11 @@ const OPS_BY_MODE: Record<MachineUIMode, OpGroups> = {
     secondary: ['cnc_pocket', 'cnc_contour', 'cnc_drill', 'cnc_adaptive', 'export_stl']
   },
   cnc_4axis: {
-    primary: ['cnc_4axis_wrapping', 'cnc_4axis_indexed', 'cnc_3d_rough', 'cnc_3d_finish'],
+    primary: ['cnc_4axis_roughing', 'cnc_4axis_finishing', 'cnc_4axis_contour', 'cnc_4axis_indexed', 'cnc_3d_rough', 'cnc_3d_finish'],
     secondary: ['cnc_waterline', 'cnc_raster', 'cnc_pencil', 'cnc_parallel', 'cnc_pocket', 'cnc_contour', 'cnc_drill', 'export_stl']
   },
   cnc_5axis: {
-    primary: ['cnc_4axis_wrapping', 'cnc_4axis_indexed', 'cnc_3d_rough', 'cnc_3d_finish'],
+    primary: ['cnc_4axis_roughing', 'cnc_4axis_finishing', 'cnc_4axis_contour', 'cnc_4axis_indexed', 'cnc_3d_rough', 'cnc_3d_finish'],
     secondary: ['cnc_waterline', 'cnc_raster', 'cnc_pencil', 'cnc_parallel', 'cnc_pocket', 'cnc_contour', 'cnc_drill', 'export_stl']
   }
 }
@@ -184,9 +199,11 @@ function applyMaterialToOperations(
   operations: ManufactureOperation[],
   materialId: string | null,
   materials: MaterialRecord[],
-  tools: ToolRecord[]
+  tools: ToolRecord[],
+  jobStock?: { x: number; y: number; z: number }
 ): MaterialApplyResult {
   if (!materialId) return { operations, changed: false }
+  const setup = jobStock ? shopJobStockAsCamSetup(jobStock) : undefined
   let changed = false
   const next = operations.map((op) => {
     if (!op.kind.startsWith('cnc_')) return op
@@ -194,7 +211,8 @@ function applyMaterialToOperations(
       operation: op,
       materialId,
       materials,
-      tools
+      tools,
+      setup
     })
     const prev = (op.params ?? {}) as Record<string, unknown>
     const nextParams: Record<string, unknown> = {
@@ -238,12 +256,23 @@ function newOp(kind: ManufactureOperationKind): ManufactureOperation {
     cnc_drill:          { zPassMm: -5,   feedMmMin: 400,  plungeMmMin: 200, safeZMm: 5, toolDiameterMm: 3 },
     cnc_adaptive:       { zPassMm: -1,   stepoverMm: 3,   feedMmMin: 1500, plungeMmMin: 400,  safeZMm: 5, toolDiameterMm: 6 },
     cnc_waterline:      { zPassMm: -0.5, stepoverMm: 1.5, feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6 },
-    cnc_raster:         { zPassMm: -0.5, stepoverMm: 1.5, feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6 },
-    cnc_pencil:         { zPassMm: -0.3, stepoverMm: 0.5, feedMmMin: 800,  plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 3 },
-    cnc_4axis_wrapping: { zPassMm: -1,   stepoverMm: 2,   feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6, cylinderDiameterMm: 50, wrapAxis: 'x', wrapMode: 'parallel' },
-    cnc_4axis_indexed:  { zPassMm: -1,   stepoverMm: 2,   feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6, indexAnglesDeg: [0, 90, 180, 270] },
+    cnc_raster:         { zPassMm: -0.5, stepoverMm: 1.5, feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6, rasterRestStockMm: 0 },
+    cnc_pencil:         { zPassMm: -0.3, stepoverMm: 0.5, feedMmMin: 800,  plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 3, rasterRestStockMm: 0 },
+    cnc_4axis_roughing: {
+      zPassMm: -3, stepoverMm: 2, zStepMm: 1, feedMmMin: 1000, plungeMmMin: 300, safeZMm: 5, toolDiameterMm: 6
+    },
+    cnc_4axis_finishing: {
+      zPassMm: -3, stepoverMm: 1, feedMmMin: 800, plungeMmMin: 300, safeZMm: 5, toolDiameterMm: 6
+    },
+    cnc_4axis_contour: {
+      zPassMm: -1, feedMmMin: 600, plungeMmMin: 200, safeZMm: 5, toolDiameterMm: 3
+    },
+    cnc_4axis_indexed: {
+      zPassMm: -1, stepoverMm: 2, zStepMm: 1, feedMmMin: 1000, plungeMmMin: 300, safeZMm: 5, toolDiameterMm: 6,
+      indexAnglesDeg: [0, 90, 180, 270]
+    },
     cnc_3d_rough:       { zPassMm: -2,   stepoverMm: 4,   feedMmMin: 1500, plungeMmMin: 400,  safeZMm: 5, toolDiameterMm: 8, stockAllowanceMm: 0.5 },
-    cnc_3d_finish:      { zPassMm: -0.5, stepoverMm: 1,   feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6, finishStrategy: 'raster', finishStepoverMm: 0.5 },
+    cnc_3d_finish:      { zPassMm: -0.5, stepoverMm: 1,   feedMmMin: 1000, plungeMmMin: 300,  safeZMm: 5, toolDiameterMm: 6, finishStrategy: 'raster', finishStepoverMm: 0.5, finishScallopMm: 0, rasterRestStockMm: 0 },
     fdm_slice:          { slicePreset: null },
     export_stl:         {}
   }
@@ -255,7 +284,8 @@ const KIND_LABELS: Partial<Record<ManufactureOperationKind, string>> = {
   cnc_contour: 'Contour', cnc_pocket: 'Pocket', cnc_drill: 'Drill',
   cnc_adaptive: 'Adaptive Clearing', cnc_waterline: 'Waterline',
   cnc_raster: 'Raster', cnc_pencil: 'Pencil / Rest',
-  cnc_4axis_wrapping: '4-Axis Wrapping', cnc_4axis_indexed: '4-Axis Indexed',
+  cnc_4axis_roughing: '4-Axis Roughing', cnc_4axis_finishing: '4-Axis Finishing',
+  cnc_4axis_contour: '4-Axis Contour', cnc_4axis_indexed: '4-Axis Indexed',
   cnc_3d_rough: '3D Rough (Adaptive)', cnc_3d_finish: '3D Finish',
   export_stl: 'Export STL'
 }
@@ -350,10 +380,12 @@ function MachineSplash({ machines, lastMachineId, onSelect, onAddMachine }: Spla
 }
 
 // ── Op params editor ──────────────────────────────────────────────────────────
-function OpParamsEditor({ op, onChange, tools }: {
+function OpParamsEditor({ op, onChange, tools, jobStock }: {
   op: ManufactureOperation
   onChange: (params: Record<string, unknown>) => void
   tools: ToolRecord[]
+  /** When set, 4-axis cylinder size comes from job stock (X = length, Y = Ø), not operation params. */
+  jobStock?: StockDimensions | null
 }): React.ReactElement {
   const p = (op.params ?? {}) as Record<string, unknown>
   const set = (k: string, v: unknown): void => onChange({ ...p, [k]: v })
@@ -386,10 +418,11 @@ function OpParamsEditor({ op, onChange, tools }: {
     <div className="text-muted" style={{ padding: '8px 0', fontSize: 11 }}>No parameters — exports staged STL.</div>
   )
 
-  const is4axWrap = op.kind === 'cnc_4axis_wrapping'
+  const is4axWrap = op.kind === 'cnc_4axis_roughing' || op.kind === 'cnc_4axis_finishing' || op.kind === 'cnc_4axis_contour'
   const is4axIdx  = op.kind === 'cnc_4axis_indexed'
   const is3dR     = op.kind === 'cnc_3d_rough'
   const is3dF     = op.kind === 'cnc_3d_finish'
+  const isMeshRaster = op.kind === 'cnc_raster' || op.kind === 'cnc_pencil'
 
   const TOOL_TYPE_LABEL: Record<string, string> = {
     endmill: 'Flat Endmill', ball: 'Ball Nose', vbit: 'V-Bit',
@@ -429,43 +462,119 @@ function OpParamsEditor({ op, onChange, tools }: {
         {op.kind !== 'cnc_drill' && num('Stepover (mm)', 'stepoverMm')}
         {num('Safe Z (mm)', 'safeZMm')}
       </div>
+      {(is4axWrap || is4axIdx) && (
+        <div className="text-muted" style={{ fontSize: 11, marginTop: -4, marginBottom: 8, lineHeight: 1.4 }}>
+          4-axis: depth into the cylinder (radial). Negative or positive both work; the generator converts positive to a cut into stock.
+        </div>
+      )}
       {is3dR && <div className="form-row-3">{num('Stock Allow. (mm)', 'stockAllowanceMm')}</div>}
       {is3dF && (
-        <div className="form-row-3">
-          <div className="form-group">
-            <label>Finish Strategy</label>
-            <select value={String(p.finishStrategy ?? 'raster')} onChange={e => set('finishStrategy', e.target.value)}>
-              <option value="raster">Raster</option>
-              <option value="waterline">Waterline</option>
-              <option value="pencil">Pencil</option>
-            </select>
+        <div className="section-gap">
+          <div className="form-row-3">
+            <div className="form-group">
+              <label>Finish Strategy</label>
+              <select value={String(p.finishStrategy ?? 'raster')} onChange={e => set('finishStrategy', e.target.value)}>
+                <option value="raster">Raster</option>
+                <option value="waterline">Waterline</option>
+                <option value="pencil">Pencil</option>
+              </select>
+            </div>
+            {num('Finish Stepover (mm)', 'finishStepoverMm')}
+            {num('Finish scallop (mm)', 'finishScallopMm')}
           </div>
-          {num('Finish Stepover', 'finishStepoverMm')}
+          <div className="form-row-3">
+            <div className="form-group">
+              <label>Scallop mode</label>
+              <select value={String(p.finishScallopMode ?? 'ball')} onChange={e => set('finishScallopMode', e.target.value)}>
+                <option value="ball">Ball / cusp model</option>
+                <option value="flat">Flat (floor cusp approx.)</option>
+              </select>
+            </div>
+            {num('Raster rest stock (mm)', 'rasterRestStockMm')}
+            <div className="form-group">
+              <label className="text-muted" style={{ fontSize: 10 }}>Finish</label>
+              <span className="text-muted" style={{ fontSize: 11, lineHeight: 1.4, display: 'block' }}>
+                If Finish Stepover &gt; 0 it wins; else scallop derives stepover from tool Ø. Rest stock offsets mesh raster Z (+Z allowance) on OCL fallback paths.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+      {isMeshRaster && (
+        <div className="form-row-3">
+          {num('Raster rest stock (mm)', 'rasterRestStockMm')}
+          <div className="form-group" style={{ gridColumn: 'span 2' }}>
+            <span className="text-muted" style={{ fontSize: 11 }}>Built-in mesh raster only: leaves material along +Z on the STL envelope (coarse rest).</span>
+          </div>
         </div>
       )}
       {is4axWrap && (
-        <div className="form-row-3">
-          {num('Cylinder Ø (mm)', 'cylinderDiameterMm')}
-          <div className="form-group">
-            <label>Wrap Mode</label>
-            <select value={String(p.wrapMode ?? 'parallel')} onChange={e => set('wrapMode', e.target.value)}>
-              <option value="parallel">Parallel</option>
-              <option value="contour">Contour</option>
-              <option value="raster">Raster</option>
-            </select>
-          </div>
-        </div>
+        <>
+          {jobStock && (
+            <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+              <label>Rotary stock</label>
+              <div className="text-muted" style={{ fontSize: 12, lineHeight: 1.45 }}>
+                Ø {jobStock.y} mm × length {jobStock.x} mm — from job stock (X = length along axis, Y = diameter). Adjust in the job panel above.
+              </div>
+            </div>
+          )}
+          {op.kind === 'cnc_4axis_roughing' && (
+            <div className="form-row-3">
+              {num('Z depth step (mm)', 'zStepMm')}
+              {num('Overcut (mm)', 'overcutMm')}
+              <div className="form-group">
+                <label className="text-muted" style={{ fontSize: 10 }}>Roughing</label>
+                <span className="text-muted" style={{ fontSize: 11, lineHeight: 1.4, display: 'block' }}>
+                  Step-down from stock OD to Z Pass depth. Overcut extends past material edges.
+                </span>
+              </div>
+            </div>
+          )}
+          {op.kind === 'cnc_4axis_finishing' && (
+            <div className="form-row-3">
+              {num('Finish stepover (°)', 'finishStepoverDeg')}
+              {num('Finish allowance (mm)', 'rotaryFinishAllowanceMm')}
+              <div className="form-group">
+                <label className="text-muted" style={{ fontSize: 10 }}>Finishing</label>
+                <span className="text-muted" style={{ fontSize: 11, lineHeight: 1.4, display: 'block' }}>
+                  Fine surface pass. Stepover defaults to half of main stepover.
+                </span>
+              </div>
+            </div>
+          )}
+          {op.kind === 'cnc_4axis_contour' && (
+            <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+              <label className="text-muted" style={{ fontSize: 10 }}>Contour wrapping</label>
+              <span className="text-muted" style={{ fontSize: 11, lineHeight: 1.4, display: 'block' }}>
+                Wraps a 2D contour onto the cylinder surface for engraving. Set contourPoints in Manufacture workspace.
+              </span>
+            </div>
+          )}
+        </>
       )}
       {is4axIdx && (
-        <div className="form-group">
-          <label>Index Angles (°, comma-sep)</label>
-          <input type="text"
-            value={Array.isArray(p.indexAnglesDeg) ? (p.indexAnglesDeg as number[]).join(', ') : '0, 90, 180, 270'}
-            onChange={e => {
-              const arr = e.target.value.split(',').map(s => +s.trim()).filter(n => !isNaN(n))
-              set('indexAnglesDeg', arr)
-            }} />
-        </div>
+        <>
+          {jobStock && (
+            <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+              <label>Rotary stock</label>
+              <div className="text-muted" style={{ fontSize: 12, lineHeight: 1.45 }}>
+                Ø {jobStock.y} mm × length {jobStock.x} mm — from job stock (X = length along axis, Y = diameter). Adjust in the job panel above.
+              </div>
+            </div>
+          )}
+          <div className="form-row-3">
+            {num('Z depth step (mm)', 'zStepMm')}
+          </div>
+          <div className="form-group">
+            <label>Index Angles (°, comma-sep)</label>
+            <input type="text"
+              value={Array.isArray(p.indexAnglesDeg) ? (p.indexAnglesDeg as number[]).join(', ') : '0, 90, 180, 270'}
+              onChange={e => {
+                const arr = e.target.value.split(',').map(s => +s.trim()).filter(n => !isNaN(n))
+                set('indexAnglesDeg', arr)
+              }} />
+          </div>
+        </>
       )}
     </div>
   )
@@ -620,6 +729,12 @@ function FeedsCalcModal({
                   </div>
                 ))}
               </div>
+              {calc.feedClampedToFloor ? (
+                <p style={{ fontSize: 11, color: 'var(--txt2)', marginTop: 10, marginBottom: 0 }}>
+                  Recommended feed {Math.round(calc.recommendedFeedMmMin)} mm/min is below the CAM guardrail floor; using{' '}
+                  {calc.feedMmMin} mm/min for operations.
+                </p>
+              ) : null}
             </div>
           ) : (
             <div style={{ textAlign: 'center', color: 'var(--txt2)', fontSize: 12, padding: '20px 0', marginBottom: 14 }}>
@@ -681,7 +796,11 @@ function LeftPanel({
   }
   const removeOp = (opId: string): void => {
     if (!activeJob) return
-    onUpdateJob(activeJob.id, { operations: activeJob.operations.filter(o => o.id !== opId) })
+    onUpdateJob(activeJob.id, {
+      operations: activeJob.operations.filter(o => o.id !== opId),
+      gcodeOut: null,
+      status: 'idle'
+    })
     if (expandedOp === opId) setExpandedOp(null)
   }
   const moveOp = (opId: string, dir: -1 | 1): void => {
@@ -691,7 +810,7 @@ function LeftPanel({
     const j = i + dir
     if (j < 0 || j >= ops.length) return
     ;[ops[i], ops[j]] = [ops[j], ops[i]]
-    onUpdateJob(activeJob.id, { operations: ops })
+    onUpdateJob(activeJob.id, { operations: ops, gcodeOut: null, status: 'idle' })
   }
 
   const STATUS_DOT: Record<Job['status'], string> = { idle: '#555', running: '#f0a500', done: '#22c55e', error: '#ef4444' }
@@ -991,7 +1110,8 @@ function LeftPanel({
                   </div>
                   {exp && (
                     <div className="op-item-body">
-                      <OpParamsEditor op={op} tools={machineTools} onChange={params => updateOp(op.id, params)} />
+                      <OpParamsEditor op={op} tools={machineTools} jobStock={activeJob.stock}
+                        onChange={params => updateOp(op.id, params)} />
                       <div style={{ display: 'flex', gap: 4, marginTop: 8, alignItems: 'center' }}>
                         <button className="btn btn-ghost btn-sm" onClick={() => moveOp(op.id, -1)}>↑</button>
                         <button className="btn btn-ghost btn-sm" onClick={() => moveOp(op.id, 1)}>↓</button>
@@ -1041,143 +1161,6 @@ function LeftPanel({
     })()}
     </>
   )
-}
-
-// ── Fit model to stock ────────────────────────────────────────────────────────
-// Tries 8 axis-aligned orientations and returns the one that fits the model
-// most efficiently (largest uniform scale) inside the stock dimensions.
-// ── AABB helpers ────────────────────────────────────────────────────────────────
-// Compute the Three.js-space AABB extents of the model given its current transform.
-// Mirrors exactly what applyTransform does:
-//   mesh.rotation.set(deg(t.rotation.x), deg(t.rotation.z), deg(t.rotation.y))
-//   mesh.scale.set(t.scale.x, t.scale.z, t.scale.y)
-// Three.js Euler 'XYZ' intrinsic = R=Rx·Ry·Rz, so for a column vector apply Rz→Ry→Rx.
-function computeModelBoundsInThreeJS(
-  modelSz: { x: number; y: number; z: number },
-  t: ModelTransform
-): { loX: number; hiX: number; loY: number; hiY: number; loZ: number; hiZ: number } {
-  const DEG = Math.PI / 180
-  const ex = t.rotation.x * DEG      // Euler.x = model rotation.x
-  const ey = t.rotation.z * DEG      // Euler.y = model rotation.z  (swap!)
-  const ez = t.rotation.y * DEG      // Euler.z = model rotation.y  (swap!)
-  const scX = t.scale.x, scY = t.scale.z, scZ = t.scale.y  // Three.js scale (swap Y/Z)
-  const [cX, sX] = [Math.cos(ex), Math.sin(ex)]
-  const [cY, sY] = [Math.cos(ey), Math.sin(ey)]
-  const [cZ, sZ] = [Math.cos(ez), Math.sin(ez)]
-  const hx = modelSz.x / 2, hy = modelSz.y / 2, hz = modelSz.z / 2
-  const pts: [number, number, number][] = [
-    [-hx,-hy,-hz],[hx,-hy,-hz],[-hx,hy,-hz],[hx,hy,-hz],
-    [-hx,-hy, hz],[hx,-hy, hz],[-hx,hy, hz],[hx,hy, hz],
-  ]
-  let loX=Infinity, hiX=-Infinity, loY=Infinity, hiY=-Infinity, loZ=Infinity, hiZ=-Infinity
-  for (const [x, y, z] of pts) {
-    const x1=x*cZ-y*sZ, y1=x*sZ+y*cZ, z1=z              // Rz first
-    const x2=x1*cY+z1*sY, y2=y1, z2=-x1*sY+z1*cY        // then Ry
-    const x3=x2, y3=y2*cX-z2*sX, z3=y2*sX+z2*cX         // then Rx
-    const fx=x3*scX+t.position.x                          // Three.js pos: .x→X
-    const fy=y3*scY+t.position.z                          // Three.js pos: .z→Y
-    const fz=z3*scZ+t.position.y                          // Three.js pos: .y→Z
-    loX=Math.min(loX,fx); hiX=Math.max(hiX,fx)
-    loY=Math.min(loY,fy); hiY=Math.max(hiY,fy)
-    loZ=Math.min(loZ,fz); hiZ=Math.max(hiZ,fz)
-  }
-  return { loX, hiX, loY, hiY, loZ, hiZ }
-}
-
-// Returns true when the model (at its current transform) is fully inside the stock.
-// Stock occupies: X=[-sx/2, sx/2], Y=[0, sz] (height up), Z=[-sy/2, sy/2] (depth).
-function modelFitsInStock(
-  modelSz: { x: number; y: number; z: number },
-  t: ModelTransform,
-  stock: { x: number; y: number; z: number }
-): boolean {
-  const eps = 0.5  // 0.5mm tolerance
-  const { loX, hiX, loY, hiY, loZ, hiZ } = computeModelBoundsInThreeJS(modelSz, t)
-  return (
-    loX >= -stock.x / 2 - eps && hiX <= stock.x / 2 + eps &&
-    loY >= -eps            && hiY <= stock.z + eps   &&
-    loZ >= -stock.y / 2 - eps && hiZ <= stock.y / 2 + eps
-  )
-}
-
-// The Carvera 4th-axis rotation axis sits at this height above the spoilboard.
-// Must match AXIS_Y constant in buildFourAxisRig (ShopModelViewer.tsx).
-const CARVERA_AXIS_Y = 55
-
-// modelSz is in Three.js space (Y=up=model-Z, Z=depth=model-Y).
-// applyTransform maps: position.z→Three.js Y, position.y→Three.js Z
-function fitModelToStock(
-  modelSz: { x: number; y: number; z: number },
-  stock:   { x: number; y: number; z: number },
-  mode?: MachineUIMode,
-  opts?: { chuckDepthMm?: number; clampOffsetMm?: number }
-): Pick<ModelTransform, 'position' | 'rotation' | 'scale'> {
-  const { x: Wx, y: Wy, z: Wz } = modelSz
-  type Rot = ModelTransform['rotation']
-  // 6 axis-aligned orientations → Three.js extents [dx (X), dy (Y), dz (Z)]
-  const orientations: { dims: [number, number, number]; rot: Rot }[] = [
-    { dims: [Wx, Wy, Wz], rot: { x:  0, y:  0, z:  0 } },
-    { dims: [Wx, Wz, Wy], rot: { x: 90, y:  0, z:  0 } },
-    { dims: [Wz, Wy, Wx], rot: { x:  0, y:  0, z: 90 } },
-    { dims: [Wy, Wx, Wz], rot: { x:  0, y: 90, z:  0 } },
-    { dims: [Wy, Wz, Wx], rot: { x: 90, y: 90, z:  0 } },
-    { dims: [Wz, Wx, Wy], rot: { x:  0, y: 90, z: 90 } },
-  ]
-
-  const is4Axis = mode === 'cnc_4axis' || mode === 'cnc_5axis'
-
-  if (is4Axis) {
-    // 4-axis: stock is a cylinder along Three.js X.
-    //   full length  = stock.x,  diameter = stock.y (radius = stock.y/2)
-    // Unusable zone: chuckDepthMm (clamped) + clampOffsetMm (safety buffer)
-    // Usable length for model: stock.x − unusable
-    // Effective radius for model: (stock.y/2) − tabHeightMm
-    //   (tabs protrude from stock surface — model must fit inside remaining radius)
-    // X centre of machinable zone: unusable / 2
-    //   (machinable runs from -halfLen+unusable to +halfLen; centre = unusable/2)
-    // applyTransform: position.z → Three.js Y, so position.z = CARVERA_AXIS_Y (rotation axis).
-    const chuckDep  = opts?.chuckDepthMm  ?? 0
-    const clampOff  = opts?.clampOffsetMm ?? 0
-    const unusable  = chuckDep + clampOff
-    const usableLen = Math.max(1, stock.x - unusable)
-    const xCenter   = unusable / 2   // Three.js X centre of machinable zone
-
-    let bestScale = -1
-    let bestRot: Rot = { x: 0, y: 0, z: 0 }
-    for (const { dims: [dx, dy, dz], rot } of orientations) {
-      if (!dx || !dy || !dz) continue
-      const sX  = usableLen / dx
-      const sYZ = stock.y / Math.sqrt(dy * dy + dz * dz)  // largest box inscribed in Ø circle
-      const s   = Math.min(sX, sYZ)
-      if (s > bestScale) { bestScale = s; bestRot = rot }
-    }
-    const s = Math.max(0.001, bestScale)
-    return {
-      position: { x: xCenter, y: 0, z: CARVERA_AXIS_Y },  // z→Three.js Y = rotation axis height
-      rotation: bestRot,
-      scale:    { x: s, y: s, z: s },
-    }
-  }
-
-  // ── Flat-stock (3D/2D/FDM) ─────────────────────────────────────────────────
-  // stock axes: Three.js X → stock.x (width), Three.js Y → stock.z (height),
-  //             Three.js Z → stock.y (depth)
-  let bestScale = -1
-  let bestRot: Rot = { x: 0, y: 0, z: 0 }
-  for (const { dims: [dx, dy, dz], rot } of orientations) {
-    if (!dx || !dy || !dz) continue
-    // dy fits stock.z (Three.js Y = height), dz fits stock.y (Three.js Z = depth)
-    const s = Math.min(stock.x / dx, stock.z / dy, stock.y / dz)
-    if (s > bestScale) { bestScale = s; bestRot = rot }
-  }
-  const s = Math.max(0.001, bestScale)
-  // Stock box center in Three.js is at (0, stock.z/2, 0).
-  // applyTransform maps model position.z → Three.js Y, so set .z = stock.z/2 to center vertically.
-  return {
-    position: { x: 0, y: 0, z: stock.z / 2 },
-    rotation: bestRot,
-    scale:    { x: s, y: s, z: s },
-  }
 }
 
 // ── Scrub input — drag the label to scrub value (Blender-style) ───────────────
@@ -1259,21 +1242,24 @@ function ViewportArea({ job, mode, onUpdateJob, onToast, modelSize, setModelSize
   const fitsInStock = useMemo(() => {
     if (!job?.stlPath || !modelSize || !job?.transform || !job?.stock) return true  // nothing loaded → no warning
     try {
-      return modelFitsInStock(modelSize, job.transform, job.stock)
+      return modelFitsInStock(modelSize, job.transform, job.stock, mode, {
+        chuckDepthMm: job.chuckDepthMm,
+        clampOffsetMm: job.clampOffsetMm ?? 0
+      })
     } catch {
       return true  // defensive: if transform is malformed (e.g. old localStorage), don't crash
     }
-  }, [modelSize, job?.transform, job?.stock, job?.stlPath])
+  }, [modelSize, job?.transform, job?.stock, job?.stlPath, mode, job?.chuckDepthMm, job?.clampOffsetMm])
 
   // Fit model into stock — auto-orient + uniform scale (mode-aware)
-  const handleFitToStock = (): void => {
+  const handleFitToStock = useCallback((): void => {
     if (!job || !modelSize) return
     const fit = fitModelToStock(modelSize, job.stock, mode, {
-      chuckDepthMm:  job.chuckDepthMm,
-      clampOffsetMm: job.clampOffsetMm ?? 0,
+      chuckDepthMm: job.chuckDepthMm,
+      clampOffsetMm: job.clampOffsetMm ?? 0
     })
     onUpdateJob(job.id, { transform: { ...job.transform, ...fit } })
-  }
+  }, [job, modelSize, mode, onUpdateJob])
 
   // Keyboard shortcuts: G=translate, R=rotate, S=scale, F=fit, Esc=none
   useEffect(() => {
@@ -1287,8 +1273,7 @@ function ViewportArea({ job, mode, onUpdateJob, onToast, modelSize, setModelSize
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [job, modelSize])
+  }, [handleFitToStock])
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault(); setDragging(false)
@@ -1973,6 +1958,10 @@ export default function ShopApp(): React.ReactElement {
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState<string[]>([])
   const [logOpen, setLogOpen] = useState(false)
+  const [gcodeViewerOpen, setGcodeViewerOpen] = useState(false)
+  const [gcodeViewerPath, setGcodeViewerPath] = useState<string | null>(null)
+  const [gcodeViewerText, setGcodeViewerText] = useState('')
+  const [gcodeViewerLoading, setGcodeViewerLoading] = useState(false)
   const [cmdOpen, setCmdOpen] = useState(false)
   const [modelSize, setModelSize] = useState<{ x: number; y: number; z: number } | null>(null)
   const [lastMachineId, setLastMachineId] = useState<string | null>(null)
@@ -2039,7 +2028,10 @@ export default function ShopApp(): React.ReactElement {
     const h = (e: KeyboardEvent): void => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setCmdOpen(x => !x) }
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveProjectFile() }
-      if (e.key === 'Escape') setCmdOpen(false)
+      if (e.key === 'Escape') {
+        setCmdOpen(false)
+        setGcodeViewerOpen(false)
+      }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
@@ -2065,7 +2057,13 @@ export default function ShopApp(): React.ReactElement {
     if (!activeJob?.materialId) { pushToast('warn', 'No material selected'); return }
     const mat = materials.find(m => m.id === activeJob.materialId)
     if (!mat) { pushToast('warn', 'Selected material not found in library'); return }
-    const applied = applyMaterialToOperations(activeJob.operations, activeJob.materialId, materials, machineTools)
+    const applied = applyMaterialToOperations(
+      activeJob.operations,
+      activeJob.materialId,
+      materials,
+      machineTools,
+      activeJob.stock
+    )
     if (applied.changed) {
       updateJob(activeJob.id, { operations: applied.operations })
     }
@@ -2074,7 +2072,13 @@ export default function ShopApp(): React.ReactElement {
 
   useEffect(() => {
     if (!activeJob?.materialId || activeJob.operations.length === 0) return
-    const applied = applyMaterialToOperations(activeJob.operations, activeJob.materialId, materials, machineTools)
+    const applied = applyMaterialToOperations(
+      activeJob.operations,
+      activeJob.materialId,
+      materials,
+      machineTools,
+      activeJob.stock
+    )
     if (!applied.changed) return
     updateJob(activeJob.id, { operations: applied.operations })
   }, [activeJob, materials, machineTools, updateJob])
@@ -2112,7 +2116,13 @@ export default function ShopApp(): React.ReactElement {
       pushToast('warn', 'Need a model, machine, and at least one operation'); return
     }
     const jobId = activeJob.id
-    const materialApplied = applyMaterialToOperations(activeJob.operations, activeJob.materialId, materials, machineTools)
+    const materialApplied = applyMaterialToOperations(
+      activeJob.operations,
+      activeJob.materialId,
+      materials,
+      machineTools,
+      activeJob.stock
+    )
     const runOps = materialApplied.operations
     if (materialApplied.changed) {
       updateJob(jobId, { operations: runOps })
@@ -2139,13 +2149,14 @@ export default function ShopApp(): React.ReactElement {
           operation: op,
           materialId: activeJob.materialId,
           materials,
-          tools: machineTools
+          tools: machineTools,
+          setup: shopJobStockAsCamSetup(activeJob.stock)
         })
         const toolDiameterMm =
           typeof p.toolDiameterMm === 'number' && Number.isFinite(p.toolDiameterMm) && p.toolDiameterMm > 0
             ? p.toolDiameterMm
             : 6
-        const needs4axis = op.kind === 'cnc_4axis_wrapping' || op.kind === 'cnc_4axis_indexed'
+        const needs4axis = op.kind === 'cnc_4axis_roughing' || op.kind === 'cnc_4axis_finishing' || op.kind === 'cnc_4axis_contour' || op.kind === 'cnc_4axis_indexed'
         const materialTag = activeJob.materialId
           ? materials.find((m) => m.id === activeJob.materialId)?.name ?? activeJob.materialId
           : 'default'
@@ -2153,6 +2164,14 @@ export default function ShopApp(): React.ReactElement {
           ...l,
           `Running ${op.label}…${needs4axis ? ` (Python: ${pythonPath})` : ''} [mat=${materialTag}; F=${Math.round(cut.feedMmMin)}; P=${Math.round(cut.plungeMmMin)}]`
         ])
+        let priorPostedGcode: string | undefined
+        if (p['usePriorPostedGcodeRest'] === true) {
+          try {
+            priorPostedGcode = await fab().readTextFile(outPath)
+          } catch {
+            priorPostedGcode = undefined
+          }
+        }
         try {
           const r = await fab().camRun({
             stlPath: camStlPath, outPath, machineId: activeJob.machineId!,
@@ -2164,14 +2183,32 @@ export default function ShopApp(): React.ReactElement {
             pythonPath,
             operationKind: op.kind,
             toolDiameterMm,
-            operationParams: p
+            operationParams: p,
+            rotaryStockLengthMm: activeJob.stock.x,
+            rotaryStockDiameterMm: activeJob.stock.y,
+            rotaryChuckDepthMm: activeJob.chuckDepthMm,
+            rotaryClampOffsetMm: activeJob.clampOffsetMm ?? 0,
+            stockBoxZMm: activeJob.stock.z,
+            stockBoxXMm: activeJob.stock.x,
+            stockBoxYMm: activeJob.stock.y,
+            ...(needs4axis ? { useMeshMachinableXClamp: p['useMeshMachinableXClamp'] === true } : {}),
+            ...(priorPostedGcode?.trim() ? { priorPostedGcode } : {})
           })
-          if (r.ok) { setLog(l => [...l, `  ✓ ${op.label} — ${r.usedEngine ?? 'builtin'}`]); if (r.gcode) updateJob(jobId, { gcodeOut: outPath }) }
+          if (r.ok) {
+            const hintLine = r.hint ? `\n    ${r.hint}` : ''
+            setLog((l) => [...l, `  ✓ ${op.label} — ${r.usedEngine ?? 'builtin'}${hintLine}`])
+            if (r.gcode) updateJob(jobId, { gcodeOut: outPath })
+          }
           else { setLog(l => [...l, `  ✕ ${op.label}: ${r.error}${r.hint ? `\nHint: ${r.hint}` : ''}`]); allOk = false }
         } catch (e) { setLog(l => [...l, `  ✕ ${op.label}: ${String(e)}`]); allOk = false }
       }
       updateJob(jobId, { status: allOk ? 'done' : 'error' })
-      pushToast(allOk ? 'ok' : 'err', allOk ? 'G-code generated' : 'Some operations failed')
+      pushToast(
+        allOk ? 'ok' : 'err',
+        allOk
+          ? `G-code: ${outPath.split(/[/\\]/).pop() ?? outPath} (toolbar: G-code / Export… / Open file)`
+          : 'Some operations failed'
+      )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setLog(l => [...l, `Generate failed: ${msg}`])
@@ -2190,23 +2227,104 @@ export default function ShopApp(): React.ReactElement {
     } catch (e) { pushToast('err', String(e)) }
   }
 
+  const openGcodeViewer = async (): Promise<void> => {
+    if (!activeJob?.gcodeOut) {
+      pushToast('warn', 'Generate G-code first (output is saved next to your STL as .gcode)')
+      return
+    }
+    setGcodeViewerOpen(true)
+    setGcodeViewerPath(activeJob.gcodeOut)
+    setGcodeViewerLoading(true)
+    setGcodeViewerText('')
+    try {
+      const text = await fab().readTextFile(activeJob.gcodeOut)
+      setGcodeViewerText(text)
+    } catch (e) {
+      setGcodeViewerText(`(Could not read file: ${e instanceof Error ? e.message : String(e)})`)
+    } finally {
+      setGcodeViewerLoading(false)
+    }
+  }
+
+  const exportGcodeCopy = async (): Promise<void> => {
+    if (!activeJob?.gcodeOut) {
+      pushToast('warn', 'Generate G-code first')
+      return
+    }
+    try {
+      const text = await fab().readTextFile(activeJob.gcodeOut)
+      const base = activeJob.gcodeOut.replace(/^.*[/\\]/, '') || 'output.gcode'
+      const savePath = await fab().dialogSaveFile(
+        [
+          { name: 'G-code', extensions: ['gcode', 'nc', 'ngc', 'tap', 'txt'] },
+          { name: 'All', extensions: ['*'] }
+        ],
+        base
+      )
+      if (savePath) {
+        await fab().fsWriteText(savePath, text)
+        pushToast('ok', `Saved ${savePath.split(/[/\\]/).pop() ?? savePath}`)
+      }
+    } catch (e) {
+      pushToast('err', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const openGcodeInSystemApp = async (): Promise<void> => {
+    if (!activeJob?.gcodeOut) {
+      pushToast('warn', 'Generate G-code first')
+      return
+    }
+    try {
+      await fab().shellOpenPath(activeJob.gcodeOut)
+    } catch (e) {
+      pushToast('err', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const copyGcodePath = async (pathOverride?: string | null): Promise<void> => {
+    const p = (pathOverride ?? activeJob?.gcodeOut)?.trim()
+    if (!p) {
+      pushToast('warn', 'No G-code path')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(p)
+      pushToast('ok', 'File path copied to clipboard')
+    } catch {
+      pushToast('err', 'Clipboard not available')
+    }
+  }
+
   const openSetupSheet = async (): Promise<void> => {
     if (!activeJob) { pushToast('warn', 'No active job'); return }
     try {
       let gcodeStats = null
+      let gcodeText: string | null = null
       if (activeJob.gcodeOut) {
         try {
           const b64 = await fab().fsReadBase64(activeJob.gcodeOut)
           const text = decodeURIComponent(escape(atob(b64)))
+          gcodeText = text
           gcodeStats = parseGcodeStats(text)
         } catch { /* gcode not readable — skip stats */ }
       }
+      const machineMode = sessionMachine ? getMachineMode(sessionMachine) : null
       const sheetJob: SetupSheetJob = {
         name: activeJob.name,
         stlPath: activeJob.stlPath,
         machineId: activeJob.machineId,
         materialId: activeJob.materialId,
         stock: activeJob.stock,
+        rotarySetup:
+          machineMode === 'cnc_4axis' || machineMode === 'cnc_5axis'
+            ? {
+                cylinderDiameterMm: activeJob.stock.y,
+                cylinderLengthMm: activeJob.stock.x,
+                chuckDepthMm: activeJob.chuckDepthMm,
+                clampOffsetMm: activeJob.clampOffsetMm ?? 0
+              }
+            : undefined,
         operations: activeJob.operations.map(op => ({
           id: op.id, kind: op.kind, label: op.label,
           params: (op.params ?? {}) as Record<string, unknown>
@@ -2219,7 +2337,8 @@ export default function ShopApp(): React.ReactElement {
         machine: sessionMachine,
         material: mat,
         tools: machineTools,
-        gcodeStats
+        gcodeStats,
+        gcodeText
       })
       // Save to temp file next to stl/gcode, then open in system browser
       const basePath = activeJob.gcodeOut ?? activeJob.stlPath
@@ -2260,6 +2379,12 @@ export default function ShopApp(): React.ReactElement {
       }})
       c.push({ id: 'generate', group: 'Jobs', label: isFdm ? 'Slice' : 'Generate G-code', icon: '▶', action: generate })
       if (activeJob.gcodeOut) c.push({ id: 'send', group: 'Jobs', label: 'Send to Printer', icon: '→', action: sendToPrinter })
+      if (activeJob.gcodeOut) {
+        c.push({ id: 'gcode_view', group: 'Jobs', label: 'View G-code', icon: '📄', action: openGcodeViewer })
+        c.push({ id: 'gcode_export', group: 'Jobs', label: 'Export G-code…', icon: '💾', action: exportGcodeCopy })
+        c.push({ id: 'gcode_open_ext', group: 'Jobs', label: 'Open G-code in default app', icon: '↗', action: openGcodeInSystemApp })
+        c.push({ id: 'gcode_copy_path', group: 'Jobs', label: 'Copy G-code file path', icon: '📋', action: copyGcodePath })
+      }
       if (!isFdm) c.push({ id: 'apply_mat', group: 'Jobs', label: 'Apply Material Cut Params ⚡', icon: '🧱', action: applyMaterial })
       if (!isFdm) c.push({ id: 'setup_sheet', group: 'Jobs', label: 'Generate Setup Sheet 📋', icon: '📋', action: openSetupSheet })
       const { primary, secondary } = OPS_BY_MODE[mode]
@@ -2378,6 +2503,33 @@ export default function ShopApp(): React.ReactElement {
               {running ? '⏳ Running…' : isFdm ? '▶ Slice' : '▶ Generate'}
             </button>
             <button className="btn-send" disabled={!activeJob?.gcodeOut} onClick={sendToPrinter}>→ Send</button>
+            <button
+              className="tb-btn"
+              type="button"
+              disabled={!activeJob?.gcodeOut}
+              title={activeJob?.gcodeOut ? `View G-code\n${activeJob.gcodeOut}` : 'Generate G-code first'}
+              onClick={() => void openGcodeViewer()}
+            >
+              G-code
+            </button>
+            <button
+              className="tb-btn"
+              type="button"
+              disabled={!activeJob?.gcodeOut}
+              title="Save a copy elsewhere"
+              onClick={() => void exportGcodeCopy()}
+            >
+              Export…
+            </button>
+            <button
+              className="tb-btn"
+              type="button"
+              disabled={!activeJob?.gcodeOut}
+              title="Open in default editor / viewer"
+              onClick={() => void openGcodeInSystemApp()}
+            >
+              Open file
+            </button>
           </>
         )}
 
@@ -2415,6 +2567,61 @@ export default function ShopApp(): React.ReactElement {
       ) : (
         <div style={{ flex: 1, overflow: 'auto' }}>
           <SettingsView onToast={pushToast} />
+        </div>
+      )}
+
+      {gcodeViewerOpen && (
+        <div
+          className="shop-gcode-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="shop-gcode-title"
+          onClick={() => setGcodeViewerOpen(false)}
+        >
+          <div className="shop-gcode-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="shop-gcode-sheet-bar">
+              <span id="shop-gcode-title" style={{ fontWeight: 700, fontSize: 12 }}>
+                G-code
+              </span>
+              {gcodeViewerPath ? (
+                <span
+                  className="shop-gcode-path"
+                  title={gcodeViewerPath}
+                  style={{ fontSize: 10, color: 'var(--txt2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginLeft: 8 }}
+                >
+                  {gcodeViewerPath}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={!gcodeViewerPath}
+                onClick={() => void copyGcodePath(gcodeViewerPath)}
+              >
+                Copy path
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={!activeJob?.gcodeOut}
+                onClick={() => void exportGcodeCopy()}
+              >
+                Export…
+              </button>
+              <button type="button" className="btn btn-ghost btn-sm btn-icon" onClick={() => setGcodeViewerOpen(false)} aria-label="Close">
+                ✕
+              </button>
+            </div>
+            <div className="shop-gcode-sheet-body">
+              {gcodeViewerLoading ? (
+                <span style={{ color: 'var(--txt2)', fontSize: 12 }}>Loading…</span>
+              ) : (
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }} tabIndex={0}>
+                  {gcodeViewerText || '(empty)'}
+                </pre>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

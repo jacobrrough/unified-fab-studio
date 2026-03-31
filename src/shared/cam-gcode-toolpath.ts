@@ -58,7 +58,7 @@ export function extractToolpathSegmentsFromGcode(gcode: string): ToolpathSegment
 export const DEFAULT_4AXIS_CYLINDER_DIAMETER_MM = 50
 
 export function isManufactureKind4AxisForPreview(kind: string | undefined): boolean {
-  return kind === 'cnc_4axis_wrapping' || kind === 'cnc_4axis_indexed'
+  return kind === 'cnc_4axis_roughing' || kind === 'cnc_4axis_finishing' || kind === 'cnc_4axis_contour' || kind === 'cnc_4axis_indexed'
 }
 
 export function resolve4AxisCylinderDiameterMm(params: unknown): number {
