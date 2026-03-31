@@ -1,6 +1,6 @@
 import { Canvas } from '@react-three/fiber'
 import { Bounds, ContactShadows, Grid, Line, OrbitControls } from '@react-three/drei'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { buildHeightFieldFromCuttingSegments } from '../../shared/cam-heightfield-2d5'
 import { compareToolpathToMachineEnvelope } from '../../shared/cam-machine-envelope'
@@ -101,6 +101,72 @@ function ToolpathMeshTubes({
   )
 }
 
+/** Progressive toolpath lines — only renders segments up to `visibleCount`. */
+function ProgressiveToolpathLines({
+  segments,
+  visibleCount
+}: {
+  segments: ReturnType<typeof extractToolpathSegmentsFromGcode>
+  visibleCount: number
+}): ReactNode {
+  const geometry = useMemo(() => {
+    const n = Math.min(visibleCount, segments.length)
+    if (n === 0) return { rapid: null, feed: null }
+    const rapidPts: number[] = []
+    const feedPts: number[] = []
+    for (let i = 0; i < n; i++) {
+      const s = segments[i]!
+      const a = gcodeToThree(s.x0, s.y0, s.z0)
+      const b = gcodeToThree(s.x1, s.y1, s.z1)
+      const arr = s.kind === 'rapid' ? rapidPts : feedPts
+      arr.push(a[0], a[1], a[2], b[0], b[1], b[2])
+    }
+    function makeGeo(pts: number[]): THREE.BufferGeometry | null {
+      if (pts.length === 0) return null
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(pts), 3))
+      return g
+    }
+    return { rapid: makeGeo(rapidPts), feed: makeGeo(feedPts) }
+  }, [segments, visibleCount])
+
+  return (
+    <group>
+      {geometry.rapid ? (
+        <lineSegments geometry={geometry.rapid}>
+          <lineBasicMaterial color="#fbbf24" linewidth={1.25} transparent opacity={0.7} />
+        </lineSegments>
+      ) : null}
+      {geometry.feed ? (
+        <lineSegments geometry={geometry.feed}>
+          <lineBasicMaterial color="#22d3ee" linewidth={2} />
+        </lineSegments>
+      ) : null}
+    </group>
+  )
+}
+
+/** Progressive tube toolpath — rebuilds chains from visible segments only. */
+function ProgressiveToolpathTubes({
+  segments,
+  visibleCount,
+  rapidRadiusMm,
+  feedRadiusMm
+}: {
+  segments: ReturnType<typeof extractToolpathSegmentsFromGcode>
+  visibleCount: number
+  rapidRadiusMm: number
+  feedRadiusMm: number
+}): ReactNode {
+  const chains = useMemo(
+    () => buildContiguousPathChains(segments.slice(0, visibleCount)),
+    [segments, visibleCount]
+  )
+  return (
+    <ToolpathMeshTubes chains={chains} rapidRadiusMm={rapidRadiusMm} feedRadiusMm={feedRadiusMm} />
+  )
+}
+
 function ToolpathLines({ segments }: { segments: ReturnType<typeof extractToolpathSegmentsFromGcode> }): ReactNode {
   return (
     <group>
@@ -126,9 +192,24 @@ function StockOutlineBox({
 }): ReactNode {
   const geo = useMemo(() => new THREE.BoxGeometry(sx, sz, sy), [sx, sy, sz])
   return (
-    <mesh position={[sx / 2, -sz / 2, sy / 2]} geometry={geo}>
-      <meshBasicMaterial color="#475569" wireframe transparent opacity={0.35} depthWrite={false} />
-    </mesh>
+    <group>
+      {/* Solid translucent stock */}
+      <mesh position={[sx / 2, -sz / 2, sy / 2]} geometry={geo} receiveShadow>
+        <meshStandardMaterial
+          color="#64748b"
+          roughness={0.85}
+          metalness={0.05}
+          transparent
+          opacity={0.18}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      {/* Wireframe edges */}
+      <mesh position={[sx / 2, -sz / 2, sy / 2]} geometry={geo}>
+        <meshBasicMaterial color="#94a3b8" wireframe transparent opacity={0.45} depthWrite={false} />
+      </mesh>
+    </group>
   )
 }
 
@@ -276,18 +357,53 @@ function PartStlMesh({ geometry }: { geometry: THREE.BufferGeometry }): ReactNod
   )
 }
 
+/** Endmill tool visualization — cylinder with a rounded tip at the cutting end. */
 function PlaybackToolHead({
   position,
-  radius
+  toolDiameter,
+  fluteLength
 }: {
   position: THREE.Vector3Tuple
-  radius: number
+  toolDiameter: number
+  fluteLength: number
 }): ReactNode {
+  const r = toolDiameter * 0.5
+  const fl = fluteLength
+  const shankLen = fl * 0.6
   return (
-    <mesh position={position} castShadow>
-      <sphereGeometry args={[radius, 20, 20]} />
-      <meshStandardMaterial color="#f472b6" metalness={0.35} roughness={0.4} emissive="#9d174d" emissiveIntensity={0.25} />
-    </mesh>
+    <group position={position}>
+      {/* Flute (cutting portion) — cylinder from tip upward */}
+      <mesh position={[0, fl * 0.5, 0]} castShadow>
+        <cylinderGeometry args={[r, r, fl, 20]} />
+        <meshStandardMaterial
+          color="#c084fc"
+          metalness={0.55}
+          roughness={0.3}
+          emissive="#7c3aed"
+          emissiveIntensity={0.2}
+          transparent
+          opacity={0.85}
+        />
+      </mesh>
+      {/* Tip — hemisphere at the bottom */}
+      <mesh position={[0, 0, 0]} castShadow>
+        <sphereGeometry args={[r, 16, 8, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.5]} />
+        <meshStandardMaterial
+          color="#c084fc"
+          metalness={0.55}
+          roughness={0.3}
+          emissive="#7c3aed"
+          emissiveIntensity={0.2}
+          transparent
+          opacity={0.85}
+        />
+      </mesh>
+      {/* Shank (holder portion) — slightly thicker, above the flute */}
+      <mesh position={[0, fl + shankLen * 0.5, 0]} castShadow>
+        <cylinderGeometry args={[r * 1.25, r * 1.15, shankLen, 16]} />
+        <meshStandardMaterial color="#94a3b8" metalness={0.7} roughness={0.25} />
+      </mesh>
+    </group>
   )
 }
 
@@ -331,8 +447,17 @@ function readStoredVoxelQuality(): VoxelSimQualityPreset {
 
 const TUBE_MAX_SEGMENTS = 10000
 const TUBE_MAX_CHAINS = 900
-/** Playback: approximate path fraction advanced per second when playing (loops). */
-const PLAYBACK_SPEED = 0.09
+/** Playback speed presets (path fraction per second). */
+const SPEED_PRESETS = [
+  { label: '0.25x', value: 0.025 },
+  { label: '0.5x', value: 0.045 },
+  { label: '1x', value: 0.09 },
+  { label: '2x', value: 0.18 },
+  { label: '5x', value: 0.45 },
+  { label: '10x', value: 0.9 }
+] as const
+/** Height field rebuild interval during playback (ms). */
+const HF_REBUILD_INTERVAL_MS = 400
 
 export function ManufactureCamSimulationPanel({
   projectDir,
@@ -357,6 +482,11 @@ export function ManufactureCamSimulationPanel({
   const [partPositionsRaw, setPartPositionsRaw] = useState<Float32Array | null>(null)
   const [playbackU, setPlaybackU] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [playbackSpeed, setPlaybackSpeed] = useState(0.09)
+  const [progressiveMode, setProgressiveMode] = useState(true)
+  /** Last segment index at which the height field was rebuilt. */
+  const lastHfRebuildIdx = useRef(-1)
+  const lastHfRebuildTime = useRef(0)
 
   useEffect(() => {
     setGcode(camOut ?? '')
@@ -554,23 +684,57 @@ export function ManufactureCamSimulationPanel({
     if (!isPlaying || pathSampler.totalMm < 1e-9) return
     let raf = 0
     let last = performance.now()
+    const speed = playbackSpeed
     const loop = (now: number) => {
       const dt = Math.min(0.12, (now - last) / 1000)
       last = now
       setPlaybackU((u) => {
-        const nu = u + PLAYBACK_SPEED * dt
+        const nu = u + speed * dt
         return nu >= 1 ? nu % 1 : nu
       })
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [isPlaying, pathSampler.totalMm])
+  }, [isPlaying, pathSampler.totalMm, playbackSpeed])
 
   const playbackGcodePos = useMemo(() => {
     if (segments.length === 0) return null
     return pathSampler.atUnit(playbackU)
   }, [pathSampler, playbackU, segments.length])
+
+  /** Number of segments visible at the current playback position. */
+  const visibleSegmentCount = useMemo(() => {
+    if (!progressiveMode || segments.length === 0) return segments.length
+    // +1 because segmentIndexAtUnit returns 0-based index, we want count
+    return Math.min(segments.length, pathSampler.segmentIndexAtUnit(playbackU) + 1)
+  }, [progressiveMode, segments, pathSampler, playbackU])
+
+  /** Progressive height field — rebuilds periodically during playback based on visible segments. */
+  const progressiveHeightField = useMemo(() => {
+    if (!showRemoval || removalMode !== 'tier2') return null
+    if (!progressiveMode) return heightField
+    const n = visibleSegmentCount
+    if (n === 0) return null
+    // Throttle rebuilds: only rebuild if segment index advanced enough or time elapsed
+    const now = performance.now()
+    const timeSinceLast = now - lastHfRebuildTime.current
+    const step = Math.max(1, Math.floor(segments.length / 200))
+    if (lastHfRebuildIdx.current >= 0 && n - lastHfRebuildIdx.current < step && timeSinceLast < HF_REBUILD_INTERVAL_MS && n < segments.length) {
+      // Return previous height field (will be stale but avoids per-frame rebuilds)
+      return heightField
+    }
+    lastHfRebuildIdx.current = n
+    lastHfRebuildTime.current = now
+    const visibleSegs = segments.slice(0, n)
+    return buildHeightFieldFromCuttingSegments(visibleSegs, {
+      toolRadiusMm: toolDia * 0.5,
+      maxCols: 88,
+      maxRows: 88,
+      stockTopZ: 0,
+      cuttingZThreshold: 0.08
+    })
+  }, [showRemoval, removalMode, progressiveMode, visibleSegmentCount, segments, toolDia, heightField])
 
   async function loadOutputCam(): Promise<void> {
     setLoadNote(null)
@@ -632,12 +796,25 @@ export function ManufactureCamSimulationPanel({
               ) : null}
               {stockBox ? <StockOutlineBox sx={stockBox.x} sy={stockBox.y} sz={stockBox.z} /> : null}
               {showPartMesh && partGeometry ? <PartStlMesh geometry={partGeometry} /> : null}
-              {showRemoval && removalMode === 'tier2' && heightField ? <HeightFieldTerrain hf={heightField} /> : null}
+              {showRemoval && removalMode === 'tier2' && (progressiveMode ? progressiveHeightField : heightField) ? (
+                <HeightFieldTerrain hf={(progressiveMode ? progressiveHeightField : heightField)!} />
+              ) : null}
               {showRemoval && removalMode === 'tier3' && voxelPreview && voxelPreview.samplePositions.length > 0 ? (
                 <VoxelCarveSamples positions={voxelPreview.samplePositions} />
               ) : null}
               {hasPath ? (
-                useTubePreview ? (
+                progressiveMode ? (
+                  useTubePreview ? (
+                    <ProgressiveToolpathTubes
+                      segments={segments}
+                      visibleCount={visibleSegmentCount}
+                      rapidRadiusMm={rapidRadiusMm}
+                      feedRadiusMm={feedRadiusMm}
+                    />
+                  ) : (
+                    <ProgressiveToolpathLines segments={segments} visibleCount={visibleSegmentCount} />
+                  )
+                ) : useTubePreview ? (
                   <ToolpathMeshTubes
                     chains={pathChains}
                     rapidRadiusMm={rapidRadiusMm}
@@ -648,7 +825,11 @@ export function ManufactureCamSimulationPanel({
                 )
               ) : null}
               {hasPath && playbackHeadThree ? (
-                <PlaybackToolHead position={playbackHeadThree} radius={Math.max(0.35, toolDia * 0.07)} />
+                <PlaybackToolHead
+                  position={playbackHeadThree}
+                  toolDiameter={toolDia}
+                  fluteLength={Math.max(toolDia * 2, 12)}
+                />
               ) : null}
             </group>
           </Bounds>

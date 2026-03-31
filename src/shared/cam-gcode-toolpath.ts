@@ -140,6 +140,10 @@ export type ToolpathLengthSampler = {
   atDistanceMm: (d: number) => { x: number; y: number; z: number }
   /** Unit parameter u in [0,1] → position along path by arc length. */
   atUnit: (u: number) => { x: number; y: number; z: number }
+  /** Unit parameter u in [0,1] → index of the segment being traversed (0-based). */
+  segmentIndexAtUnit: (u: number) => number
+  /** Cumulative arc lengths at the END of each segment (same length as input segments). */
+  cumulativeMm: Float64Array
 }
 
 /**
@@ -151,7 +155,9 @@ export function buildToolpathLengthSampler(segments: ToolpathSegment3[]): Toolpa
     return {
       totalMm: 0,
       atDistanceMm: () => z,
-      atUnit: () => z
+      atUnit: () => z,
+      segmentIndexAtUnit: () => 0,
+      cumulativeMm: new Float64Array(0)
     }
   }
 
@@ -173,6 +179,13 @@ export function buildToolpathLengthSampler(segments: ToolpathSegment3[]): Toolpa
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz)
     legLengths.push(len)
     totalMm += len
+  }
+
+  const cumulativeMm = new Float64Array(legLengths.length)
+  let cum = 0
+  for (let i = 0; i < legLengths.length; i++) {
+    cum += legLengths[i]!
+    cumulativeMm[i] = cum
   }
 
   const atDistanceMm = (d: number): { x: number; y: number; z: number } => {
@@ -204,7 +217,21 @@ export function buildToolpathLengthSampler(segments: ToolpathSegment3[]): Toolpa
     return atDistanceMm(t * totalMm)
   }
 
-  return { totalMm, atDistanceMm, atUnit }
+  const segmentIndexAtUnit = (u: number): number => {
+    if (totalMm <= 0 || legLengths.length === 0) return 0
+    const d = Math.max(0, Math.min(1, u)) * totalMm
+    // Binary search on cumulativeMm
+    let lo = 0
+    let hi = cumulativeMm.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (cumulativeMm[mid]! < d - 1e-9) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+
+  return { totalMm, atDistanceMm, atUnit, segmentIndexAtUnit, cumulativeMm }
 }
 
 /** Sum of G0/G1 segment lengths (mm). */
