@@ -77,10 +77,10 @@ describe('4-axis roughing coverage', () => {
       toolDiameterMm: 3.175,
     })
 
-    // Extract all A angles from G0 A moves
+    // Extract all A angles from G0/G1 A moves
     const angles = new Set<string>()
     for (const l of lines) {
-      const m = l.match(/^G0 A([\d.]+)/)
+      const m = l.match(/^G[01] A([\d.]+)/)
       if (m) angles.add(m[1]!)
     }
 

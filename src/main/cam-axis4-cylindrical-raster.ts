@@ -486,7 +486,7 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
   let passNum = 0
 
-  // ── Roughing: Surface-offset passes ─────────────────────────────────────
+  // ── Roughing: Continuous zigzag with no mid-toolpath retracts ───────────
   //
   // Each roughing layer uses a HYBRID strategy:
   //   - Where mesh EXISTS: surface-offset cuts that follow the model shape,
@@ -494,12 +494,19 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
   //   - Where NO mesh exists (within the part's X span): waterline cuts at
   //     the current depth level to clear stock around the model.
   //
-  // This produces toolpaths that both reveal the 3D model shape AND remove
-  // all surrounding stock material.
+  // Motion pattern (minimal retracts):
+  //   1. Rapid to first angle, plunge once
+  //   2. Cut along X → rotate A at depth (stepover cut) → cut back along X
+  //   3. Repeat zigzag for all angles at this depth
+  //   4. When changing depth: plunge deeper at current position
+  //   5. Retract only at the very end of the toolpath
+  //
+  // The A rotation between passes is a cutting move (G1) since the tool
+  // is at depth inside the stock — this acts as the angular stepover.
 
-  // Inter-pass clearance: just above stock surface (fast repositioning).
-  // Full safe retract (clearZ) only used between depth levels and at program start/end.
-  const interPassZ = stockR + Math.min(2, p.safeZMm)
+  // Initial rapid to start position
+  lines.push(`G0 Z${clearZ.toFixed(3)}`)
+  let firstRoughPass = true
 
   for (let di = 0; di < roughingDepths.length; di++) {
     const zd = roughingDepths[di]!
@@ -513,29 +520,19 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
     lines.push(`; ─── Roughing: depth ${zd.toFixed(3)}mm (target R=${targetCutR.toFixed(3)}mm, frac=${frac.toFixed(2)}) ───`)
 
-    // Full retract at the START of each depth level
-    lines.push(`G0 Z${clearZ.toFixed(3)}`)
-
-    let firstPassAtDepth = true
-
     for (let ia = 0; ia < na; ia++) {
       const aDeg = ia * actualStepADeg
 
       const passPoints: Array<{ x: number; cutZ: number }> = []
 
-      // Roughing spans the FULL machinable X range at every angle.
-      // The stock is a full cylinder — all material within the X range
-      // needs to be cleared at each depth level.
       for (let ix = 0; ix < nx; ix++) {
         const x = extXStart + ix * actualDx
         const compR = compensated[ix * na + ia]!
 
         let cutZ: number
         if (compR === NO_HIT) {
-          // No mesh here — clear stock at the current waterline depth.
           cutZ = targetCutR
         } else {
-          // Mesh exists — surface-offset roughing.
           const surfaceLimit = compR + allowance
           const gap = stockR - surfaceLimit
           const surfaceOffsetR = surfaceLimit + gap * (1 - frac)
@@ -555,17 +552,16 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
       lines.push(`; Pass ${passNum}: A=${aDeg.toFixed(1)}° rough offset_frac=${frac.toFixed(2)}`)
 
-      if (firstPassAtDepth) {
-        // First pass at this depth: already at clearZ from the depth-level retract
+      if (firstRoughPass) {
+        // Very first pass: rapid position then plunge
         lines.push(`G0 A${aDeg.toFixed(3)}`)
         lines.push(`G0 X${passPoints[0]!.x.toFixed(3)}`)
         lines.push(`G1 Z${passPoints[0]!.cutZ.toFixed(3)} F${p.plungeMmMin.toFixed(0)}`)
-        firstPassAtDepth = false
+        firstRoughPass = false
       } else {
-        // Subsequent passes at same depth: lift just above stock, reposition, drop
-        lines.push(`G0 Z${interPassZ.toFixed(3)}`)
-        lines.push(`G0 A${aDeg.toFixed(3)} X${passPoints[0]!.x.toFixed(3)}`)
-        lines.push(`G1 Z${passPoints[0]!.cutZ.toFixed(3)} F${p.plungeMmMin.toFixed(0)}`)
+        // Continuous: rotate A at depth (cutting stepover), reposition X if needed
+        const firstPt = passPoints[0]!
+        lines.push(`G1 A${aDeg.toFixed(3)} Z${firstPt.cutZ.toFixed(3)} F${p.feedMmMin.toFixed(0)}`)
       }
 
       for (let i = 1; i < passPoints.length; i++) {
@@ -614,8 +610,8 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
       const finishExtents = computePerAngleXExtents(finishHm, overcutCells)
 
-      // Full retract once at the start of finishing
-      lines.push(`G0 Z${clearZ.toFixed(3)}`)
+      // Finishing continues from wherever roughing left off (already at depth).
+      // No retract needed — just plunge to finish depth and keep going.
       let firstFinishPass = true
 
       for (let ia = 0; ia < finishNaActual; ia++) {
@@ -650,15 +646,14 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
         lines.push(`; Finish ${passNum}: A=${aDeg.toFixed(1)}°`)
 
+        const firstPt = passPoints[0]!
         if (firstFinishPass) {
-          lines.push(`G0 A${aDeg.toFixed(3)}`)
-          lines.push(`G0 X${passPoints[0]!.x.toFixed(3)}`)
-          lines.push(`G1 Z${passPoints[0]!.cutZ.toFixed(3)} F${p.plungeMmMin.toFixed(0)}`)
+          // First finish pass: rotate to angle and plunge to finish depth
+          lines.push(`G1 A${aDeg.toFixed(3)} Z${firstPt.cutZ.toFixed(3)} F${p.plungeMmMin.toFixed(0)}`)
           firstFinishPass = false
         } else {
-          lines.push(`G0 Z${interPassZ.toFixed(3)}`)
-          lines.push(`G0 A${aDeg.toFixed(3)} X${passPoints[0]!.x.toFixed(3)}`)
-          lines.push(`G1 Z${passPoints[0]!.cutZ.toFixed(3)} F${p.plungeMmMin.toFixed(0)}`)
+          // Continuous: rotate A at depth (cutting stepover)
+          lines.push(`G1 A${aDeg.toFixed(3)} Z${firstPt.cutZ.toFixed(3)} F${p.feedMmMin.toFixed(0)}`)
         }
 
         for (let i = 1; i < passPoints.length; i++) {
