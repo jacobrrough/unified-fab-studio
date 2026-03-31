@@ -475,7 +475,7 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
   // Step 3: Apply tool radius compensation
   const compensated = applyToolRadiusCompensation(hm, toolR, stockR)
 
-  // Step 4: Compute per-angle X extents with overcut
+  // Step 4: Compute per-angle X extents with overcut (used for finishing only)
   const overcutCells = Math.max(1, Math.ceil(overcutMm / actualDx))
   const xExtents = computePerAngleXExtents(hm, overcutCells)
 
@@ -510,14 +510,14 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
     lines.push(`; ─── Roughing: depth ${zd.toFixed(3)}mm (target R=${targetCutR.toFixed(3)}mm, frac=${frac.toFixed(2)}) ───`)
 
     for (let ia = 0; ia < na; ia++) {
-      const [xIdxStart, xIdxEnd] = xExtents[ia]!
-      if (xIdxStart === -1) continue
-
       const aDeg = ia * actualStepADeg
 
       const passPoints: Array<{ x: number; cutZ: number }> = []
 
-      for (let ix = xIdxStart; ix <= xIdxEnd; ix++) {
+      // Roughing spans the FULL machinable X range at every angle.
+      // The stock is a full cylinder — all material within the X range
+      // needs to be cleared at each depth level.
+      for (let ix = 0; ix < nx; ix++) {
         const x = extXStart + ix * actualDx
         const compR = compensated[ix * na + ia]!
 
