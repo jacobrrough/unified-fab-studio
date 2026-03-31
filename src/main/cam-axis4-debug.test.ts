@@ -67,9 +67,9 @@ describe('4axis scenarios', () => {
     })
     const g1 = lines.filter(l => l.startsWith('G1'))
     console.log(`C bigger: lines=${lines.length} G1=${g1.length}`)
-    // Mesh is bigger than stock — nothing to machine (model fills the cylinder).
-    // Engine correctly produces no cutting moves.
-    expect(g1.length).toBe(0)
+    // Mesh extends beyond stock — but waterline clearing still produces
+    // cuts at NO_HIT cells (clearing stock around the oversized model).
+    expect(g1.length).toBeGreaterThan(0)
   })
 
   it('D: single depth (no roughing layers)', () => {

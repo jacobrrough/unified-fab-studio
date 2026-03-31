@@ -488,15 +488,14 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
 
   // ── Roughing: Surface-offset passes ─────────────────────────────────────
   //
-  // Instead of flat waterline layers (which produce uniform cylinders that
-  // don't show the 3D model shape), each roughing layer follows the mesh
-  // surface with a decreasing radial offset. This way the model's shape
-  // is progressively revealed at each depth level.
+  // Each roughing layer uses a HYBRID strategy:
+  //   - Where mesh EXISTS: surface-offset cuts that follow the model shape,
+  //     progressively approaching the mesh surface with each layer.
+  //   - Where NO mesh exists (within the part's X span): waterline cuts at
+  //     the current depth level to clear stock around the model.
   //
-  // At each cell: cutZ = compR + radialOffset
-  //   - radialOffset starts at (stockR - compR) and decreases to ~0 by the final layer
-  //   - Clamped so cutZ never exceeds stockR (never cut air above stock)
-  //   - Clamped so cutZ never goes below compR + allowance (don't gouge into part)
+  // This produces toolpaths that both reveal the 3D model shape AND remove
+  // all surrounding stock material.
 
   for (let di = 0; di < roughingDepths.length; di++) {
     const zd = roughingDepths[di]!
@@ -522,28 +521,21 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
         const x = extXStart + ix * actualDx
         const compR = compensated[ix * na + ia]!
 
-        // No mesh at this position — skip. Only cut where the model exists.
-        if (compR === NO_HIT) continue
-
-        // Surface-offset roughing: at this cell, the mesh surface is at compR.
-        // The stock surface is at stockR. We need to cut from stockR down toward
-        // compR over the roughing layers.
-        //
-        // cutZ = compR + (stockR - compR) * (1 - frac)
-        //      = compR + gap * (1 - frac)
-        //
-        // When frac=0 (first layer): cutZ = compR + gap = stockR (at stock surface)
-        // When frac=1 (last layer):  cutZ = compR (at mesh surface)
-        //
-        // But we also respect the global target depth — never cut deeper than
-        // targetCutR, and never cut above stockR.
-        const surfaceLimit = compR + allowance
-        const gap = stockR - surfaceLimit
-        const surfaceOffsetR = surfaceLimit + gap * (1 - frac)
-
-        // Use the deeper of: surface-offset position, or target depth floor.
-        // But never gouge below the mesh surface.
-        const cutZ = Math.max(surfaceLimit, Math.min(surfaceOffsetR, stockR - 0.01))
+        let cutZ: number
+        if (compR === NO_HIT) {
+          // No mesh here — clear stock at the current waterline depth.
+          // This removes material around the model (the stock is a full cylinder).
+          cutZ = targetCutR
+        } else {
+          // Mesh exists — surface-offset roughing.
+          // cutZ interpolates from stockR (frac=0) toward compR (frac=1),
+          // following the model's shape at each layer.
+          const surfaceLimit = compR + allowance
+          const gap = stockR - surfaceLimit
+          const surfaceOffsetR = surfaceLimit + gap * (1 - frac)
+          // Never gouge below the mesh surface.
+          cutZ = Math.max(surfaceLimit, Math.min(surfaceOffsetR, stockR - 0.01))
+        }
 
         if (cutZ < 0.05) continue
         if (cutZ >= stockR - 0.01) continue
@@ -622,11 +614,14 @@ export function generateCylindricalMeshRasterLines(p: CylindricalRasterParams): 
           const x = finishHm.xStart + ix * finishHm.dx
           const compR = finishComp[ix * finishNaActual + ia]!
 
-          // No mesh at this position — skip. Only finish where the model exists.
-          if (compR === NO_HIT) continue
-
-          // Finish: follow the actual surface, but never deeper than target
-          const cutZ = Math.max(finishTargetR, compR)
+          let cutZ: number
+          if (compR === NO_HIT) {
+            // No mesh here — clear stock at the finish target depth
+            cutZ = finishTargetR
+          } else {
+            // Finish: follow the actual surface, but never deeper than target
+            cutZ = Math.max(finishTargetR, compR)
+          }
 
           if (cutZ < 0.05) continue
           if (cutZ >= stockR - 0.01) continue
