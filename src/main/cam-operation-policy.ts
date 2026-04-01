@@ -25,28 +25,28 @@ export function describeCamOperationKind(kind: string | undefined): {
     return {
       runnable: true,
       hint:
-        'When Python has OpenCAMLib (`pip install opencamlib`), **Generate CAM** runs **AdaptiveWaterline** on the STL and posts it; otherwise you get the built-in parallel finish from STL bounds. G-code stays unverified until post/machine checks (docs/MACHINES.md).'
+        '**Generate CAM** uses the **advanced adaptive clearing engine** (constant-engagement roughing with ramp entry) when Python is available; falls back to OpenCAMLib **AdaptiveWaterline** or built-in parallel finish. G-code stays unverified until post/machine checks (docs/MACHINES.md).'
     }
   }
   if (kind === 'cnc_waterline') {
     return {
       runnable: true,
       hint:
-        'When Python has OpenCAMLib, **Generate CAM** runs **Z-level waterline** on the STL and posts it; otherwise you get the built-in parallel finish from STL bounds. G-code stays unverified until post/machine checks (docs/MACHINES.md).'
+        '**Generate CAM** uses the **advanced waterline engine** (Z-level contouring with scallop-aware stepdown) when Python is available; falls back to OpenCAMLib **Waterline** or built-in parallel finish. G-code stays unverified until post/machine checks (docs/MACHINES.md).'
     }
   }
   if (kind === 'cnc_raster') {
     return {
       runnable: true,
       hint:
-        '**Generate CAM** tries **OpenCAMLib PathDropCutter** XY raster (`engines/cam/ocl_toolpath.py` when `pip install opencamlib`); otherwise a **built-in 2.5D mesh height-field** raster, then an **orthogonal bounds** zigzag at fixed Z if the mesh yields no cuts. Optional **`usePriorPostedGcodeRest: true`** (Manufacture) reads **`output/cam.nc`** and skips mesh points already machined past the surface (+ raster rest) — same WCS required. G-code stays **unverified** until post/machine checks (docs/MACHINES.md).'
+        '**Generate CAM** uses the **advanced raster engine** (surface-following zigzag with gap detection) when Python is available; falls back to **OpenCAMLib PathDropCutter** XY raster, then **built-in 2.5D mesh height-field** raster, then **orthogonal bounds** zigzag. Optional **`usePriorPostedGcodeRest: true`** (Manufacture) enables rest machining. G-code stays **unverified** until post/machine checks (docs/MACHINES.md).'
     }
   }
   if (kind === 'cnc_pencil') {
     return {
       runnable: true,
       hint:
-        '**Pencil / rest cleanup:** same **OpenCAMLib raster** path as CNC raster but with a **tighter effective stepover** (`pencilStepoverFactor` × stepover, default 0.22, or optional `pencilStepoverMm`). Without OpenCAMLib, built-in mesh / bounds raster uses that tighter stepover too. Supports **`usePriorPostedGcodeRest`** like raster for coarse “after roughing” cleanup. Not full rest-material simulation — G-code stays **unverified** (docs/MACHINES.md).'
+        '**Pencil / rest cleanup:** uses the **advanced pencil trace engine** (Laplacian curvature detection for concave regions) when Python is available; falls back to **OpenCAMLib raster** with tighter stepover, then built-in mesh / bounds raster. G-code stays **unverified** (docs/MACHINES.md).'
     }
   }
   if (kind === 'cnc_contour' || kind === 'cnc_pocket' || kind === 'cnc_drill') {

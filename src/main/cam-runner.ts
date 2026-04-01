@@ -95,7 +95,7 @@ export type CamRunResult =
   | {
       ok: true
       gcode: string
-      usedEngine: 'ocl' | 'builtin'
+      usedEngine: 'advanced' | 'ocl' | 'builtin'
       engine: CamEngineOutcome
       hint?: string
     }
@@ -109,11 +109,12 @@ export type CamFallbackReason =
   | 'opencamlib_not_installed'
   | 'ocl_runtime_or_empty'
   | 'python_spawn_failed'
+  | 'advanced_engine_failed'
   | 'unknown_ocl_failure'
 
 export type CamEngineOutcome = {
-  requestedEngine: 'ocl' | 'builtin'
-  usedEngine: 'ocl' | 'builtin'
+  requestedEngine: 'advanced' | 'ocl' | 'builtin'
+  usedEngine: 'advanced' | 'ocl' | 'builtin'
   fallbackApplied: boolean
   fallbackReason?: CamFallbackReason
   fallbackDetail?: string
@@ -494,6 +495,107 @@ async function tryOclToolpath(job: CamJobConfig, strategy: string): Promise<{
   return { ok: false, stdout, code }
 }
 
+// ── Advanced toolpath engine ─────────────────────────────────────────────────
+
+/**
+ * Maps manufacture operation kind to an advanced engine strategy string.
+ * Returns null for operation kinds not supported by the advanced engine
+ * (2D ops, 4-axis ops which have their own dedicated pipelines).
+ */
+export function manufactureKindUsesAdvancedStrategy(
+  kind: string | undefined
+): 'adaptive_clear' | 'waterline' | 'raster' | 'pencil' | null {
+  if (kind === 'cnc_adaptive' || kind === 'cnc_3d_rough') return 'adaptive_clear'
+  if (kind === 'cnc_waterline') return 'waterline'
+  if (kind === 'cnc_raster' || kind === 'cnc_3d_finish') return 'raster'
+  if (kind === 'cnc_pencil') return 'pencil'
+  // cnc_parallel stays on the built-in parallel finish (no Python needed)
+  return null
+}
+
+async function tryAdvancedToolpath(
+  job: CamJobConfig,
+  strategy: string,
+  bounds: { min: [number, number, number]; max: [number, number, number] }
+): Promise<{
+  ok: boolean
+  toolpathLines?: string[]
+  stdout: string
+  code: number | null
+}> {
+  const toolpathJsonPath = join(dirname(job.outputGcodePath), '_cam_advanced_toolpath.json')
+  const cfgPath = join(getEnginesRoot(), 'cam', '_tmp_advanced_cam.json')
+  await mkdir(dirname(cfgPath), { recursive: true })
+
+  const stockZMin = job.stockBoxZMm != null ? -(job.stockBoxZMm) : bounds.min[2]
+  const stockZMax = 0 // WCS Z0 = stock top convention
+
+  await writeFile(
+    cfgPath,
+    JSON.stringify({
+      stlPath: job.stlPath,
+      toolpathJsonPath,
+      strategy,
+      toolDiameterMm: job.toolDiameterMm ?? 6,
+      feedMmMin: job.feedMmMin,
+      plungeMmMin: job.plungeMmMin,
+      stepoverMm: job.stepoverMm,
+      zStepMm: Math.abs(job.zPassMm),
+      safeZMm: job.safeZMm,
+      // Stock bounds from mesh + stock box
+      stockXMin: bounds.min[0] - 2,
+      stockXMax: bounds.max[0] + 2,
+      stockYMin: bounds.min[1] - 2,
+      stockYMax: bounds.max[1] + 2,
+      stockZMin,
+      stockZMax,
+      // Machine limits
+      xTravelMm: job.machine.workAreaMm?.[0] ?? 300,
+      yTravelMm: job.machine.workAreaMm?.[1] ?? 200,
+      zTravelMm: job.machine.workAreaMm?.[2] ?? 100,
+      maxFeedMmMin: 5000,
+      maxSpindleRpm: 24000
+    }),
+    'utf-8'
+  )
+
+  let code: number | null = 1
+  let stdout = ''
+  try {
+    // Use the advanced engine package: python -m engines.cam.advanced <config.json>
+    // We pass the module path to runPythonScript which joins with engines/cam/
+    const script = join(getEnginesRoot(), 'cam', 'advanced')
+    const r = await spawnBounded(job.pythonPath, ['-m', 'engines.cam.advanced', cfgPath], {
+      cwd: job.appRoot,
+      timeoutMs: 60_000,
+      maxBufferBytes: CAM_PYTHON_OUTPUT_MAX_BYTES
+    })
+    code = r.code
+    stdout = r.stdout + r.stderr
+  } catch {
+    code = 1
+    stdout = 'advanced_engine_spawn_failed'
+  }
+
+  if (code !== 0) {
+    return { ok: false, stdout, code }
+  }
+
+  try {
+    const raw = await readFile(toolpathJsonPath, 'utf-8')
+    const parsed = JSON.parse(raw) as OclToolpathFile
+    const lines = parsed.toolpathLines
+    if (parsed.ok && Array.isArray(lines) && lines.length > 0) {
+      await unlink(toolpathJsonPath).catch(() => {})
+      return { ok: true, toolpathLines: lines, stdout, code }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  return { ok: false, stdout, code }
+}
+
 /** Maps `ocl_toolpath.py` stdout (JSON error lines) to operator-facing fallback hints. Exported for tests. */
 export function builtinOclFailureHint(stdout: string, operationKind: string | undefined): string | undefined {
   const raster = operationKind === 'cnc_raster' || operationKind === 'cnc_pencil'
@@ -564,8 +666,9 @@ export function builtinOclFailureHint(stdout: string, operationKind: string | un
   return undefined
 }
 
-/** Normalized OCL failure category used by IPC/renderer fallback messaging. */
+/** Normalized OCL/advanced failure category used by IPC/renderer fallback messaging. */
 export function resolveOclFallbackReason(stdout: string): CamFallbackReason | undefined {
+  if (stdout.includes('advanced_engine_spawn_failed') || stdout.includes('advanced_engine_failed')) return 'advanced_engine_failed'
   if (stdout.includes('invalid_numeric_params')) return 'invalid_numeric_params'
   if (stdout.includes('stl_missing')) return 'stl_missing'
   if (
@@ -1227,6 +1330,43 @@ export async function runCamPipeline(initialJob: CamJobConfig): Promise<CamRunRe
           }).stepoverMm
         }
       : job
+
+  // ── Try advanced toolpath engine first (adaptive clearing, waterline, raster, pencil) ──
+  const advancedStrategy = manufactureKindUsesAdvancedStrategy(camJob.operationKind)
+  if (advancedStrategy) {
+    dbg('advanced:start')
+    const adv = await tryAdvancedToolpath(camJob, advancedStrategy, boundsEarly)
+    dbg(adv.ok && adv.toolpathLines && adv.toolpathLines.length > 0 ? 'advanced:success' : 'advanced:fallback')
+    if (adv.ok && adv.toolpathLines && adv.toolpathLines.length > 0) {
+      dbg('advanced:post_start')
+      const gcode = await renderPost(job.resourcesRoot, job.machine, adv.toolpathLines, {
+        workCoordinateIndex: job.workCoordinateIndex
+      })
+      await writeFile(job.outputGcodePath, gcode, 'utf-8')
+      dbg('advanced:done')
+      const stratLabel =
+        advancedStrategy === 'adaptive_clear'
+          ? 'adaptive clearing (constant engagement)'
+          : advancedStrategy === 'waterline'
+            ? 'waterline (Z-level contour)'
+            : advancedStrategy === 'pencil'
+              ? 'pencil trace (concave cleanup)'
+              : 'raster (surface-following)'
+      return {
+        ok: true,
+        gcode,
+        usedEngine: 'advanced',
+        engine: {
+          requestedEngine: 'advanced',
+          usedEngine: 'advanced',
+          fallbackApplied: false
+        },
+        hint: `Advanced engine ${stratLabel} toolpath posted for your machine profile. ${UNVERIFIED}${postedGcodeEnvelopeHint(job.machine, gcode)}${guardHint}`
+      }
+    }
+    dbg('advanced:fallback_to_ocl')
+    // Advanced engine failed — fall through to OCL / builtin chain
+  }
 
   const oclStrategy = manufactureKindUsesOclStrategy(camJob.operationKind)
   if (oclStrategy) {
